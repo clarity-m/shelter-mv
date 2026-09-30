@@ -25,6 +25,18 @@ const LOOK = { up: eyes(NEUTRAL, 0, -1), upLeft: eyes(NEUTRAL, -1, -1), upRight:
 // revision 20b: the humans' cursor is already here, watching (S18's watchW path); it glides to him from
 // late 51 (58), selects him on 52.1 (73), types, and clicks at 52.2.5 (100); then it drifts up to watch
 const IN = 58, SEL = 73, ENTER = 100, JOY = 110;
+// revision 22 (Claire: the cursor's stops read as stutter): its path is one fluid line at a constant
+// angle. curve() is a C1 Hermite through waypoints P at parameter knots K (Catmull-Rom tangents), so
+// the velocity carries through every waypoint; each phase runs under one ease-in/ease-out.
+function curve(P, K, u) {
+  let i = 0; while (i < P.length - 2 && u > K[i + 1]) i++;
+  const h = K[i + 1] - K[i], t = (u - K[i]) / h, t2 = t * t, t3 = t2 * t;
+  const tan = (j) => { const a = Math.max(0, j - 1), b = Math.min(P.length - 1, j + 1); return [0, 1].map((q) => (P[b][q] - P[a][q]) / (K[b] - K[a])); };
+  const m0 = tan(i), m1 = tan(i + 1);
+  const h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t, h01 = -2 * t3 + 3 * t2, h11 = t3 - t2;
+  return [0, 1].map((q) => h00 * P[i][q] + h10 * h * m0[q] + h01 * P[i + 1][q] + h11 * h * m1[q]);
+}
+const smooth01 = (t) => { t = clamp(t); return t * t * (3 - 2 * t); };
 const CODE = 'clawd.copy(4)';
 // the four copies: metres from him across the view (+ right) and toward the lens (-); each one's delay
 const RV = [Math.cos(TH_V), -Math.sin(TH_V)], FV = [Math.sin(TH_V), Math.cos(TH_V)];
@@ -125,21 +137,28 @@ export default {
       for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) g.fillRect(cx + sx * hw - 4, cy + sy * hh - 4, 8, 8);
       g.restore();
     }
-    // --- the humans' cursor: in from the upper right, clicks him, types the copy, runs it, leaves
+    // --- the humans' cursor (revision 22): phase A (0-71) runs on from S18's path, curving left toward the
+    // growing tree and round over him to his top-right corner, never stopping; phase B (71-104) is the
+    // story's hold, selecting him (73), typing and clicking (100), with the idle hover; phase C (104-143)
+    // is one eased rise to watch the five, arriving as the shot ends
     {
       const tip = [head[0] + 0.5 * cw, head[1] - 0.46 * cw];      // his top right corner
-      const w = toPx(watchW(288 + s, CX, gy, CZ)), perch = toPx([CX + 0.9, gy + 3.2, CZ - 0.8]);
-      const d = easeInOut(clamp((s - IN) / (SEL - 2 - IN))), back = easeInOut(clamp((s - ENTER - 4) / 26));
-      let x = lerp(w[0], tip[0], d), y = lerp(w[1], tip[1], d);
-      x = lerp(x, perch[0], back); y = lerp(y, perch[1], back);
-      const cs = lerp(lerp(watchS(w[2]), 1.2, d), watchS(perch[2]), back), away = 0;
+      // (a loop, not a reversal: out left and up toward the tree, down round its far side, back in to him)
+      const A = [toPx(watchW(288, CX, gy, CZ)), toPx([CX - 3.0, gy + 4.2, CZ - 0.5]), toPx([CX - 3.3, gy + 3.0, CZ - 0.6]), toPx([CX - 1.0, gy + 2.5, CZ - 0.7]), [tip[0], tip[1], 1]];
+      const C = [[tip[0], tip[1], 1], toPx([CX + 0.4, gy + 2.3, CZ - 0.8]), toPx([CX + 1.2, gy + 3.3, CZ - 0.9])];
+      let x, y, cs;
+      if (s < 71) { const u = smooth01(s / 71); [x, y] = curve(A, [0, 0.3, 0.55, 0.8, 1], u); cs = lerp(watchS(A[0][2]), 1.2, u); }
+      else if (s < 104) {
+        const amp = ss(71, 78, s) * (1 - ss(97, 104, s));          // the idle hover, easing in and out of the hold
+        x = tip[0] + amp * 2.6 * Math.sin((s - 71) * 2 * Math.PI / 38); y = tip[1] + amp * 2.2 * Math.sin((s - 71) * 2 * Math.PI / 27); cs = 1.2;
+      } else { const u = smooth01((s - 104) / 39); [x, y] = curve(C, [0, 0.45, 1], u); cs = lerp(1.2, watchS(C[2][2]), u); }
       const press = Math.max(Math.exp(-Math.pow((s - SEL) / 2.2, 2)), Math.exp(-Math.pow((s - ENTER) / 2.2, 2)));
-      // its label (S10's paper panel): typed after the selection, run on the second click
+      // its label (S10's paper panel, 1.5x, readable at phone size): typed after the selection, run on the
+      // second click; anchored at his corner, so it doesn't hover with the cursor
       const open = easeOut(clamp((s - SEL - 1) / 4)) * (1 - easeInOut(clamp((s - ENTER - 2) / 6)));
-      // (revision 19, lead) the humans' panel at 1.5x, like S02's and S15's, readable at phone size
-      if (open > 0.001) { g.save(); g.translate(x + 64, y + 34); g.scale(1.5, 1.5);
+      if (open > 0.001) { g.save(); g.translate(tip[0] + 64, tip[1] + 34); g.scale(1.5, 1.5);
         CUR.panel(g, 0, 0, CODE, { open, typed: clamp((s - SEL - 3) / 10), caret: s < ENTER, flash: Math.exp(-Math.pow((s - ENTER) / 4, 2)) * (s >= ENTER - 2 ? 1 : 0) }); g.restore(); }
-      if (away < 1) CUR.draw(g, x, y, { s: cs, press, rot: -0.06, fill: PAPER.slate, bs: cs * k / 1.45 });
+      CUR.draw(g, x, y, { s: cs, press, rot: -0.06, fill: PAPER.slate, bs: cs * k / 1.45 });
     }
     g.restore();
   },

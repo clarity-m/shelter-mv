@@ -65,6 +65,9 @@ export function setOnline(snares, until = 1e9) {
 // on the bar-69 kick the rest close in from both ends and the ring's own line lights: the first ring
 // of a swarm. `setSats(first, kick)` is called by the shot (local frames) before the scene is built.
 // R20 (Claire: keep the satellites apart): 48, evenly spaced along the arch (about 60 px apart)
+// R22 (Claire: they lit sides to centre but flashed left to right): the ring travels one way. On the
+// kick the rest light left to right along the arch at the pulse's speed, one crossing per beat, and
+// the ring's line draws with them; S23's pulse then carries on the same way (lapAt).
 export const RING = { cx: 960, cy: 700, R: 1250, r: 560, n: 48, a0: 0.1, a1: Math.PI - 0.1 };
 export const ringAt = (t) => { const a = RING.a0 + (RING.a1 - RING.a0) * t; return [RING.cx - RING.R * Math.cos(a), RING.cy - RING.r * Math.sin(a)]; };
 // the arch by arc length: arcT(u) turns a fraction of its length (0 at the left end) into ringAt's t
@@ -75,19 +78,28 @@ export function arcT(u) {
   while (hi - lo > 1) { const m = (lo + hi) >> 1; if (ARC.cum[m] < target) lo = m; else hi = m; }
   return (lo + (target - ARC.cum[lo]) / Math.max(ARC.cum[hi] - ARC.cum[lo], 1e-9)) / ARC.N;
 }
+export function arcU(t) {                                             // the inverse: ringAt's t -> fraction of the length
+  const x = Math.min(Math.max(t, 0), 1) * ARC.N, k = Math.min(Math.floor(x), ARC.N - 1);
+  return (ARC.cum[k] + (ARC.cum[k + 1] - ARC.cum[k]) * (x - k)) / ARC.L;
+}
 export const satT = (i) => arcT(i / (RING.n - 1));                  // satellite i's t on the arch
 export const satAt = (i) => ringAt(satT(i));
-export const SATS = { at: [], line: (t) => 1e9 };
-export function setSats(beat0, kick) {
+export const SATS = { at: [], line: (t) => 1e9, kick: 1e9, lap: 18, u0: 0 };
+// (R22) a crossing that starts on beat b reaches the arch's length fraction u at lapAt(b, u): one lap
+// a beat, left to right, reaching u0 (the screen's left edge, which S23 measures) on the beat
+export const lapAt = (b, u) => b + SATS.lap * (u - SATS.u0);
+export function setSats(beat0, kick, u0 = 0) {
   // the first fifteen: 1, 2, 4 and 8 in the four beats of bar 68, spread over the arch
   const order = [24, 15, 33, 7, 20, 28, 41, 11, 18, 26, 30, 4, 37, 44, 22];
   const at = new Array(RING.n).fill(null);
   let n = 0;
   for (let b = 0; b < 4; b++) { const c = 1 << b; for (let q = 0; q < c; q++) at[order[n++]] = beat0 + 18 * b + (18 / c) * q; }
-  // the rest close in from both ends on the kick, meeting in the middle
-  for (let i = 0; i < RING.n; i++) if (at[i] === null) { const d = Math.min(i, RING.n - 1 - i) / (RING.n / 2); at[i] = kick + 11 * d; }
+  // (R22) the rest light on the kick's lap, left to right (those left of the screen on the kick), and
+  // the ring's line draws two frames behind them
+  SATS.kick = kick; SATS.u0 = u0;
+  for (let i = 0; i < RING.n; i++) if (at[i] === null) at[i] = Math.max(kick, lapAt(kick, i / (RING.n - 1)));
   SATS.at = at;
-  SATS.line = (t) => kick + 6 + 8 * Math.min(t, 1 - t) * 2;           // the ring's line, closing a little later
+  SATS.line = (t) => Math.max(kick, lapAt(kick, arcU(t))) + 2;
   return SATS;
 }
 export const MID = { f0: 138, step: 5.5, span: 14 };

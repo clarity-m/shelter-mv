@@ -13,9 +13,9 @@ POS = float(sys.argv[1]) if len(sys.argv) > 1 else 0.6
 TW, TH, LAB, COLS = 400, 225, 44, 6
 
 TITLES = {
-    "S01": "cursor unfolds the starburst", "S02": "burst folds into Clawd, fly through",
+    "S01": "cursor draws the starburst, paper folds in", "S02": "burst folds into Clawd, fly through",
     "S03": "1D token world", "S04": "attention arcs", "S05": "loss curve, counters",
-    "S06": "GPU rack (outside)", "S08": "lab in the hook, push into screen",
+    "S06": "GPU rack (outside)", "S07": "new layers", "S08": "lab in the hook, push into screen",
     "S10": "pixel: explore, fail, block, flag", "S11": "physics: eased ramp, then steep alone",
     "S12": "white field gains depth", "S13": "the cursor draws the valley; explore", "S14": "the cursor draws crater, ice shore",
     "S15": "wall: cursors building worlds", "S16": "the GPU hall, dark (outside)", "S17": "dive back into one world (1 bar)",

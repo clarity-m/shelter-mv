@@ -995,16 +995,16 @@ vec3 clawd(vec2 p, float rb, float ra, float rl, float re, float k, float kl) {
   float eo = uEye.z, rr = min(re, 1.0 * eo);
   float eye = eo < 0.05 ? 1e9 : min(sdRoundBox(p, vec2(5.5 + uEye.x, 3.0 + sy + uEye.y), vec2(0.5, 1.0 * eo), rr),
                                     sdRoundBox(p, vec2(12.5 + uEye.x, 3.0 + sy + uEye.y), vec2(0.5, 1.0 * eo), rr));
-  if (uEye.w > 0.5) {
-    // (revision 21) the happy arch eyes, ^^, exactly the sprite canon's emote (style-frames/05-clawd-sprites,
-    // glslx.js): three cells on the eye row and one under each end, crisp
-    eye = 1e9;
+  if (uEye.w > 0.001 && eo >= 0.05) {
+    // (revision 22) his smile, ^^, in this vector style: each eye becomes a small arch stroke inside the
+    // open eye's own footprint (about one unit across), and uEye.w morphs the open eye into it (0..1)
+    float ea = 1e9;
     for (int e = 0; e < 2; e++) {
-      float cx = (e == 0 ? 5.5 : 12.5) + uEye.x, cy = 3.0 + sy + uEye.y;
-      eye = min(eye, sdRoundBox(p, vec2(cx, cy), vec2(1.5, 1.0), 0.06));
-      eye = min(eye, sdRoundBox(p, vec2(cx - 1.0, cy + 2.0), vec2(0.5, 1.0), 0.06));
-      eye = min(eye, sdRoundBox(p, vec2(cx + 1.0, cy + 2.0), vec2(0.5, 1.0), 0.06));
+      vec2 d = p - vec2((e == 0 ? 5.5 : 12.5) + uEye.x, 3.0 + sy + uEye.y + 0.22);
+      const float R = 0.33, T = 0.42;
+      ea = min(ea, d.y <= 0.0 ? abs(length(d) - R) - 0.5 * T : length(vec2(abs(d.x) - R, d.y)) - 0.5 * T);
     }
+    eye = mix(eye, ea, clamp(uEye.w, 0.0, 1.0));
   }
   return vec3(max(d, -eye), eye, d);
 }

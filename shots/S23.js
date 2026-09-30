@@ -8,8 +8,12 @@
 // the district as it fills. The camera drifts sideways so the paper layers part.
 // The sky glints too (revision 1): star-shaped pinholes twinkle, one flares on each beat, and two
 // paper satellites cross slowly; each catches one warm glint (bar 62's downbeat, the last beat).
+// Revision 22 (Claire: the satellites lit sides to centre but flashed left to right): the ring travels
+// one way. On the bar-69 kick the rest light left to right along the arch, the ring's line drawing
+// with them, at the pulse's speed (one crossing per beat, entering the frame on the beat), and the
+// pulse carries on left to right. The bar-68 doublings stay scattered.
 import { createPaper, smooth, lerp, easeInOut } from '../sets/paper-kit/kit.js';
-import { cityScene, cityState, SHOT_N, ONLINE, setOnline, setSats, SATS, RING, ringAt, satAt } from '../sets/paper-kit/city.js';
+import { cityScene, cityState, SHOT_N, ONLINE, setOnline, setSats, SATS, RING, ringAt, satAt, arcT, lapAt } from '../sets/paper-kit/city.js';
 import { clamp, toScreen } from '../sets/paper-kit/kit.js';
 
 let E;
@@ -45,8 +49,21 @@ export function skyGlints(T, fr) {
   return { pins, sats };
 }
 
+// the camera drifts sideways; (revision 9) it tilts up through bars 68-69 so the sky, and the ring,
+// take the frame
+export function camAt(fl, n) {
+  const u = fl / (n - 1), tx = lerp(70, -70, easeInOut(u)), ty = -260 * easeInOut(clamp((fl - 140) / 90, 0, 1));
+  return { t: [tx, ty], pan: [0.55 * tx, 0.25 * ty], tz: 60 * u };
+}
+const SAT_CAM = (cam) => Object.assign({ Zc: 2400, zref: -180, c: [960, 540], t: [0, 0], tz: 0, pan: [0, 0] }, cam);
+// (R22) the arch's length fraction at the screen's left edge, with the camera at local frame fl
+function leftEdgeU(fl, n) {
+  const cam = SAT_CAM(camAt(fl, n)), x = (u) => toScreen(cam, ringAt(arcT(u)), -900)[0];
+  let lo = 0, hi = 0.5;
+  for (let k = 0; k < 40; k++) { const m = (lo + hi) / 2; if (x(m) < 0) lo = m; else hi = m; }
+  return (lo + hi) / 2;
+}
 export function s23State(T, fr) {
-  const u = fr.fl / (fr.n - 1);
   const lit = fr.fl / SHOT_N;                       // the district clock: codes are local frames / 288
   const v = T.envSmooth('vocals', fr.f, 6);
   // the glow behind the district rises as its buildings come online, and holds
@@ -54,10 +71,7 @@ export function s23State(T, fr) {
   // the reactor glows from the first frame, pulses on the beats, and flares as its light leaves it
   const reactor = 2.3 * (1 + 0.14 * T.pulse('beats', fr.f, 5) + 0.5 * Math.exp(-(((fr.fl - 5) / 5) ** 2)));
   const st = cityState({ lit, fill, breath: 0.92 + 0.16 * v, pre: 0, near: 0, reactor });
-  const tx = lerp(70, -70, easeInOut(u));
-  // revision 9: the camera tilts up through bars 68-69 so the sky, and the ring, take the frame
-  const ty = -260 * easeInOut(clamp((fr.fl - 140) / 90, 0, 1));
-  st.cam = { t: [tx, ty], pan: [0.55 * tx, 0.25 * ty], tz: 60 * u };
+  st.cam = camAt(fr.fl, fr.n);
   const g = skyGlints(T, fr);
   st.sky = { starD: 0.14, moon: [330, 150, 13], pins: g.pins, sats: g.sats };
   return st;
@@ -70,7 +84,7 @@ export function s23State(T, fr) {
 // R20 (Claire): the satellites keep apart (48, evenly spaced), and the pulse runs along the ring left to
 // right, one beat per crossing, so it reads as an orbit.
 function drawGlints(g, s, st, fl, beats) {
-  const cam = Object.assign({ Zc: 2400, zref: -180, c: [960, 540], t: [0, 0], tz: 0, pan: [0, 0] }, st.cam);
+  const cam = SAT_CAM(st.cam);
   const P = (t) => toScreen(cam, ringAt(t), -900);
   let n = 0;
   g.lineCap = 'round';
@@ -86,9 +100,10 @@ function drawGlints(g, s, st, fl, beats) {
       g.beginPath(); g.moveTo(segs[k][0][0] * s, segs[k][0][1] * s); g.lineTo(segs[k + 1][0][0] * s, segs[k + 1][0][1] * s); g.stroke();
     }
   }
-  // the pulse: from the left end to the right along the closed ring, one beat per crossing
-  const closed = SATS.line(0.5) + 6, ring = beats.filter((b) => b >= closed - 2);
-  const beatGlint = (u) => { let v = 0; for (const b of ring) { const at = b + 18 * u, d = fl - at; if (d > -3 && d < 12) v = Math.max(v, Math.exp(-(d * d) / 4.5)); } return v; };
+  // the pulse: left to right along the closed ring, one crossing per beat after the kick's own lap
+  // (R22: on the same laps as the kick's sweep, entering the frame on each beat)
+  const ring = beats.filter((b) => b > SATS.kick + 1);
+  const beatGlint = (u) => { let v = 0; for (const b of ring) { const at = lapAt(b, u), d = fl - at; if (d > -3 && d < 12) v = Math.max(v, Math.exp(-(d * d) / 4.5)); } return v; };
   for (let i = 0; i < RING.n; i++) {
     const a = fl - SATS.at[i];
     if (a < 0) continue;
@@ -119,8 +134,10 @@ export default {
     // revision 8: the city comes online building by building on the snare roll (65-72)
     const f0 = ctx.shot.f0, f1 = ctx.shot.f1;
     const on = setOnline(ctx.T.events('snares').filter((f) => f >= f0 && f < f1 - 6).map((f) => f - f0), 144);
-    setSats(144, 216);                               // bar 68 doubling, closing on the bar-69 kick (4907)
-    ctx.log(`S23 online: district ${on.district.join(', ')}; skyline ${on.mid.join(', ')}`);
+    // bar 68 doubling, then (R22) the bar-69 kick's sweep (4907) from the screen's left edge
+    const u0 = leftEdgeU(216, f1 - f0);
+    setSats(144, 216, u0);
+    ctx.log(`S23 online: district ${on.district.join(', ')}; skyline ${on.mid.join(', ')}; the sweep enters at u ${u0.toFixed(3)}`);
     glc = document.createElement('canvas'); glc.width = ctx.W; glc.height = ctx.H;
     g2 = ctx.canvas.getContext('2d');
     E = createPaper(glc, cityScene(), { k: ctx.scale, log: ctx.log });

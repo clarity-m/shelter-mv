@@ -189,21 +189,22 @@ export function createShelter(canvas, opts = {}) {
 // Clawd blinks and twice glances up at her. Its first frame (fe 5771) is S31's opening view exactly
 // as before revision 1: presence 0, lean 0, eyes open and centred.
 export const S31_F0 = 5771;
-// (revision 21, Claire) exactly five eye motions, each given room to ring: a blink (5922); the look, his
-// eyes a whole column toward her as she turns to him (5941); the ^^, the canonical happy emote, formed
-// in that same looking position and held longest (5955-5997); the return to rest (5997); a blink
-// (6032). Nothing else in between; she leans back on 6002.
-const BLINKS = [5922, 6032], LOOK = [5941, 5997], ARCH = [5955, 5997];
+// (revision 22, Claire: soft and natural, eased like cut 19's eyes) The shared moment in bars 83-84: a
+// blink (5922); as she turns to him he looks up at her (5938-5946); he smiles, his eyes easing into
+// small arches, ^^ (5953-5960), held; the smile eases out (5990-5997) and he looks back (5999-6009);
+// a blink (6036). She leans back on 6002. Every change is eased; nothing else in between.
+const BLINKS = [5922, 6036];
 export function s31Anim(fe) {
   const sm = (a, b, x) => { const t = clampP((x - a) / (b - a)); return t * t * (3 - 2 * t); };
   let open = 1;
-  for (const b of BLINKS) { const d = Math.abs(fe - b); if (d < 2.5) open = Math.min(open, d < 1 ? 0 : 0.35 * (d - 0.5)); }
-  const looking = fe >= LOOK[0] && fe < LOOK[1];
+  for (const b of BLINKS) open = Math.min(open, 1 - Math.exp(-Math.pow((fe - b) / 1.4, 2)));
+  const look = sm(5938, 5946, fe) * (1 - sm(5999, 6009, fe));
+  const smile = sm(5953, 5960, fe) * (1 - sm(5990, 5997, fe));
   return {
     presence: sm(S31_F0 + 6, S31_F0 + 80, fe),
     lean: sm(6002, 6044, fe),
     turn: 0.95 * sm(5937, 5951, fe) * (1 - sm(6004, 6024, fe)),
-    eyes: { dx: looking ? -1 : 0, dy: 0, open, arch: fe >= ARCH[0] && fe < ARCH[1] },
+    eyes: { dx: -0.85 * look, dy: -0.6 * look, open, arch: smile },
   };
 }
 export const S31_LAST = Object.assign({ time: 150 + 6189 / 30, crane: 1 }, s31Anim(6189));

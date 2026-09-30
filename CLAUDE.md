@@ -62,6 +62,37 @@ them. Key everything to bars and timestamps instead.
 - Grid: 100 BPM, bar 2.4 s = 72 frames, bar b starts at 0.38 + 2.4(b-1) s.
 
 ## Status
+- 2026-09-30: CUT 21 (Revision 22, Claire's `viewers-notes-4.txt` on cut 20). `render/briefs/R22-common.md` has the
+  plan, and `render/revise22_shots.py` the bars. The film is `out/film.mp4` (= `out/film_cut21.mp4`); there are 32 shots.
+  - **How Claire writes notes now:** visual notes state intent (find the best change); musical-timing notes are
+    exact instructions with the rationale (follow them to the letter).
+  - **Hook 1 in her alternate order (she picked it from the A/B):**
+
+    | Shot | Bars | Entry |
+    |---|---|---|
+    | S04 | 9-10 | |
+    | S06 | 11 | hard cut |
+    | S07 | 12 | xin 6 |
+    | S05 | 13-14 | xin 6 |
+    | S08 | 15-16 | hard cut |
+
+    - S06: the chord shows the empty rack, the cards slide in on the beat-2 and beat-3 kicks (the bar sounds
+      chord-kick-kick-kick), and both pulse on the beat-4 kick.
+    - No freezes, slow motion or hushes at the bass stops (9.4, 13.4, 14.4); the counters land on 131 072 at
+      S05's last frame.
+    - S05: S07's arcs gather into the one arc that begins the loss curve, and the curve still falls in one sweep.
+    - S04 ends on a chop bloom for the hard cut.
+  - **S01:** the cursor draws the whole outline with its tip in one clockwise stroke; each fan's paper folds in behind
+    it, landing on the chops 44, 84, 116 and 147.
+  - **S11:** the cursor keeps one angle. Its reaction to his climb is a rise that settles; the tilt is gone.
+  - **S19:** the cursor moves on one continuous C1 path, and its only hold is the copy.
+  - **S23:** on the bar-69 kick the satellites, the ring's line and the pulse all travel left to right.
+  - **S31:** eased, continuous eye motion (as in cut 19) and a small vector ^^ inside each eye.
+  - **The cursor's language:** one angle everywhere, eased glides with gentle curves, holds only where the story needs
+    them (with an idle hover), and emotion from translation and timing.
+  - Verified: 6532 frames, 32/32 shots, A/V +0.0 ms, 0 single-frame spikes, 0 short bursts. Every continuity cut is at
+    most 3.7; the flagged jumps are the intended ones, and S04's 659 snap is gone.
+  - Cut 20 is in git (7120f8a) and `out/film_cut20.mp4`.
 - 2026-09-30: CUT 20 (Revision 21, Claire's `viewers-notes-3.txt` plus chat notes: fixes). The film is `out/film.mp4`
   (= `out/film_cut20.mp4`); there are 31 shots, in cut 18's early order again (S07 removed; S06 is 13-14).
   - **S01:** cut 18's fan-by-fan unfold; each ray's outline stands alone for 7 frames before its
@@ -78,7 +109,7 @@ them. Key everything to bars and timestamps instead.
     ^^; the birds leave the frame.
   - **The A/B of Claire's alternate hook-1 order** (S04, S06 one bar, S07, S05, S08):
     `out/ab/hook1_alt.mp4` against `out/ab/hook1_cut18order.mp4` (bars 9-16 with audio;
-    `render/ab_hook1.py`). S05, S06 and S07 work in both orders. Awaiting her pick.
+    `render/ab_hook1.py`). S05, S06 and S07 work in both orders. She picked the alternate (cut 21).
   - Verified: 6532 frames, A/V +0.0 ms, 0 single-frame spikes, 0 short bursts; every continuity cut
     is at most 3.7.
   - Cut 19 is in git (0b236b6) and `out/film_cut19.mp4`.
@@ -423,7 +454,7 @@ them. Key everything to bars and timestamps instead.
     a refined sail (S29, S30).
 - `out/film.mp4` is the current cut; `out/shots_v1_firstcut.json` is cut 1's shot
   list.
-- Dissolves (shots.json `xin`) are on S03, S05 and S20. When the previous shot
+- Dissolves (shots.json `xin`) are on S03, S07 and S05. When the previous shot
   changes, re-render the dissolving shot, since it reads the previous shot's last
   frame at render time.
 - Agents per set are listed in `render/briefs/`. All agents are finished; none

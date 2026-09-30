@@ -44,11 +44,8 @@ export function stackState(T, W, f, opts) {
   const fireAll = new Set(opts.fireAll || []);
   const events = T.events('chops').map((fc) => ({ f: fc, level: chopLevel(fc), all: fireAll.has(fc) }))
     .concat(opts.fires || []);
-  // opts.defer [a, b]: events in [a, b) fire at b instead (S04: a chop inside the held breath fires
-  // fresh on the snap back)
-  const dfr = opts.defer;
   for (const ev of events) {
-    const fc = dfr && ev.f >= dfr[0] && ev.f < dfr[1] ? dfr[1] : ev.f;
+    const fc = ev.f;
     const age0 = f - fc;
     if (age0 < 0 || age0 > 48 || fc < (opts.from ?? 0) || ev.f >= (opts.until ?? Infinity)) continue;
     const l0 = Math.min(n, 1 + ev.level + (opts.levelShift ?? 0));

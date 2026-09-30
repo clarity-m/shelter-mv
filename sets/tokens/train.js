@@ -14,7 +14,7 @@ const LEVEL = { 60: 0, 62: 1, 64: 2, 67: 3, 69: 4 };
 export const chopLevel = (fc) => LEVEL[CHOP_MIDI[fc]] ?? 0;
 
 export const F_START = 299;          // bar 5 downbeat: training starts
-export const F_END = 1006;           // R20: S07's bass stop on 14.4 freezes the run here, on 131 072
+export const F_END = 1018;           // R22: S05's last frame, the end of hook 1 (131 072 / 2.8416)
 export const STEP_END = 131072;
 
 // Stream speed in chars per frame (at Clawd, in text space).
@@ -43,13 +43,8 @@ export function headAt(f) {
   return HEAD[i] * (1 - a) + HEAD[i + 1] * a;
 }
 
-// The frame the picture shows: inside a bass stutter-stop everything holds on the stop's first frame.
-export function holdFrame(T, f) {
-  const s = T.since('stops', f);
-  return s < T.data().events.stop_len ? f - s : f;
-}
 
-// Steps: 0 on the bar-5 kick, 131 072 on S07's 14.4 freeze (the style frame's HUD values).
+// Steps: 0 on the bar-5 kick, 131 072 on the hook's last frame (the style frame's HUD values).
 export function stepAt(f) {
   const u = clamp((f - F_START) / (F_END - F_START));
   return STEP_END * Math.pow(u, 2.6);

@@ -2,14 +2,15 @@
 
 **What.** Black card over a lamp-lit tissue. The hole is Clawd's heart square (72 px), eleven ray flaps (`lib/spark.js`) and Clawd's cells, each flap hinged at its far end.
 
-**S01 (cut 18's unfold; R21, Claire: "just slightly delay the fill in").** The square lights on chop 0 (11). The humans' paper cursor pulls the rays open fan by fan on the chops (30, 44, 84, 106), each fan's rays following three frames apart.
-- **The delay.** Each ray's outline is cut first: a thin line of light traced round it in three frames, standing alone for seven before its fill pours in behind the dragged fold.
-- The card no longer spins (R20). The cursor is the lighter dusk slate with a cool edge, so it reads on the black card.
+**S01 (R22; Claire: "the cursor draws the outline, the paper folds in after").** The square lights on chop 0 (11).
+- **The pen.** The humans' cursor draws the outline with its tip in one steady stroke, clockwise from the top (20-138), leaving light only where the tip has passed; its angle never changes.
+- **The folds.** Behind the pen the paper folds in fan by fan (the top ray, then 4, 3 and 3 rays): each fan's flaps swing in about their creases, accelerating, and land on a chop (44, 84, 116, 147) with a flash.
+- The cursor lifts out between the top rays by 153. No spin.
 
-**S02 (155-316).** Bar 3 folds the rays shut from the top as Clawd's cells ripple open. In bar 4 the cursor comes back, hovers and settles (227-253), and types `train(corpus)` (253-289, keys on the chops at 253, 271 and 289). It lifts a moment, then clicks on the bar-5 kick (299). The burst floods the frame through the fly-through into the warm wash at 316, which S03 dissolves from.
+**S02 (155-316).** Bar 3 folds the rays shut from the top as Clawd's cells ripple open. In bar 4 the cursor comes back, hovers and settles (227-253), and types `train(corpus)` (keys on the chops, 253-289). It lifts a moment, then clicks on the bar-5 kick (299). The burst floods the frame through the fly-through into the warm wash at 316, which S03 dissolves from.
 
-**Technique.** WebGL2 passes: the hole's SDF and flaps, the air glow and shafts, the cursor. Opt-in passes add to the warm scalar: `st.kerf` (the outlines; also a fill glow and a pen, unused now) and `st.burst` (R19). `st.rotC` sets Clawd's frame, `st.vig` the vignette. Without these, every program is the original.
+**Technique.** WebGL2 passes: the hole's SDF and flaps, the air glow and shafts, the cursor. Opt-in passes add to the warm scalar: `st.kerf` (the outline, the pen and the landing flash) and `st.burst` (R19). `st.rotC` sets Clawd's frame, `st.vig` the vignette. Without these, every program is the original.
 
-**Checks.** S02 (155-316) and S33 (6350-6520) are bit-identical to cut 19. S01→S02 is 0.7 and S02→S03 is 1.1. The glitch scan flags 301-304: the flood, one monotonic sweep.
+**Checks.** S02 (155-316) and S33 (6350-6520) are bit-identical to cut 20. S01→S02 is 0.7 and S02→S03 is 1.1. The glitch scan flags 301-304: the flood, one monotonic sweep.
 
-**Page time.** S01 0.09 s/frame; S02 0.17 s (shared GPU).
+**Page time.** S01 0.06 s/frame; S02 0.17 s (shared GPU).

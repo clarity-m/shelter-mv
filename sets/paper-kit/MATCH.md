@@ -4,7 +4,13 @@ The positions are screen pixels in 1920x1080 (y down), at the outside shot's FIR
 twin's LAST frame puts its light on these marks. Revision 8 (2026-09-29 00:56) is at the top; the
 older targets it retired are listed at the end.
 
-## Revisions 20-21: S06 -> S07, the rack's rows (for agent T)
+## Revisions 20-22: S06 -> S07, the rack's rows (for agent T)
+
+**Revision 22:** Claire picked the alternate order, so the film has S06 at bar 11 (731-802), with S07
+dissolving from its last frame, 802. The cards now go in on beats 2 and 3, and the beat-4 kick
+pulses through both. The rack settles over the last 10 frames. The last frame is the R21 one-bar
+frame below: against `out/stills/match_S06_last_r21.png` the mean difference is 0.9 and the p99 is 4
+(0-255). The rows and both lit bays are unchanged.
 
 **Revision 21:** the main cut has S06 at bars 13-14, hard-cutting to S08, and no S07. For the lead's
 A/B (S06 at bar 11, frames 731-802, then S07 at bar 12), S06's code is length-agnostic. At one bar
@@ -224,3 +230,4 @@ them.
 - 2026-09-30 04:05 (revision 20): S06 -> S07's rows and the lit vents at frame 946 (for T).
 - 2026-09-30 11:55 (revision 21): S06 is length-agnostic. Its one-bar ending (the A/B's frame 802) is the
   same view with bay B's card lit too.
+- 2026-09-30 14:40 (revision 22): S06 at bar 11 in the film; its last frame (802) is unchanged.

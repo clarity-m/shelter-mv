@@ -1,0 +1,14 @@
+S31: earlier, the motion of the eyes was smoother. also, since this style is vectorized, the ^^ can be smaller to fit the actual eye size. this is overcorrected, sorry, again this is on me, i was too specific - i'll write notes in terms of intent, unless it's a musical timing thing, where i'll write specific instructions and rationale. 
+
+S01: ideally, the cursor draws the outline, the paper folds in after
+
+S11: this is the only part where the cursor tilts. it seems inconsistent. the cursor moving upwards or right could convey the same message. though, cursor moving directly right could imply fear.
+
+S19: cursor pauses a few times, the motion seems stuttered. arcing along a parabola could make motion more natural, but no other cursor scenes have parabolic motion, so it could feel inconsistent.
+
+S23: satellites light up sides->center, but flash left->right, which feels inconsistent. 
+
+A/B: i prefer the alt hook over cut18 style. some edits, since the pacing/music beats are slightly different
+ - gpu slots should go in on beat 2 and 3, rather than 1 and 3, since the music in this bar effectively *sounds* like chord-kick-kick-kick this would flow better
+ - remove freeze frame/slow-mo beat drops, since they interrupt the flow (they're present in the first attention arcs scene, and the loss curve)
+ - the lead-in to the loss curve should be adjusted (the attention arc that begins the curve), since the preceding frame is different

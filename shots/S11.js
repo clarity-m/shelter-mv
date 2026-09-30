@@ -13,7 +13,7 @@
 //    its ghost, 34 degrees. The cursor is the one thing that is not reset: it has not moved. As he
 //    sets off it starts to help, stops itself, and goes back to waiting.
 //  - bar 29 downbeat (the snare returns): he tops the steep ramp on his own. Arms up; the surface he
-//    climbed flashes. The cursor starts back along an arc, a little startled, then settles, pleased;
+//    climbed flashes. The cursor rises, a little startled, then settles, pleased (R22: no tilt);
 //    he glances up at it. The camera rises to his level and follows him along the plateau.
 //  - bars 29-30: on the backbeat snares (T.events('snares')) the world changes around him, twice,
 //    each more saturated; the second is the ladder's hill, where he stops on the last snare before
@@ -136,34 +136,36 @@ function poseAt(fl, s, lean, cur) {
 // for the whole slope scene. His episodes reset; it does not. Each move and pause says something:
 // it comes to watch; it waits through his fall; it helps once, then steps back to its place; it is
 // still there, unmoved, when his episode resets; it starts to help again and holds itself back; when
-// he makes it alone it starts back, a little startled, then settles, pleased; it stays a while,
-// watching him go on; then it lets go, slowly.
+// he makes it alone it rises, a little startled, then settles, pleased; it stays a while, watching
+// him go on; then it lets go, slowly.
+// R22 (Claire: this was the only place the cursor tilted): the cursor keeps one angle throughout, as
+// it does everywhere else; its reaction to his climb is carried by the move alone, a quick rise
+// (up and a touch right, never straight right, which would read as backing away) that settles.
 function cursorAt(fl) {
   if (fl < -6 || fl > 346) return null;
   const W = WATCH, T1 = topOf(TH1);
-  let x = W[0], y = W[1], rot = -0.07, press = 0;
+  let x = W[0], y = W[1], press = 0;
+  const rot = -0.07;
   if (fl < 16) {                                                     // it comes down to watch his first try
     const u = easeOut(clamp((fl + 6) / 22));
-    x = W[0] + 70 * (1 - u); y = lerp(-260, W[1], u); rot = -0.07 - 0.12 * (1 - u);
+    x = W[0] + 70 * (1 - u); y = lerp(-260, W[1], u);
   } else if (fl >= 64 && fl < 118) {                                 // it takes the handle and eases the ramp
     const T = topOf(theta(fl)), u = easeInOut(clamp((fl - 64) / 22));
-    x = lerp(W[0], T[0] + 4, u); y = lerp(W[1], T[1] + 2, u); rot = lerp(-0.07, -0.05, u);
+    x = lerp(W[0], T[0] + 4, u); y = lerp(W[1], T[1] + 2, u);
     press = smoothstep(84, 90, fl) * (1 - smoothstep(113, 118, fl));
   } else if (fl >= 118 && fl < 174) {                                // back to its place, and it stays there
     const u = easeInOut(clamp((fl - 118) / 22));
-    x = lerp(T1[0] + 4, W[0], u); y = lerp(T1[1] + 2, W[1], u); rot = lerp(-0.05, -0.07, u);
+    x = lerp(T1[0] + 4, W[0], u); y = lerp(T1[1] + 2, W[1], u);
   } else if (fl >= 174 && fl < 208) {                                // it starts to help, stops itself, waits
     const go = easeOut(clamp((fl - 174) / 9)) * (1 - easeInOut(clamp((fl - 188) / 20)));
-    x = lerp(W[0], T34[0] + 4, 0.3 * go); y = lerp(W[1], T34[1] + 2, 0.3 * go); rot = -0.07 - 0.06 * go;
+    x = lerp(W[0], T34[0] + 4, 0.3 * go); y = lerp(W[1], T34[1] + 2, 0.3 * go);
   } else if (fl >= 208) {
-    // he is up (216): it starts back along an arc, a little startled, and settles, pleased; it stays
-    // with him through the first change of world; then it lets go, slowly, off the top of the frame
+    // he is up (216): it rises, a little startled, and settles, pleased; it stays with him through
+    // the first change of world; then it lets go, slowly, off the top of the frame
     const a1 = easeOut(clamp((fl - 218) / 8)), a2 = easeInOut(clamp((fl - 228) / 18));
-    const phi = (72 * a1 - 38 * a2) * D2R, R = 62;
-    x = W[0] + R - R * Math.cos(phi); y = W[1] - R * Math.sin(phi);
-    rot = -0.1 * smoothstep(208, 214, fl) - 0.07 * (1 - smoothstep(208, 214, fl)) + 0.36 * a1 - 0.3 * a2;
+    x = W[0] + 16 * a1 - 4 * a2; y = W[1] - 66 * a1 + 32 * a2;
     const v = smoothstep(296, 346, fl);
-    x += 220 * v; y -= 760 * v; rot += 0.12 * v;
+    x += 220 * v; y -= 760 * v;
   }
   // a gentle hover whenever it is only watching
   const idle = smoothstep(14, 22, fl) * (1 - smoothstep(60, 66, fl)) + smoothstep(136, 146, fl) * (1 - smoothstep(170, 176, fl))

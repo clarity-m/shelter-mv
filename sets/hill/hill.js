@@ -390,7 +390,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       uRes: [W, H], uK: K, uGeo: [x0, y0 - lift, Upx, depth], uForm: form, uSit: c.sit || 0, uGlow: c.glow ?? 1,
       uRays: c.rays ?? 1, uAlpha: c.alpha ?? 1, uEyeLight: c.eyeLight ?? 0.5,
       uGridOn: grid ? 1 : 0, uGB: grid || new Int32Array(24),
-      uEye: [c.eyes?.dx || 0, c.eyes?.dy || 0, c.eyes?.open ?? 1, c.eyes?.arch ? 1 : 0],
+      uEye: [c.eyes?.dx || 0, c.eyes?.dy || 0, c.eyes?.open ?? 1, +(c.eyes?.arch || 0)],
     }, { uAux: T.aux });
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(Math.max(0, bx0), Math.max(0, H - by1), Math.max(1, bx1 - bx0), Math.max(1, by1 - by0));

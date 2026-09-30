@@ -1,26 +1,25 @@
-// S07's state as a pure function of the frame, keyed to its own shot (start f0, end f1), so it works
-// wherever the shot list puts it (the alternate hook-1 order has it at bar 12, between the one-bar
-// rack and S05) and so S05 can open on its last frame.
+// S07's state as a pure function of the frame, keyed to its own shot (start f0, end f1): bar 12 in the
+// final hook-1 order, between the rack (S06) and the loss curve (S05, which grows out of its last
+// frame).
 // - It opens on S06's last frame (agent O's MATCH.md): six layer rows on the rack's six rows (121.2 px
 //   apart), the token line on the next row down, Clawd's column under the lit vents (x 981.5), at
 //   zoom 1 (his cells stay 3 px). The rows of the lit cards (bays A and B: layers 5 and 2) carry
 //   their warm light through the dissolve. Held still for the xin.
 // - One pull-back closes the rows into a stack that grows a layer on each of beats 2-4 (to nine),
 //   with attention firing faster: the whole stack on every beat and chop, pairs on the eighths.
-// - A bass stop inside the shot is a held breath (as S04); with none (bar 12) it flows straight on.
+// R22: no stop treatments anywhere in the hook; bar 12 has no bass stop, and S07 flows straight on.
 import { HZ, SX } from './world.js';
 import { stackState } from './stack.js';
-import { breathAt } from './hook.js';
-import { hash, smoothstep, clamp, easeOut, easeInOut, lerp } from '../../lib/util.js';
+import { headAt } from './train.js';
+import { hash, clamp, easeOut, easeInOut, lerp } from '../../lib/util.js';
 
 export const MATCH07 = { gap: 121.2, x: 981.5, y0: 898.2, hot: [5, 2], hw: 165 };
 const N = 9;
 
-// fr_f is the real frame; it may lie past the shot (S05 keeps this stack running while it falls).
+// fr_f is the frame; it may lie past the shot (S05 keeps this stack running while it falls).
 export function s07State(T, W, fr_f, sh) {
   const f0 = sh.f0, f1 = sh.f1, n = f1 - f0;
-  const br = breathAt(T, fr_f, f0, f1);
-  const f = br.fe, fl = f - f0;
+  const f = fr_f, fl = f - f0;
   const m = easeInOut(clamp((fl - 5) / 20));
   const cam = {
     z: lerp(1.0, 0.9, m) + 0.03 * easeInOut(clamp((fl - 25) / 34)),
@@ -49,8 +48,27 @@ export function s07State(T, W, fr_f, sh) {
   }
   st.fired = st.fired.filter((h) => L.a[h.lq] > 0.5 && (h.lq === 1 || L.a[h.lq - 1] > 0.5));
   return {
-    cam, st, f, fl, n, held: br.b, sinceSnap: br.sinceSnap,
+    cam, st, f, fl, n,
     hotAmp: 1.4 * (1 - easeOut(clamp(fl / 16))),
     rot: 0.859 - 0.004 * (n - 1 - fl),                          // ends where S05's rays start
   };
+}
+
+// The attention arcs on S07's last frame, frozen in world space, for S05 to gather into its loss
+// curve: token indices of each key and query, the layer heights they span, their weight, and how far
+// each had drawn. Positions come from `xAt(i)` (the lens at S07's last head).
+export function s07LastArcs(T, W, sh) {
+  const fe = sh.f1 - 1;
+  const s = s07State(T, W, fe, sh);
+  const L = s.st.layers, out = [];
+  for (const h of s.st.fired) {
+    if (h.amp < 0.04) continue;
+    for (const kk of h.keys) {
+      out.push({
+        ki: kk.i, qi: h.q, yk: L.y[h.lq - 1] - 2, yq: L.y[h.lq] - 2, w: kk.w, amp: h.amp, age: h.age,
+        seed: h.fc,
+      });
+    }
+  }
+  return { arcs: out, head: headAt(fe) };
 }

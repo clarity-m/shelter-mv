@@ -5,25 +5,25 @@
 - `rack.js` gained `beatWave(T, f, lead)` (R19). `fleet3d.js` is unchanged (D's voyage uses it).
 - `datacenter.js` is S35's aisle and campus (unchanged since R15).
 
-**Revision 19.**
-- **S06 and S16:** the main pulse peaks on beats 1 and 3, with a faint echo on 2 and 4.
-- **S23:** the satellites flare, then twinkle; the closed ring glows.
+**Revisions 19-20.**
+- **S16:** the main pulse peaks on beats 1 and 3, with a faint echo on 2 and 4.
 - **S26:** the slit slides open in one move.
-- **S29:** an ignition bloom on 73.1; brighter lasers, 1.4x sails; the push accelerates to the cut.
-
-**Revision 20.**
-- **S23:** 48 evenly spaced satellites; the ring's pulse crosses left to right.
-- **S29:** the ribbon's pulses pass behind the climber.
+- **S29:** an ignition bloom on 73.1; brighter lasers, 1.4x sails; the push accelerates to the cut;
+  the ribbon's pulses pass behind the climber.
 
 **Revision 21.**
-- **S06** reads its bars, beats and stops from its own range, so it works at any length. Card 1
-  seats and lights on beat 1, and card 2 on beat 3. In a second bar both cards pulse with the rack
-  on 1 and 3, and the stops hush them. At one bar (the A/B's bar 11) it settles to rest with both
-  cards lit, for S07 (MATCH.md).
-- **S29:** the sails light on bar 76's triplet grid (local 228 + 6k), in groups of 3, 1, 2 / 8, 3,
-  4 / 20, 7, 9 / 64, 10, 10. The accented steps get the big groups and a brighter flash, and every
-  group is in view. The dozen sails out of view and the hero light on the last accent (pushed
-  earlier, the hero would cross the formation).
+- **S29:** the sails light on bar 76's triplet grid (local 228 + 6k), with the big groups and a
+  brighter flash on the accents. The hero lights last (pushed earlier, it crosses the formation).
+
+**Revision 22.**
+- **S06** is bar 11 and reads its beats from its own range. The chord on beat 1 shows the rack; the
+  cards seat and light on the beat-2 and beat-3 kicks; the beat-4 kick pulses through both, and the
+  rack's cascade rides the kicks. No stop treatment. It settles over the last 10 frames, and the last
+  frame is unchanged for S07 (MATCH.md).
+- **S23:** 48 evenly spaced satellites; the bar-68 doublings stay scattered. On the bar-69 kick the
+  rest light left to right, with the ring's line drawing behind them, at the pulse's speed. The
+  pulse then carries on left to right, one lap a beat (`city.js` `lapAt`), entering the frame on
+  each beat.
 
 **Known issues.**
 - S29 holds three GL contexts and S35 two.

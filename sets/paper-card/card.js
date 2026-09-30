@@ -325,7 +325,8 @@ void main(){
 // Opt-in with st.kerf = { draw (the drawing's progress: k + s, ray j drawn to s = draw - drawK[j]), drawK[11],
 // geom (Float32Array 44: per ray u0a, u0b, sa, sb, where its sides come free and the tip's span of s), line
 // (the kerf's light), width (its half-width, screen px), fill[11] (each ray's fill front along it, fraction of
-// its length), fillI, pen [x, y] (card px, the spark's frame), penI, penR (screen px) }. One pass after the
+// its length), fillI, pen [x, y] (card px, the spark's frame), penI, penR (screen px), flash[11] (R22: the light
+// arriving in each ray as its flap lands) }. One pass after the
 // scene, before the cursor, adds to the warm scalar W:
 //  - the kerf: the starburst's outline where the pen has passed, a thin cut showing the lamp behind it;
 //  - the fill: each closed ray glowing through its paper, the light running out from the hub;
@@ -336,7 +337,7 @@ const KERF_FS = HDR + NOISE + PAPER + `
 uniform sampler2D uL, uB; uniform vec2 uRes, uCC, uTC; uniform float uSc, uMC, uMT, uRot, uCell;
 uniform vec4 uRay[11]; uniform vec4 uRayB[11];   // as the scene's: axis, length, r1 | r2, open, angle, rank
 uniform vec4 uKerfG[11];                         // u0a, u0b, sa, sb
-uniform float uDrawK[11], uFill[11];
+uniform float uDrawK[11], uFill[11], uFlash[11];
 uniform vec4 uKerf;                              // draw, line, width (screen px), fill's light
 uniform vec4 uPen;                               // x, y (card px), glow, radius (screen px)
 uniform float uLight; uniform vec4 uLamp;
@@ -390,6 +391,8 @@ void main(){
     float flap = 1.0 - smoothstep(0.0, 0.02, 1.0 - (1.0 - o)*0.88 - u);
     Wk += uKerf.w*lamp*front*mix(1.0 - o, 1.0, flap)*(0.55 + 0.45*paperT(w*1.3, 7.0));
   }
+  // (R22) the landing: the light arriving in a ray as its folded flap lands (the lamp through the tissue surging)
+  if (rOwn >= 0 && sq > 0.0 && uFlash[rOwn] > 0.0) Wk += uFlash[rOwn]*lamp*(0.58 + 0.42*paperT(wt*1.15, 3.0));
   // the pen: the fresh cut glowing at the cursor's tip
   float dp = length(w - uPen.xy)*uMC;
   Wk += uPen.z*exp(-dp*dp/(uPen.w*uPen.w))*(0.6 + 0.4*lamp);
@@ -481,7 +484,7 @@ export function createCard(canvas, log = () => {}) {
     if (st.kerf) {                                 // (revision 20) the outline drawn, the rays filling; under the cursor
       if (!pKerf) { pKerf = K.program(KERF_FS, 'card-kerf'); tScene5 = K.target(W, H, 2); }
       const k = st.kerf;
-      K.setU(pKerf, Object.assign({}, common, { uRes: [W, H], uKerfG: k.geom, uDrawK: { f1: k.drawK }, uFill: { f1: new Float32Array(k.fill) },
+      K.setU(pKerf, Object.assign({}, common, { uRes: [W, H], uKerfG: k.geom, uDrawK: { f1: k.drawK }, uFill: { f1: new Float32Array(k.fill) }, uFlash: { f1: new Float32Array(k.flash || 11) },
         uKerf: [k.draw, k.line, k.width, k.fillI], uPen: [k.pen[0], k.pen[1], k.penI, k.penR] }));
       K.tex(pKerf, { uL: sc2.texs[0], uB: sc2.texs[1] }); K.draw(pKerf, tScene5); sc2 = tScene5;
     }
