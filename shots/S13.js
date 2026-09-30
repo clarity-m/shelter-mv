@@ -21,7 +21,8 @@ const G = {}; for (const k of Object.keys(GRIDS)) G[k] = solidGrid(GRIDS[k]);
 const TINY = 0.001;
 // the clicks (local frames: the kicks of bars 33-36) and what each makes; `p` is where it clicks
 const CLICKS = [
-  { at: 19, code: 'ground.raise()', p: [0, 0, -8], disc: 17 },
+  { at: 1, code: 'ground.raise()', p: [1.3, 0.05, 1.1] },            // revision 19: on 33.1, with the extrusion: the shock wave
+  { at: 19, code: 'hill.add()', p: [22, 0, -30], disc: 20 },
   { at: 37, code: 'hill.add()', p: [-24, 0, -32], disc: 20 },
   { at: 55, code: 'hill.add()', p: [-4, 0, -66], disc: 22 },
   { at: 73, code: 'river.carve()', p: [20, 0, -44], disc: 21 },
@@ -64,7 +65,9 @@ export default {
     // (the front's width is a function of its radius only, never less than the first ring's, so the
     // rise mask only ever grows and a new extension never lowers land that has already risen; the
     // crest travels with the front and scales with its radius, so it never reaches the near field)
-    let R = lerp(0.4, 6.5, easeOut(fe / 10)), crest = 0.45 * Math.exp(-fe / 7) * ss(0, 3, fe);
+    // revision 19: the first click punches the flat field into 3D: a ring of facets races out from him
+    // like a shock wave, its crest high at first and settling as it goes (frame 0 is S12's hand-off)
+    let R = 0.4 + 44 * easeOut(clamp((fe - 1) / 16)), crest = fe >= 1 ? 1.7 * Math.exp(-(fe - 1) / 6) * ss(0, 2, fe - 1) : 0;
     for (const c of CL) {
       if (!c.R || at(c) < 0) continue;
       const R0 = R, u = done(c, c.R > 1000 ? 18 : 14);
@@ -97,12 +100,12 @@ export default {
     // (revision 15: a click on the ground sits on the finished land's surface, never under it)
     const scr = (p) => projectPx(B0, p[1] < 0.05 && Math.hypot(p[0], p[2]) > 2 ? [p[0], Math.max(0, St.V.heightAt(p[0], p[2])) + 0.3, p[2]] : p);
     // --- where the cursor is, and what it is doing (screen px, 1920 wide)
-    let active = CL.findIndex((c) => fe < c.at + 4); if (active < 0) active = CL.length - 1;
+    let active = CL.findIndex((c, i) => fe < c.at + (i === 0 ? 12 : 4)); if (active < 0) active = CL.length - 1;
     const cursorAt = (ff) => {
       // it comes down from above in the first beat, then glides to each click point in turn
       let i = 0; while (i < CL.length - 1 && ff >= CL[i].at + 2) i++;
       const c = CL[i], prev = i ? CL[i - 1] : null;
-      const tgt = scr(c.p), from = prev ? scr(prev.p) : [tgt[0] + 180, -260, 1];
+      const tgt = scr(c.p), from = prev ? scr(prev.p) : tgt;            // (the first click: it is there on the downbeat)
       const t0 = prev ? prev.at + 2 : 4, t1 = c.at - 2;
       const e = easeInOut(clamp((ff - t0) / Math.max(4, t1 - t0)));
       const cl = (q) => [clamp(q[0], 110, 1800), clamp(q[1], 120, 990)];
@@ -134,7 +137,7 @@ export default {
     if (at(cTrain) >= 0 && at(cTrain) < 20) { const t = at(cTrain); rings.push([0, 0, 0.8 + t * 0.6, 0.8 * Math.exp(-t / 8)]); }
     const P = {
       cam, time: fr.t,
-      rise: { R, w, crest, c: [0, 0] }, sweep,
+      rise: { R, w, crest, c: [0, 0] }, sweep, greyK: 0.84,
       skyWhite,
       propGate: [cT.p[0], cT.p[2], treesR, agentsR],
       hideAgents: at(cA) < 0,
@@ -154,14 +157,17 @@ export default {
     // --- the humans' cursor and its label (S10's paper panel), over the world; Clawd stays in front
     const kc = ctx.W / 1920;
     g.save(); g.setTransform(kc, 0, 0, kc, 0, 0);
-    const c = CL[active], prevAt = active ? CL[active - 1].at + 4 : 4, t0 = Math.max(c.at - typeLen(c) - 1, prevAt);
-    const open = easeOut(clamp((fe - t0 + 2) / 3)) * (1 - easeInOut(clamp((fe - c.at - 1) / 4)));
-    if (fe >= 3 && open > 0.001) {
-      const tq = cursorAt(c.at);
-      const px = clamp(tq.tx + 60, 20, 1900 - (c.code.length * 12.2 + 44)), py = clamp(tq.ty + 34, 40, 1040);
-      CUR.panel(g, px, py, c.code, { open, typed: clamp((fe - t0) / Math.max(3, Math.min(typeLen(c), c.at - t0 - 1))), caret: fe < c.at, flash: Math.exp(-Math.pow((fe - c.at) / 4, 2)) * (fe >= c.at - 2 ? 1 : 0) });
+    const c = CL[active], prevAt = active ? CL[active - 1].at + (active === 1 ? 12 : 4) : -10, t0 = Math.max(c.at - typeLen(c) - 1, prevAt);
+    const open = easeOut(clamp((fe - t0 + 2) / 3)) * (1 - easeInOut(clamp((fe - c.at - (active === 0 ? 8 : 1)) / 4)));
+    if (fe >= 1 && open > 0.001) {
+      // (revision 19: the panels 1.75x, readable at phone size; papercursor.js's default is unchanged)
+      const tq = cursorAt(c.at), PS = 1.75, pw = PS * (c.code.length * 12.2 + 44);
+      const px = clamp(tq.tx + 64, 20, 1900 - pw), py = clamp(tq.ty + 48, 30 + 25 * PS, 1050 - 25 * PS);
+      g.save(); g.translate(px, py); g.scale(PS, PS);
+      CUR.panel(g, 0, 0, c.code, { open, typed: clamp((fe - t0) / Math.max(3, Math.min(typeLen(c), c.at - t0 - 1))), caret: fe < c.at, flash: Math.exp(-Math.pow((fe - c.at) / 4, 2)) * (fe >= c.at - 2 ? 1 : 0) });
+      g.restore();
     }
-    if (fe >= 4 && away < 1) {
+    if (fe >= 1 && away < 1) {
       const press = CL.reduce((acc, cc) => Math.max(acc, at(cc) >= 0 && at(cc) < 8 ? Math.exp(-at(cc) / 3) : 0), 0);
       // (revision 15: the humans' cursor is always drawn whole, on top of the world)
       CUR.draw(g, cur.x, cur.y, { s: 2.0, press, rot: -0.06, fill: PAPER.slate, bs: 2.0 * kc / 1.45 });

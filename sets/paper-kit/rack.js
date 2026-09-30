@@ -7,6 +7,20 @@
 import { S2, lin, lerp, PAPER } from './kit.js';
 
 const COOL = lin('#9FB3D9');
+// R19 (Claire: the LED pulses read on beats 2 and 4): the main pulse lands on 1 and 3. A wave's
+// brightest moment comes a few frames after it starts, so each starts `lead` frames early. Returns
+// the frames since the current wave started (Infinity before the first), and whether its beat is
+// 1 or 3 of its bar.
+export function beatWave(T, f, lead) {
+  const beats = T.events('beats'), bars = T.events('bars');
+  let lo = 0, hi = beats.length - 1, k = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (beats[m] - lead <= f) { k = m; lo = m + 1; } else hi = m - 1; }
+  if (k < 0) return { sb: Infinity, main: true };
+  const b = beats[k];
+  let bar = bars[0];
+  for (const x of bars) { if (x <= b + 1) bar = x; else break; }
+  return { sb: f - (b - lead), main: Math.round((b - bar) / 18) % 2 === 0 };
+}
 export const RACK = { x0: 740, x1: 1180, top: 70, bot: 1000, u: 22, bayA: 294, bayB: 564 };
 
 // a server face: vents (cut or timed), drive slots, LEDs. mode 'cut' (installed, dark) or

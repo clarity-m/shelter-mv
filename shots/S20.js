@@ -44,6 +44,11 @@
 // beads (33, 55, 74), the chain links from 83 and folds down the funnel over bar 54-55 (onsets 104,
 // 124, 149), and the pull-back and lab of bar 56 are exactly as before, one bar later. The first and
 // last frames are unchanged.
+// Revision 19 (Claire: placing the amino acids is slow and the fold is quick): the beads now drop
+// briskly (three rounds on the onsets 33, 44, 55) and the fold down the funnel gets the time (74-184).
+// A physics diagram rhymes with S27's force diagram: the chain's contact map, a 15 x 15 grid of light
+// lying on the funnel's far rim; each cell lights as its pair of chain segments comes into contact
+// during the fold, filling into the native pattern (helix bands beside the diagonal, sheet streaks).
 import { loadHillxIcy } from '../sets/door/hillx-fix.js';  // hillx, with S18's glacier caps on the far peaks (revision 11)
 import { nightPal } from '../sets/inside-montage/night.js';
 import { EXT, LOOSE, NEAR, FOLD, blendConf, chainPoints, NRES } from '../sets/inside-montage/protein.js';
@@ -65,14 +70,15 @@ const lin = (hex) => [1, 3, 5].map((i) => Math.pow(parseInt(hex.slice(i, i + 2),
 // ---------------------------------------------------------------- timing (local frames of 288, from 53.1)
 // sung onsets: 1, 14, 33, 44, 55 | 74, 83, 104, 124 | 149, 158, 163, 175 | 271; beats every 18
 const PAINT = [0, 24];                                // the cursors paint the world in from grey (S36's sweep)
-const ROUNDS = [33, 55, 74], DROP_STAG = 2;           // bead (cursor c, round j) drops at ROUNDS[j] + 2c (sung onsets)
-const LINK = [83, 104];                               // the chain threads through the beads, N to C
-const FOLDS = [[104, 18, EXT, LOOSE], [124, 20, LOOSE, NEAR], [148, 17, NEAR, FOLD]];   // done at 165
-const HOLD = [92, 168];                               // the Clawds hold the chain with beams while it folds
+const ROUNDS = [33, 44, 55], DROP_STAG = 2;           // bead (cursor c, round j) drops at ROUNDS[j] + 2c (sung onsets)
+const LINK = [60, 76];                                // the chain threads through the beads, N to C
+const FOLDS = [[74, 32, EXT, LOOSE], [106, 38, LOOSE, NEAR], [148, 36, NEAR, FOLD]];   // done at 184
+const HOLD = [66, 188];                               // the Clawds hold the chain with beams while it folds
+const CMAP_T = [72, 84, 190, 200];                    // the contact map: in, full, fading, gone (before the pull-back)
 const POPS = [];                                      // (R15) nobody pops: the copies are there from the start
-const GLOW = [150, 176];                              // the knot's glow comes up as it packs
-const HAPPY = [175, 189];                             // Clawd's one small hop when it is done
-const KEYS = [0, 104, 192];                           // the camera: over the funnel as it is painted, then near the knot
+const GLOW = [160, 192];                              // the knot's glow comes up as it packs
+const HAPPY = [188, 200];                             // Clawd's one small hop when it is done
+const KEYS = [0, 90, 196];                            // the camera: over the funnel as it is painted, then near the knot
 // bar 56 is revision 16's bar 55.4-56 exactly, one bar later (+72): the pull-back, the lab, the settle
 const PB0 = 204, PB1 = 232;                           // the pull-back out through the glass
 const LEAN = [218, 278], TURN = [232, 282];           // A leans in to the knot, B turns toward the screen
@@ -122,7 +128,7 @@ const GRIP = [0.5, 0.12, 0.88, 0.33, 0.7];
 // the chain's frame: centred on K above the crest, facing the lens; it turns slowly once packed
 const K = [1.05, 3.85, 9.95], KS = 0.85;
 // revision 11: the chain starts over the funnel's near rim and spirals down to the basin as it folds
-const K0 = [2.4, 3.5, 6.2], K_BOT = [FUN[0], 0.95, FUN[1]], SLIDE = [104, 170];
+const K0 = [2.4, 3.5, 6.2], K_BOT = [FUN[0], 0.95, FUN[1]], SLIDE = [74, 186];
 function Kat(fl) {
   const u = easeIO((fl - SLIDE[0]) / (SLIDE[1] - SLIDE[0]));
   const a0 = Math.atan2(K0[2] - FUN[1], K0[0] - FUN[0]), r0 = Math.hypot(K0[0] - FUN[0], K0[2] - FUN[1]);
@@ -130,6 +136,9 @@ function Kat(fl) {
   return [FUN[0] + r * Math.cos(a), lerp(K0[1], K_BOT[1], u * u * (3 - 2 * u)), FUN[1] + r * Math.sin(a)];
 }
 const turnAt = (fl) => 0.9 * easeIO((fl - 176) / 90) + 0.25 * smoothstep(222, 287, fl);   // (as before, one bar later)
+// (R19) and one full turn about its own axis as it spirals down, done (exactly nothing) once it rests
+const SPIN = [100, 186];
+const spinAt = (fl) => (fl > SPIN[0] && fl < SPIN[1] ? 2 * Math.PI * easeIO((fl - SPIN[0]) / (SPIN[1] - SPIN[0])) : 0);
 
 // ---------------------------------------------------------------- the camera (frame px)
 // S19's last frame in the hill engine (sets/valley/NOTES.md); a slow drift in bar 54; then a gentle
@@ -185,7 +194,7 @@ function confAt(fl) {
   return c;
 }
 function chainAt(fl) {
-  const a = turnAt(fl), ca = Math.cos(a), sa = Math.sin(a);
+  const a = turnAt(fl) + spinAt(fl), ca = Math.cos(a), sa = Math.sin(a);
   const rot = (p) => [ca * p[0] + sa * p[2], p[1], -sa * p[0] + ca * p[2]];
   const Kf = Kat(fl), toWorld = (p) => { const r = rot(p); return [Kf[0] + KS * r[0], Kf[1] + KS * r[1], Kf[2] + KS * r[2]]; };
   return chainPoints(confAt(fl), toWorld, rot);
@@ -314,7 +323,7 @@ function inside(T, f, fl, lineK) {
       clawd: main, crowd, lines, ribbons: pr.ribbons, ribbonCore: 0.4, palLin,
       keyAz: lerp(19.8 + 62, 19.8 + 12, l19), keyEl: lerp(30, 16, l19), exposure: lerp(1, 0.8, l19), vignette: lerp(0.16, 0.42, l19),
     },
-    cam, B, ch, homes,
+    cam, B, ch, homes, cmap: fl >= CMAP_T[0] && fl < CMAP_T[3] ? { now: contactMap(ch), before: contactMap(chainAt(Math.max(0, fl - 5))) } : null,
   };
 }
 
@@ -383,13 +392,13 @@ function labelsAt(fl, B) {
 const CHAIN_CODE = [
   'export const EXT = extended(8.0, 1.0, 1.1);',
   'export const LOOSE = opened(3.3, 2.2, 0.9, 1), NEAR = opened(1.6, 1.4, 0.35, 2);',
-  'const FOLDS = [[104, 18, EXT, LOOSE], [124, 20, LOOSE, NEAR], [148, 17, NEAR, FOLD]];',
+  'const FOLDS = [[74, 32, EXT, LOOSE], [106, 38, LOOSE, NEAR], [148, 36, NEAR, FOLD]];',
   'export function blendConf(A, B, t) { return A.map((a, i) => ({ c: lerp3(a.c, B[i].c, t), q: qSlerp(a.q, B[i].q, t) })); }',
   'export function chainPoints(conf, toWorld, dirWorld) {',
   'const { c, q } = conf[k];',
   'return LOCAL[k].map((pt) => ({ p: add(c, qRot(q, pt.p)), s: qRot(q, pt.s), w: pt.w, r: pt.r }));',
 ].join('   ');
-const CODE_A = [LINK[0], 110, 126];     // it is typed along the band as it links, and lifts off as the fold begins
+const CODE_A = [LINK[0], 88, 104];      // it is typed along the band as it links, and lifts off as the fold begins
 const CODE_V = 1.1;                     // and streams along the chain, N-ward, in characters a frame
 // the chain's course without its helical turns (a running mean along the points), in frame px
 function chainPath(ch, B) {
@@ -499,6 +508,71 @@ function paintMask(M, k, fl, cam, B) {
     for (let y = -10; y <= hz + 10; y += 20) g.lineTo(sx + 40 * Math.sin(y / 37 + 1.3) + 25 * Math.sin(y / 11), y);
     g.lineTo(-10, hz + 10); g.closePath(); g.fill();
   }
+}
+
+// ---------------------------------------------------------------- the contact map (revision 19)
+// 15 segments of the chain (one per bead); a pair is in contact when their centroids come within
+// about 0.3-0.58 m. The map is a square of light on the far inner wall below the rim, where the
+// camera sees it face-on while the knot spirals down: row i (down) against column j (across).
+const CM_N = 15, CM_G = [8.6, 9.6], CM_CS = 0.115, CM_FACE = 170, CM_OFF = 0.1;
+function contactMap(ch) {
+  const sum = Array.from({ length: CM_N }, () => [0, 0, 0, 0]);
+  ch.P.forEach((p, i) => { const b = Math.min(CM_N - 1, Math.floor(ch.R[i] / NRES * CM_N)); sum[b][0] += p[0]; sum[b][1] += p[1]; sum[b][2] += p[2]; sum[b][3]++; });
+  const c = sum.map((q) => [q[0] / q[3], q[1] / q[3], q[2] / q[3]]);
+  return c.map((a, i) => c.map((b, j) => (i === j ? 1 : smoothstep(0.58, 0.3, Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])))));
+}
+// its plane: through the wall at CM_G, halfway between the land's normal and the way to the camera,
+// its rows level with the camera's horizon (so it reads square), lifted a hand's width off the land
+let CM_AX = null;
+function cmAxes() {
+  if (CM_AX) return CM_AX;
+  const h = (x, z) => hillH(HILL_F, x, z), e = 0.01, [gx, gz] = CM_G, G = [gx, h(gx, gz), gz];
+  const nrm = (a) => { const l = Math.hypot(...a); return a.map((x) => x / l); };
+  const Nt = nrm([-(h(gx + e, gz) - h(gx - e, gz)) / (2 * e), 1, -(h(gx, gz + e) - h(gx, gz - e)) / (2 * e)]);
+  const cf = camFrame(CM_FACE), Bf = camBasis(cf), Nc = nrm(cf.pos.map((v, m) => v - G[m]));
+  const U = nrm([Bf.right[0], 0, Bf.right[2]]);
+  let N = Nt.map((v, m) => 0.5 * v + 0.5 * Nc[m]);
+  const d = N[0] * U[0] + N[2] * U[2];
+  N = nrm([N[0] - d * U[0], N[1], N[2] - d * U[2]]);
+  const V = [U[1] * N[2] - U[2] * N[1], U[2] * N[0] - U[0] * N[2], U[0] * N[1] - U[1] * N[0]];
+  return (CM_AX = { U, V, C: G.map((v, m) => v + CM_OFF * N[m]) });
+}
+function cmPoint(i, j) {                                             // cell corner, i and j in 0..15
+  const { U, V, C } = cmAxes(), a = (j - CM_N / 2) * CM_CS, b = (CM_N / 2 - i) * CM_CS;
+  return [0, 1, 2].map((m) => C[m] + a * U[m] + b * V[m]);
+}
+function drawContactMap(g, k, fl, B, cm) {
+  if (!cm) return;
+  const a = smoothstep(CMAP_T[0], CMAP_T[1], fl) * (1 - smoothstep(CMAP_T[2], CMAP_T[3], fl));
+  if (a <= 0.01) return;
+  const P = [];
+  for (let i = 0; i <= CM_N; i++) { P.push([]); for (let j = 0; j <= CM_N; j++) P[i].push(project(B, cmPoint(i, j))); }
+  if (P.some((row) => row.some((q) => q[2] < 0.3))) return;
+  const quad = (i, j, s) => {
+    const q = [P[i][j], P[i][j + 1], P[i + 1][j + 1], P[i + 1][j]], cx = (q[0][0] + q[2][0]) / 2, cy = (q[0][1] + q[2][1]) / 2;
+    g.beginPath(); q.forEach((p, m) => { const x = cx + (p[0] - cx) * s, y = cy + (p[1] - cy) * s; if (m) g.lineTo(x, y); else g.moveTo(x, y); }); g.closePath();
+  };
+  g.save(); g.setTransform(k, 0, 0, k, 0, 0); g.globalCompositeOperation = 'lighter'; g.lineJoin = 'round';
+  // a faint pane, the grid, a firmer frame
+  g.fillStyle = `rgba(255,190,130,${(0.06 * a).toFixed(3)})`;
+  g.beginPath(); g.moveTo(P[0][0][0], P[0][0][1]); g.lineTo(P[0][CM_N][0], P[0][CM_N][1]); g.lineTo(P[CM_N][CM_N][0], P[CM_N][CM_N][1]); g.lineTo(P[CM_N][0][0], P[CM_N][0][1]); g.closePath(); g.fill();
+  g.strokeStyle = `rgba(245,214,150,${(0.16 * a).toFixed(3)})`; g.lineWidth = 0.7;
+  g.beginPath();
+  for (let i = 1; i < CM_N; i++) { g.moveTo(P[i][0][0], P[i][0][1]); g.lineTo(P[i][CM_N][0], P[i][CM_N][1]); g.moveTo(P[0][i][0], P[0][i][1]); g.lineTo(P[CM_N][i][0], P[CM_N][i][1]); }
+  g.stroke();
+  g.strokeStyle = `rgba(252,228,178,${(0.6 * a).toFixed(3)})`; g.lineWidth = 1.5;
+  g.beginPath(); g.moveTo(P[0][0][0], P[0][0][1]); g.lineTo(P[0][CM_N][0], P[0][CM_N][1]); g.lineTo(P[CM_N][CM_N][0], P[CM_N][CM_N][1]); g.lineTo(P[CM_N][0][0], P[CM_N][0][1]); g.closePath(); g.stroke();
+  // the cells: light where the pair touches (the diagonal is each segment with itself), and a
+  // white flash with a little bloom as a contact forms
+  for (let i = 0; i < CM_N; i++) for (let j = 0; j < CM_N; j++) {
+    const v = cm.now[i][j], fresh = Math.min(1, 2 * Math.max(0, v - cm.before[i][j]));
+    if (v < 0.05) continue;
+    const al = a * (i === j ? 0.5 : 0.25 + 0.65 * v);
+    if (fresh > 0.05) { g.fillStyle = `rgba(255,236,200,${(0.35 * fresh * a).toFixed(3)})`; quad(i, j, 1.5); g.fill(); }
+    g.fillStyle = `rgba(255,${Math.round(lerp(200 + 18 * v, 250, fresh))},${Math.round(lerp(120 + 40 * v, 236, fresh))},${Math.min(1, al + 0.5 * fresh * a).toFixed(3)})`;
+    quad(i, j, 0.8); g.fill();
+  }
+  g.restore();
 }
 
 let CURSOR = null;
@@ -627,6 +701,7 @@ export default {
         g2.drawImage(greyCv, 0, 0);
       }
       const m = I.state.clawd, cp = project(I.B, [m.x, m.y + 0.45, m.z]);
+      drawContactMap(g2, k, fl, I.B, I.cmap);
       drawChainCode(g2, k, fl, I.B, I.ch);
       drawOverlay(g2, k, fl, I.B, I.homes);
       return;

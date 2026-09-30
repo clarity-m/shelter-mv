@@ -167,7 +167,7 @@ export default {
     const rings = ta >= 0 && ta < 24 ? [[0, 0, 0.8 + ta * 0.55, 0.9 * Math.exp(-ta / 9)]] : [];
     const trailW = [5.5, 6.5, 7.5, 7.5][Math.min(3, e.i)];
     const P = {
-      cam, time: fr.t,
+      cam, time: fr.t, greyK: 0.84,
       learn: { spawn: [0, 0, 7.5, 1.2], trail: { pts: PATH, reach: Math.max(0, reach - 0.3), w: trailW } },
       clawd: { x: pa.x, z: pa.z, y, yaw: st.phase === 'stand' ? 0 : pa.heading, depth: 4, grid, squash },
       ghosts, rings,

@@ -22,6 +22,7 @@
   - the escape line;
   - the release arc and its payload.
 - 5177-5182: the lines alone, within 1.4 px of `match_S29_lines.png` (p99).
+- R19: the crowd stands back from the base (the ring from 6.8 m; no one overlapping the platform).
 
 **S30 (R10):**
 - Bars 77-79: two beats in, then two beats of D's voyage.

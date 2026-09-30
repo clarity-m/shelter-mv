@@ -64,25 +64,48 @@ export function s23State(T, fr) {
 }
 
 // revision 9: each satellite flares as it lights (a warm four-point glint that settles to a point),
-// drawn in 2D over the paper frame at its screen position through the camera
-function drawGlints(g, s, st, fl) {
+// drawn in 2D over the paper frame at its screen position through the camera.
+// R19 (Claire: highlight the satellites): bigger, clearer flares with a fine diagonal cross; each
+// satellite twinkles as it holds; once the ring closes, a soft glow lies along the arch and on every
+// beat a glint runs out along it from the middle to both horizons.
+function drawGlints(g, s, st, fl, beats) {
   const cam = Object.assign({ Zc: 2400, zref: -180, c: [960, 540], t: [0, 0], tz: 0, pan: [0, 0] }, st.cam);
+  const P = (t) => toScreen(cam, ringAt(t), -900);
   let n = 0;
   g.lineCap = 'round';
+  // the arch's glow, where its line has lit
+  const segs = [];
+  for (let k = 0; k <= 120; k++) { const t = k / 120, on = smooth(SATS.line(t), SATS.line(t) + 5, fl); segs.push([P(t), on]); }
+  for (const [w, al] of [[16, 0.10], [6, 0.22]]) {
+    g.lineWidth = w * s;
+    for (let k = 0; k < 120; k++) {
+      const on = Math.min(segs[k][1], segs[k + 1][1]);
+      if (on < 0.01) continue;
+      g.strokeStyle = `rgba(255,178,128,${(al * on).toFixed(3)})`;
+      g.beginPath(); g.moveTo(segs[k][0][0] * s, segs[k][0][1] * s); g.lineTo(segs[k + 1][0][0] * s, segs[k + 1][0][1] * s); g.stroke();
+    }
+  }
+  // the beat glints: out from the middle along the closed ring, on each beat after it closes
+  const closed = SATS.line(0.5) + 6, ring = beats.filter((b) => b >= closed - 2);
+  const beatGlint = (t) => { let v = 0; for (const b of ring) { const at = b + 18 * Math.abs(t - 0.5), d = fl - at; if (d > -3 && d < 12) v = Math.max(v, Math.exp(-(d * d) / 4.5)); } return v; };
   for (let i = 0; i < RING.n; i++) {
     const a = fl - SATS.at[i];
     if (a < 0) continue;
-    const [x, y] = toScreen(cam, ringAt(i / (RING.n - 1)), -900);
-    const flare = Math.exp(-a / 6) * Math.min(a / 1.5, 1), steady = 0.35 * Math.min(a / 3, 1);
+    const t = i / (RING.n - 1), [x, y] = P(t);
+    const tw = 0.78 + 0.22 * Math.sin(fl * (0.31 + 0.047 * (i % 7)) + i * 1.7);
+    const flare = Math.exp(-a / 7) * Math.min(a / 1.5, 1) + 0.8 * beatGlint(t), steady = 0.6 * Math.min(a / 3, 1) * tw;
     const I = flare + steady;
     if (I < 0.02) continue;
-    const grd = g.createRadialGradient(x * s, y * s, 0, x * s, y * s, (5 + 9 * flare) * s);
-    grd.addColorStop(0, `rgba(255,226,196,${Math.min(1, 0.9 * I).toFixed(3)})`); grd.addColorStop(1, 'rgba(255,170,110,0)');
-    g.fillStyle = grd; g.beginPath(); g.arc(x * s, y * s, (5 + 9 * flare) * s, 0, 2 * Math.PI); g.fill();
+    const r = (7 + 14 * flare) * s;
+    const grd = g.createRadialGradient(x * s, y * s, 0, x * s, y * s, r);
+    grd.addColorStop(0, `rgba(255,232,206,${Math.min(1, 0.95 * I).toFixed(3)})`); grd.addColorStop(0.4, `rgba(255,190,140,${Math.min(1, 0.4 * I).toFixed(3)})`); grd.addColorStop(1, 'rgba(255,170,110,0)');
+    g.fillStyle = grd; g.beginPath(); g.arc(x * s, y * s, r, 0, 2 * Math.PI); g.fill();
     if (flare > 0.05) {
-      const L = (8 + 22 * flare) * s;
-      g.strokeStyle = `rgba(255,214,176,${(0.85 * flare).toFixed(3)})`; g.lineWidth = 1.2 * s;
+      const L = (12 + 38 * Math.min(flare, 1.2)) * s, D = 0.45 * L;
+      g.strokeStyle = `rgba(255,222,190,${Math.min(1, 0.95 * flare).toFixed(3)})`; g.lineWidth = 1.8 * s;
       g.beginPath(); g.moveTo(x * s - L, y * s); g.lineTo(x * s + L, y * s); g.moveTo(x * s, y * s - L); g.lineTo(x * s, y * s + L); g.stroke();
+      g.strokeStyle = `rgba(255,222,190,${Math.min(1, 0.5 * flare).toFixed(3)})`; g.lineWidth = 1.1 * s;
+      g.beginPath(); g.moveTo(x * s - D, y * s - D); g.lineTo(x * s + D, y * s + D); g.moveTo(x * s - D, y * s + D); g.lineTo(x * s + D, y * s - D); g.stroke();
     }
     n++;
   }
@@ -106,6 +129,9 @@ export default {
     E.frame(st);
     g2.setTransform(1, 0, 0, 1, 0, 0); g2.globalCompositeOperation = 'source-over'; g2.filter = 'none'; g2.globalAlpha = 1;
     g2.drawImage(glc, 0, 0, ctx.W, ctx.H);
-    if (fr.fl >= 140) { g2.save(); g2.globalCompositeOperation = 'lighter'; drawGlints(g2, ctx.W / 1920, st, fr.fl); g2.restore(); }
+    if (fr.fl >= 140) {
+      const f0 = fr.f - fr.fl, beats = ctx.T.events('beats').filter((b) => b >= f0 && b <= fr.f).map((b) => b - f0);
+      g2.save(); g2.globalCompositeOperation = 'lighter'; drawGlints(g2, ctx.W / 1920, st, fr.fl, beats); g2.restore();
+    }
   },
 };

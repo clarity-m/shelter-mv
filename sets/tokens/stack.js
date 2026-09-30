@@ -37,23 +37,33 @@ export function stackState(T, W, f, opts) {
   }
   // attention heads fired by chop notes
   const fired = [], lit = new Map();
+  // opts.fireAll: chop frames that fire a head in every layer, cascading up the stack onto one token
+  // column (R19: the first arcs fire across the whole stack); other chops fire the pitch's layer and
+  // the one above it.
+  const fireAll = new Set(opts.fireAll || []);
   for (const fc of T.events('chops')) {
-    const age = f - fc;
-    if (age < 0 || age > 40 || fc < (opts.from ?? 0)) continue;
-    const lq = Math.min(n, 1 + chopLevel(fc) + (opts.levelShift ?? 0));
-    if (lq < 1 || a[lq] <= 0) continue;
+    const age0 = f - fc;
+    if (age0 < 0 || age0 > 48 || fc < (opts.from ?? 0)) continue;
+    const l0 = Math.min(n, 1 + chopLevel(fc) + (opts.levelShift ?? 0));
+    const all = fireAll.has(fc);
+    const ls = all ? Array.from({ length: n }, (_, i) => i + 1) : (opts.pair === false || l0 >= n ? [l0] : [l0, l0 + 1]);
     const q = W.tokAtS(headAt(fc) - (opts.qOff ?? 2.5));
-    const keys = [];
-    const K = opts.keys ?? 9;
-    for (let j = 0; j < K; j++) {
-      const span = 1 + Math.floor(Math.pow(hash(fc, j, 41), 2.2) * (opts.span ?? 70));
-      const w = j === 0 ? 1 : 0.15 + 0.85 * Math.pow(hash(fc, j, 42), 2.5);
-      keys.push({ i: q - span, w });
-    }
-    const amp = Math.pow(0.5, age / (opts.halfLife ?? 8));
-    fired.push({ fc, age, lq, q, keys, amp });
-    lit.set(q * 64 + lq, Math.max(lit.get(q * 64 + lq) || 0, amp));
-    for (const kk of keys) lit.set(kk.i * 64 + lq - 1, Math.max(lit.get(kk.i * 64 + lq - 1) || 0, amp * kk.w * 0.6));
+    ls.forEach((lq, j) => {
+      const age = age0 - (all ? (lq - 1) * (opts.cascade ?? 1.3) : j * 1.5);
+      if (age < 0 || lq < 1 || a[lq] <= 0) return;
+      const seed = fc + 97 * lq;
+      const keys = [];
+      const K = opts.keys ?? 9;
+      for (let jj = 0; jj < K; jj++) {
+        const span = 1 + Math.floor(Math.pow(hash(seed, jj, 41), 2.2) * (opts.span ?? 70));
+        const w = jj === 0 ? 1 : 0.15 + 0.85 * Math.pow(hash(seed, jj, 42), 2.5);
+        keys.push({ i: q - span, w });
+      }
+      const amp = Math.pow(0.5, age / (opts.halfLife ?? 8));
+      fired.push({ fc: seed, age, lq, q, keys, amp });
+      lit.set(q * 64 + lq, Math.max(lit.get(q * 64 + lq) || 0, amp));
+      for (const kk of keys) lit.set(kk.i * 64 + lq - 1, Math.max(lit.get(kk.i * 64 + lq - 1) || 0, amp * kk.w * 0.6));
+    });
   }
   const act = (i, l) => {
     const tt = tau + hash(i, l, 5) * 4;
@@ -65,7 +75,7 @@ export function stackState(T, W, f, opts) {
 }
 
 // Arcs of the fired heads, drawn on the light layer in world coordinates.
-export function drawFired(g, api, st, gain = 1) {
+export function drawFired(g, api, st, gain = 1, land = 0) {
   const { layers, fired } = st;
   for (const h of fired) {
     const yq = layers.y[h.lq], yk = layers.y[h.lq - 1];
@@ -79,6 +89,18 @@ export function drawFired(g, api, st, gain = 1) {
       const hh = Math.min(22 + s * 0.2, 260) * (0.8 + 0.4 * hash(h.fc, kk.i, 3));
       api.arc(g, xk, yk - 2, xq, yq - 2, hh, 0.85, a * 0.35, a, 1.0 + 0.6 * kk.w, 0, p);
       if (kk.w > 0.6) api.arc(g, xk, yk - 2, xq, yq - 2, hh, 0.85, a * 0.03, a * 0.10, 5, 0, p);
+    }
+    // a little bloom where the fan lands: a soft point of light on the query as the arcs arrive
+    if (land > 0) {
+      const e = clamp((h.age - 2) / 2) * Math.pow(0.5, Math.max(0, h.age - 4) / 5) * land;
+      if (e > 0.01) {
+        const X = api.X(xq), Y = api.Y(yq - 2), r = 20 * api.k * Math.sqrt(api.cam.z);
+        const gr = g.createRadialGradient(X, Y, 0, X, Y, r);
+        gr.addColorStop(0, `rgba(255,255,255,${Math.min(1, 0.95 * e).toFixed(3)})`);
+        gr.addColorStop(0.25, `rgba(255,255,255,${Math.min(1, 0.35 * e).toFixed(3)})`);
+        gr.addColorStop(1, 'rgba(255,255,255,0)');
+        g.fillStyle = gr; g.fillRect(X - r, Y - r, 2 * r, 2 * r);
+      }
     }
   }
 }

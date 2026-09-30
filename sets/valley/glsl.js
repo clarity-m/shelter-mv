@@ -98,6 +98,7 @@ float hillAt(vec2 q, out vec2 grad, out float rate){
 // the same low-poly mesh. uWorldM: world A, world B, the front's radius (m from the spawn), its
 // width: world B inside the front (it re-forms outward from the pad). All zero: the valley only.
 uniform vec4 uWorldM;
+uniform float uGreyK;        // revision 19: the unlearned grey's level (S13-S14 a touch deeper; 1 elsewhere)
 uniform float uWorldWater;    // the worlds' own water grid is being drawn
 float farRange(vec2 q, float amp){
   float r = length(q);
@@ -785,7 +786,7 @@ void main(){
   float g = mask - (vF.z*0.45 + 0.28);
   float lt = smoothstep(0.0, 0.08, g);
   float front = lt*(1.0 - smoothstep(0.0, 0.16, g));
-  float gv = 0.45 + (vF.x - 0.5)*0.11;
+  float gv = (0.45 + (vF.x - 0.5)*0.11)*uGreyK;
   vec3 alb = mix(vec3(gv), lin(vAlb.rgb)*(0.84 + 0.30*vF.y), lt);
   if (uStrokeOn > 0.5) lt = max(lt, sc);
   alb *= worldMarkAt(p.xz);
@@ -1015,7 +1016,7 @@ void main(){
   }
   if (clipOut(p.xz)) discard;
   float lt = smoothstep(0.25, 0.6, vM.x);
-  vec3 alb = mix(vec3(vM.y*vM.y*0.78), lin(vC.rgb), lt);
+  vec3 alb = mix(vec3(vM.y*vM.y*0.78*uGreyK), lin(vC.rgb), lt);
   float sh = shadowAt(p, n) * cloudShade(p);
   col = lightSurf(p, n, alb, 1.0, sh);
   float fr = pow(1.0 - max(dot(-rv, n), 0.0), 3.0);

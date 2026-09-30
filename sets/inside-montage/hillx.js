@@ -286,7 +286,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       Object.assign(perObject(FAM.CLOUD, CLOUDS.length, pow2(900 / Math.pow(eff(keep.cloud) * 150 / Fref, 2), 64, 4096)), { keep: keep.cloud }),
       Object.assign(perObject(FAM.CANOPY, 11, canopyN(eff(keep.canopy), nearTree)), { keep: keep.canopy }),
       Object.assign(perObject(FAM.TRUNK, 4, tn, tnu), { keep: keep.trunk }),
-      Object.assign(perObject(FAM.TOWER, 24, wn, wnu), { keep: keep.tower }),
+      Object.assign(perObject(FAM.TOWER, 64, wn, wnu), { keep: keep.tower }),
     ];
     return Object.assign(L, { draws });
   });
@@ -346,8 +346,8 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
     if (c) U.uCGlow = [c.x, cy + (c.hop || 0) + 5 * c.u * (1 - 0.2 * (c.sit || 0)), c.z, (c.glow ?? 1) * (c.light ?? 1) * (c.alpha ?? 1)];
     else U.uCGlow = [0, -50, 0, 0];
     // towers
-    const tA = new Float32Array(96), tB = new Float32Array(96);
-    const tw = (st.towers || []).slice(0, 24);
+    const tA = new Float32Array(256), tB = new Float32Array(256);
+    const tw = (st.towers || []).slice(0, 64);
     tw.forEach((q, i) => { tA.set([q.x, q.z, q.w, q.h], i * 4); tB.set([q.taper || 0, q.cap || 0, q.rot || 0, q.lit ?? 0.5], i * 4); });
     Object.assign(U, { uNTow: tw.length, uTowA: tA, uTowB: tB, uTowWin: st.towerWin ?? 0.6, uTowEdge: st.towerEdge ?? 0, uCityPulse: st.cityPulse || 0 });
     // ring

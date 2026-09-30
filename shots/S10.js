@@ -23,8 +23,9 @@
 //    downbeat; in the breath after it he looks up to where the help came from, waves, and sits.
 // From his first hop at the gap on, this is Revision 4's S10 unchanged: that code runs on Revision
 // 4's local frame, fo = fl - OFF. HUD: EPISODE / STEP in the world's own 3x5 pixels, steps counted
-// from bar 17. Camera static after the pull-back: one game screen. (The default export is S10;
-// makeS10({ scroll: true }) is the side-scroller alternate, shots/_S10scroll.js.)
+// from bar 17. Revision 19: the camera is the side-scroller one (Claire approved it): it eases after
+// him while he explores and is back on the one game screen, exactly, by frame 205;
+// makeS10({ scroll: false }) keeps the old fixed framing.
 import { createGridworld, GY, GAP, SPAWN, EDGE, GOAL, TILE, STEP } from '../sets/early-env/gridworld.js';
 import { createPaperCursor } from '../sets/early-env/papercursor.js';
 import * as F from '../sets/early-env/frames.js';
@@ -195,17 +196,18 @@ function clawdR4(fl) {
 }
 
 // the paper cursor (Revision 4's frames): comes down from above the frame to the cell, clicks,
-// lifts away (screen px)
+// lifts away (screen px). Revision 19: it glides all the way off the top edge (clear of the frame,
+// shadow and all, by about 313) before it is dropped at 322, instead of vanishing near the top
 function cursorAt(fl) {
-  if (fl < 194 || fl > 312) return null;
+  if (fl < 194 || fl > 322) return null;
   const tip = [CELL[0] * 4 + 26, CELL[1] * 4 + 22];
   const u = easeOut(clamp((fl - 194) / 30));                  // descent
-  const v = easeInOut(clamp((fl - 278) / 30));                // departure, up and away
+  const v = smoothstep(278, 320, fl);                         // departure, up and away, gently
   const sway = 6 * Math.sin((fl - 194) * 0.09) * (1 - clamp((fl - 222) / 12)) * (1 - v);
   const press = Math.exp(-Math.pow((fl - CLICK - 2) / 3, 2)) + 0.8 * Math.exp(-Math.pow((fl - ENTER - 2) / 3, 2));
   return {
-    x: tip[0] + 90 * (1 - u) + 60 * v + sway,
-    y: lerp(-160, tip[1], u) - 700 * v * v - 10 * Math.sin((fl - 222) * 0.12) * clamp((fl - 222) / 8) * (1 - clamp((fl - CLICK + 6) / 6)),
+    x: tip[0] + 90 * (1 - u) + 140 * v + sway,
+    y: lerp(-160, tip[1], u) - 950 * v - 10 * Math.sin((fl - 222) * 0.12) * clamp((fl - 222) / 8) * (1 - clamp((fl - CLICK + 6) / 6)),
     press, rot: -0.05 - 0.12 * (1 - u) + 0.1 * v,
   };
 }
@@ -310,4 +312,4 @@ export function makeS10({ scroll = false } = {}) {
     },
   };
 }
-export default makeS10();
+export default makeS10({ scroll: true });     // revision 19: the side-scroller camera is S10 (Claire approved it)

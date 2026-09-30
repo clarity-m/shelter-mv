@@ -11,6 +11,9 @@
 //    stops, and withdraws.
 //  - bar 29 downbeat (the snare returns): he tops the steep ramp on his own. Arms up; the surface he
 //    climbed flashes. The camera rises to his level and follows him along the plateau.
+//    Revision 19: the cursor, which withdrew to one side to let him try, hovers there; on the next
+//    snare it does one small pleased loop (he glances up at it), stays through the first flick's
+//    snare, and glides off the top of the frame.
 //  - bars 29-30: on the backbeat snares (T.events('snares')) the world changes around him, twice,
 //    each more saturated; the second is the ladder's hill, where he stops on the last snare before
 //    the drums cut out (S12's first frame has him in the same place, at the same size).
@@ -34,6 +37,8 @@ const STEEP = [[GO, -40, 0], [181, 6, 11], [197, 250, 16], [204, 312, 7], [213, 
 const S_TOP = 530, X_TOP = T34[0] + S_TOP - RAMP;   // where he comes to rest on the plateau
 // the cursor's second descent, [local frame, tip y, px per frame]: it brakes as he sets off
 const CUR2 = [[RESET + 2, -180, 0], [GO + 4, 160, 24], [GO + 10, 238, 3], [GO + 14, 226, -1.5], [196, 222, 0]];
+const HOVER = [1130, 300];                    // where it then waits, beside and above the plateau (screen px)
+const LOOP = MADE + 18;                       // its pleased loop: a beat after he tops the ramp (the next snare)
 const LIFT = FY - T34[1];                     // the camera rises this much: the plateau lands on FY
 const WALK = [228, 244], VW = 9;              // he walks off, 0 -> 9 px a frame (the flicks' pace)
 const WORLDS = [4, 5];                        // the pier, then the ladder's hill (physics.js)
@@ -121,7 +126,9 @@ function poseAt(fl, s, lean, cur) {
   }
   // the top, on the snare: arms up, a hop; then he walks on
   if (fl < WALK[0]) { const h = clamp((fl - MADE - 1) / 11); return { arms: [0.95, 0.95], lift: 2.0 * Math.sin(Math.PI * h), eyes: { kind: 'arch' } }; }
-  return walkPose(walked(fl) / 66, { eyes: { dx: 0.6 } });
+  // as the cursor loops he glances up at it, then looks ahead again
+  const gl = smoothstep(LOOP + 3, LOOP + 7, fl) * (1 - smoothstep(LOOP + 20, LOOP + 25, fl));
+  return walkPose(walked(fl) / 66, { eyes: { dx: lerp(0.6, 0.8, gl), dy: lerp(0, -0.75, gl) } });
 }
 // the paper cursor, screen px
 function cursorAt(fl) {
@@ -138,14 +145,19 @@ function cursorAt(fl) {
     };
   }
   // bar 28: it comes down to help again, but he is already going: as he sets off it brakes, bobs
-  // back, hovers, and withdraws
-  if (fl >= RESET + 2 && fl <= 216) {
-    const y = herm(CUR2, fl), u = clamp((y + 180) / (T34[1] + 182)), v = easeInOut(clamp((fl - 196) / 20));
-    return {
-      x: T34[0] + 110 * (1 - u) + 90 * v + 4,
-      y: y - 760 * v * v,
-      press: 0, rot: -0.05 - 0.14 * (1 - u) + 0.12 * v,
-    };
+  // back, and withdraws to one side, where it hovers and watches him climb. Revision 19 (Claire): a
+  // beat after he tops the ramp (the bar-29 snare) it does one small pleased loop; it stays through
+  // the first flick's snare, then glides off the frame's top edge.
+  if (fl >= RESET + 2 && fl <= 304) {
+    const y = herm(CUR2, Math.min(fl, 196)), u = clamp((y + 180) / (T34[1] + 182));
+    const w = easeInOut(clamp((fl - 196) / 18));                     // backing off to its hover
+    let x = lerp(T34[0] + 110 * (1 - u) + 4, HOVER[0], w), yy = lerp(y, HOVER[1], w);
+    yy += 4 * Math.sin((fl - 196) * 0.19) * smoothstep(196, 212, fl);   // a gentle hover
+    const q = clamp((fl - LOOP) / 20), th = 2 * Math.PI * easeInOut(q);   // the pleased loop
+    x += 42 * Math.sin(th); yy -= 42 * (1 - Math.cos(th));
+    const v = smoothstep(274, 304, fl);                              // away, off the top edge, gently
+    x += 240 * v; yy -= 700 * v;
+    return { x, y: yy, press: 0, rot: -0.05 - 0.14 * (1 - u) * (1 - w) - 0.03 * w + 0.18 * Math.sin(th) + 0.12 * v };
   }
   return null;
 }
@@ -197,6 +209,8 @@ function drawScene(gc, kk, fl, P) {
     : { eyes: fl >= STOP + 9 && fl < STOP + 12 ? { kind: 'closed' } : { dx: 0.7, dy: -0.2 }, sy: 1 - 0.05 * Math.exp(-(fl - STOP) / 3) };
   drawClawd(gc, FX, FY, U, pose);
   drawHUD(gc, [['EPISODE', groupInt(EPIS[fi + 2] + (walkF - FL[fi]) * 3)], ['STEP', String(Math.floor((walkF - FL[fi]) * 1.5) + 12)]]);
+  const cur = cursorAt(fl);                          // (it stays through the first flick, then leaves)
+  if (cur) P.draw(gc, cur.x, cur.y, { press: cur.press, rot: cur.rot });
 }
 
 let g, k, P, lo, mid;

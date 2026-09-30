@@ -62,6 +62,39 @@ them. Key everything to bars and timestamps instead.
 - Grid: 100 BPM, bar 2.4 s = 72 frames, bar b starts at 0.38 + 2.4(b-1) s.
 
 ## Status
+- 2026-09-30: CUT 18 (Revision 19, the aesthetic pass: Claire's `viewers-notes.txt` plus the lead's drop review).
+  `render/briefs/R19-common.md` has the plan. The film is `out/film.mp4` (= `out/film_cut18.mp4`).
+  - **The drops:**
+    - 9.1 builds (S03's tokens swell, the line brightens) and snaps with a white bloom
+      (`sets/tokens/hook.js`);
+    - 33.1: the humans' `ground.raise()` click sends a shock wave of facets;
+    - 73.1: an ignition bloom, with the star trails snapping in;
+    - 81.1: a wave of warm light through the shelter, and the figure forms from light.
+  - **Claire's notes:**
+    - S02: the click floods warm light into S03.
+    - S06/S16: the pulses land on beats 1 and 3.
+    - S08/S20: the researchers are traced from Pexels photos (`sets/paper-lab/people.js`;
+      sources in its NOTES).
+    - S10: scrolls by default, and the cursor exits smoothly.
+    - S11: the cursor's pleased loop.
+    - S13-S18: the spawn pad is square.
+    - S20: brisk beads, a long fold, and a contact map.
+    - S23: satellites and ring.
+    - S26: the slit slides open.
+    - S27: the crowd stands clear of the base.
+    - S29: brighter lasers, 1.4x sails, sustained acceleration.
+    - S31: a denser lower city (64 buildings).
+    - S34: a scattered crowd and a Kronig-Penney band diagram.
+    - S36: a torus sun, a lower horizon, a three-beat paint-in, and the binding-energy curve.
+    - The voyage: the beams fade after view 0, and A and B sparkle in clear sky.
+  - **Other:**
+    - Clawd has ink eyes in S03-S05 too.
+    - The humans' code panels are 1.5x in S02, S15 and S19, and 1.75x in S13.
+    - A replacement agent (L2) finished the lab humans and S02 after agent L was stopped by accident.
+  - Verified: 6532 frames, 31/31 shots, A/V +0.0 ms, 0 single-frame spikes, 0 short bursts. Every
+    continuity cut is 0.4-3.7; the new jumps are all intended (S02's flood, the 33.1 shock wave,
+    S36's paint-in, the 73.1 bloom).
+  - Cut 17 is in git (7aeb943), its clips in `backups/cut17/`, and the film in `out/film_cut17.mp4`.
 - 2026-09-29: CUT 17 (Revisions 17-18, Claire). The film is `out/film.mp4` (= `out/film_cut17.mp4`).
   - **S16 and S17:** S16 (the GPU hall) is one bar (45), and S17 (the dive) is 46.
   - **S18 (47-50):** the catch on 47.4, five first edits on bar 48's drum hits, `paint(cursors=10)`

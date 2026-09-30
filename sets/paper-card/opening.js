@@ -22,6 +22,13 @@
 // per character with the caret. On the last beat it clicks: the panel flashes as S13's clicks do,
 // the light surges through Clawd's shape, the camera flies through as before and the cursor
 // withdraws. The last frame (the warm wash) is unchanged.
+// R19 (Claire, cut 17: "a burst of light that transitions into S03 on click"): the click is a burst of
+// warm light from the cursor's tip. A white-hot flash at the tip; a front of light runs out from it through
+// Clawd's shape and across the black card, which glows through behind it like lit tissue, so the frame
+// floods to warm light while the camera flies through Clawd into it; the glow holds white through the
+// fly-through and settles into the tissue's warm wash that S03 opens from (frame 298 is unchanged). The
+// cursor stays pressed on his shape and the panel stays put: both dissolve into the light (card.js
+// st.burst). Every frame before the click is as before.
 import { smoothstep, clamp, hash } from '../../lib/util.js';
 import { GLYPH } from '../../lib/clawd.js';
 import { SPARK, CARD_GEOM } from '../../lib/spark.js';
@@ -153,35 +160,50 @@ function cursorState(f, c1, fLight) {
 // `(corpus)`, landing on the chops at 235, 253 and 271 and the snare at 276); the click on 281.
 export const CMD = 'train(corpus)';
 const KEYS = [235, 238, 241, 244, 247, 253, 256, 259, 262, 265, 268, 271, 276];
-const F_CLICK = 281, CMD_IN = [227, 234], CMD_OUT = [283, 293];
+const F_CLICK = 281, CMD_IN = [227, 234], CMD_END = 293;
 const surgeAt = (f) => (f < F_CLICK ? 0 : 0.55 * Math.exp(-(f - F_CLICK) / 5) * (1 - smoothstep(287, 295, f)));
 // the cursor's tip rests on Clawd's shape, low on his right side (card px, Clawd's frame), and
 // presses there on the click
 const TIP = [200, 88];
 const cmdPress = (f) => Math.exp(-Math.pow((f - F_CLICK) / 1.3, 2));
-// It lies on the card, so it rides the card's magnification (mcOf), the fly-through included: after
-// the click it lifts away toward the hand as the card rushes past, and is gone before the card plane.
+// It lies on the card, so it rides the card's magnification (mcOf), the fly-through included: (R19) after
+// the click it stays on his shape, dissolving in the burst, and the rushing card carries it off frame.
 function cmdAt(ff, mcOf) {
-  const mc = mcOf(ff), w = easeIn((ff - CMD_OUT[0]) / (CMD_OUT[1] - CMD_OUT[0]));
-  const tp = ff >= CMD_OUT[0] ? [TIP[0] + 160 * w, TIP[1] + 220 * w] : TIP;
-  const onCard = [960 + mc * tp[0], 540 + mc * tp[1]];
+  const mc = mcOf(ff);
+  const onCard = [960 + mc * TIP[0], 540 + mc * TIP[1]];
   if (ff < CMD_IN[1]) return { p: lerp2(CUR_IN, onCard, 1 - Math.pow(1 - clamp((ff - CMD_IN[0]) / (CMD_IN[1] - CMD_IN[0])), 2.4)), press: 0, mc };
-  return { p: onCard, press: ff >= CMD_OUT[0] ? 0 : cmdPress(ff), mc };
+  return { p: onCard, press: cmdPress(ff), mc };
+}
+// (R19) the burst: the front's radius (card px) runs out from the tip; the glow behind it is brightest at
+// the tip (falling toward the front, evening out once the front has left the frame), comes up in two frames,
+// holds through the fly-through and gives way to the wash by 298; the front's rim and the tip's white-hot
+// core flash and fade
+const BURST = { R: 820, dur: 7, soft: 170, glow: 2.3, fall: 0.6, hold: [7, 15], rim: 0.35, core: 5, vig: 0.7 };
+function burstAt(f) {
+  if (f < F_CLICK || f >= F_END) return null;
+  const t = f - F_CLICK;
+  return { c: TIP, r: 12 + BURST.R * (1 - Math.pow(1 - clamp(t / BURST.dur), 2)), soft: BURST.soft,
+    glow: BURST.glow * smoothstep(-1, 2, t) * (1 - smoothstep(BURST.hold[0], BURST.hold[1], t)),
+    fall: BURST.fall * (1 - smoothstep(4, 8, t)),
+    rim: BURST.rim * Math.exp(-t / 4), core: BURST.core * Math.exp(-t / 2.2), coreR: 16 + 10 * t,
+    // the vignette lifts while the frame is flooded (white to the corners), back to the card's 0.2 by 297
+    vig: 0.2 * (1 - BURST.vig * smoothstep(1, 5, t) * (1 - smoothstep(BURST.hold[0], BURST.hold[1] + 1, t))) };
 }
 function cmdCursor(f, mcOf) {
-  if (f < CMD_IN[0] || f > CMD_OUT[1]) return null;
+  if (f < CMD_IN[0] || f > CMD_END) return null;
   const S = SHUTTER.map((d) => cmdAt(f + d, mcOf));
   if (S.every((s) => s.p[0] > 2040 || s.p[1] > 1180)) return null;     // off frame
   return { samples: S.map((s) => [s.p[0], s.p[1], CUR_SCALE * s.mc * (1 - 0.05 * s.press), s.press]), rimD: 3.0, cool: 0.22 };
 }
 // the code panel (S13's recipe): beside the cursor's tip, opening as the typing starts, one character
 // per keystroke with the caret, flashing on the click, then folding away
+// (R19) after the click it stays open and dissolves into the burst (its alpha a)
 function cmdPanel(f, mcOf) {
   const t0 = KEYS[0] - 1;
-  const open = easeOut(clamp((f - t0 + 2) / 3)) * (1 - easeInOut(clamp((f - F_CLICK - 1) / 4)));
-  if (f < t0 - 2 || open <= 0.001) return null;
+  const open = easeOut(clamp((f - t0 + 2) / 3)), a = 1 - smoothstep(F_CLICK + 0.5, F_CLICK + 5, f);
+  if (f < t0 - 2 || open <= 0.001 || a <= 0.001) return null;
   const tip = cmdAt(f, mcOf).p, n = KEYS.filter((k) => f >= k).length;
-  return { x: tip[0] + 60, y: tip[1] + 34, text: CMD, open, typed: n / CMD.length, caret: f < F_CLICK,
+  return { x: tip[0] + 60, y: tip[1] + 34, text: CMD, open, a, lit: smoothstep(F_CLICK, F_CLICK + 1.5, f), typed: n / CMD.length, caret: f < F_CLICK,
     flash: Math.exp(-Math.pow((f - F_CLICK) / 4, 2)) * (f >= F_CLICK - 2 ? 1 : 0) };
 }
 
@@ -241,6 +263,7 @@ export function openingState(T, f) {
   const mcOf = (ff) => D0 / Math.max(dAt(ff), 0.004);
   const cursor = f < 155 ? cursorState(f, c1, fLight) : (cardOn ? cmdCursor(f, mcOf) : null);
   const panel = f < 155 || !cardOn ? null : cmdPanel(f, mcOf);
+  const burst = burstAt(f);
   return { light, lamp, rays, rank: RANK, cells, rot, rotSpan, glint: [gI, gDir, 5], mc, mt,
-    cc: [960, 540], tc: [960, 540], cardOn, exposure, haze, god, seed: f % 97, cursor, panel };
+    cc: [960, 540], tc: [960, 540], cardOn, exposure, haze, god, seed: f % 97, cursor, panel, burst, vig: burst ? burst.vig : undefined };
 }

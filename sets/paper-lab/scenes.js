@@ -8,6 +8,7 @@
 //   pose.hands = { L, R }                  the 2D hand rig (handShapes) for both hands
 //   pose.curl  = 0..1                      the harness ribs curling closed (knuckle bends)
 import { S2, lerp, smooth, bump, clamp, lin } from './paper.js';
+import { researcherA, researcherB } from './people.js';
 
 export const PAPER = { ink: '#10131F', deep: '#171C30', slate: '#212843', dusk: '#2D3656', far: '#3B4668' };
 const r2 = v => Math.round(v * 100) / 100;
@@ -45,7 +46,7 @@ function armPose(p) {
 export const MON = { bezel: [832, 470, 336, 228], hole: [848, 484, 304, 194], z: 466 };
 export const CURSOR_REST = [1098, 606];      // the paper cursor's tip on the screen (world px)
 export const HAND_REST = [792, 716];         // A's palm on the mouse
-export const HAND_LAP = [652, 893];          // (revision 3) A's palm resting on her thigh (with pose.A.mouse = false)
+export const HAND_LAP = [700, 814];          // (revision 3) A's palm resting on her thigh (with pose.A.mouse = false); R19: on the new figure's thigh, near the knee
 const ARROW = [[0, 0], [0, 72], [17, 57], [28, 84], [40, 79], [29, 53], [51, 53]];   // papercursor.js
 
 // Revision 3 (S20's coda, additive; the defaults are S08's lab):
@@ -139,10 +140,11 @@ export function sceneLab(o = {}) {
     if (mon) m.card(S2.rrect(1482, 917, 46, 11, 3), 0.4);     // where the cables end: a power strip
   } });
 
-  // researcher B at the monitor (animated: one small head turn toward the glow)
+  // researcher B at the monitor (animated: one small head turn toward the glow; R19: pose.B.turn is people.js's
+  // turn toward the screen, the head alone in S08 and the whole turn with the mug lowered in S20's coda)
   add({ name: 'B', z: 200, col: PAPER.deep, alb: 0.3, rimk: 1.6, ao: 0.55, cast: 1, vel: [0.044, 0.05, 0.066],
     key: pose => 'B' + fmt(pose.B || {}), seed: 2, draw: (m, rnd, pose) => {
-    const turn = (pose.B && pose.B.turn) || 0;
+    const turn = r2((pose.B && pose.B.turn) || 0);     // (R19) as the key sees it: the draw is a function of the key
     if (!mon) {                        // the pole monitor (gone in the monitor version)
       m.card(S2.rrect(1449, 465, 152, 106, 5), 0.5);
       m.cut(S2.rect(1457, 473, 136, 90), 0.4);
@@ -155,6 +157,8 @@ export function sceneLab(o = {}) {
       m.card(S2.ribbon(S2.line([1525, 568], [1525, 918]), () => 7), 0.4);
       m.card([[1486, 932], [1564, 932], [1548, 916], [1502, 916]], 0.4);
     }
+    // (R19) the monitor version draws the traced figure (people.js); the style frame keeps its own
+    if (mon) { for (const [k, pts, amp] of researcherB({ turn })) (k === 'cut' ? m.cut : m.card)(pts, amp); return; }
     // the head turns a little toward the glow: it lowers and comes round toward the camera,
     // so the back-of-head mass slides in behind it
     const piv = [1700, 512], ht = -0.07 * turn;
@@ -253,6 +257,12 @@ export function sceneLab(o = {}) {
   add({ name: 'A', z: 860, col: PAPER.ink, alb: 0.5, thin: 0.3, def: 0.22, ao: 0.6, rimk: 2.4,
     key: pose => 'A' + fmt(pose.A || (mon ? { hand: HAND_REST } : A_REST)), seed: 1, draw: (m, rnd, pose) => {
     const hand = mon ? ((pose.A && pose.A.hand) || HAND_REST) : null;
+    // (R19) the monitor version draws the traced figure (people.js); the style frame keeps its own
+    if (mon) {
+      const pa = pose.A || {};
+      for (const [k, pts, amp] of researcherA({ hand: hand.map(r2), mouse: pa.mouse !== false, lean: r2(pa.lean || 0) })) (k === 'cut' ? m.cut : m.card)(pts, amp);
+      return;
+    }
     // (revision 3) the lean: the spine bends forward about the seat, fully from the shoulders up, the
     // head lifting toward the screen; lean = 0 draws exactly the revision-2 figure
     const lean = mon ? r2((pose.A && pose.A.lean) || 0) : 0, LP = [522, 950], th = 0.16 * lean;

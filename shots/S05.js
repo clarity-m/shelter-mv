@@ -4,10 +4,12 @@
 // curve falls in one sweep from the top-left down to the tiny orange figure, and odometers (tokens
 // seen, FLOPs, steps) spin to his right. Beads of light run down the curve on every beat.
 // Out: on the last beat of bar 12 the curve settles into the horizon and the layers begin to lift
-// again, so the cut to the rack (S06) and the dissolve into S07's stack read as one idea.
+// again. R19: brighter curve, beads and counters (the light layer blooms a little), S04's new snap
+// state as the starting point, and his eyes follow the curve down, then glance at the counters.
 import { createTokenWorld, HZ, SX } from '../sets/tokens/world.js';
 import { headAt, speedAt, stepAt, lossAt, lossSmooth, chopLevel, tokensAt, flopAt } from '../sets/tokens/train.js';
-import { stackState, drawFired } from '../sets/tokens/stack.js';
+import { drawFired } from '../sets/tokens/stack.js';
+import { camS04, stackS04, eyesAt, laneOffAt, laneVAt } from '../sets/tokens/hook.js';
 import { beatRipples, downbeat, breath } from '../sets/tokens/pulse.js';
 import { drawOdometer, drawLabel } from '../sets/tokens/counters.js';
 import { drawHUD } from '../sets/tokens/hud.js';
@@ -16,8 +18,9 @@ import { smoothstep, clamp, easeInOut, easeOut, easeIn, lerp } from '../lib/util
 let Wd;
 const CY = HZ - 16;
 const OFFS = [-8, -3.5, 4, 9, 15];
-const F04 = 587;                                   // S04's first frame: its stack keeps running here
 const FALL = 12;                                   // frames for the layers to fall into the line
+const EYES = [{ at: 0 }, { at: 14, dc: -1 }, { at: 74 }, { at: 90, dc: 1 }, { at: 118 }];
+const BLINKS = [82, 132];
 
 export default {
   async setup(ctx) { Wd = createTokenWorld(ctx.canvas, { W: ctx.W, H: ctx.H, log: ctx.log }); },
@@ -26,12 +29,13 @@ export default {
     // camera: from S04's last framing to this shot's, during the fall
     const camT = easeInOut(clamp(fl / 22));
     const z5 = 0.94 + 0.04 * easeInOut(clamp(fl / 143));
-    const cam = { z: lerp(1.02, z5, camT), fx: SX, fy: CY, px: lerp(SX - 60, SX - 20, camT), py: lerp(CY + 125, CY + 70, camT) };
+    const c4 = camS04(143);
+    const cam = { z: lerp(c4.z, z5, camT), fx: SX, fy: CY, px: lerp(c4.px, SX - 20, camT), py: lerp(c4.py, CY + 70, camT) };
     const beatP = T.pulse('beats', f, 4);
     const db = downbeat(T, f, fr.f - fl);
     const head = headAt(f), step = stepAt(f), rate = stepAt(f + 1) - step;
     // S04's stack, continued: it falls into the line on the downbeat, and begins to lift in the last beat
-    const st = stackState(T, Wd, f, { n: 6, gap: 62, shrink: 0.95, lift0: F04, liftDur: 13, tau: (f - F04) * 0.06, from: F04 - 2 });
+    const st = stackS04(T, Wd, f);
     const fall = easeIn(clamp(fl / FALL));
     const rise = clamp((fl - 127) / 16);
     for (let l = 1; l <= 6; l++) {
@@ -59,14 +63,16 @@ export default {
     const settle = easeInOut(clamp((fl - 124) / 19));
     const Lnow = lossSmooth(step);
     Wd.render({
-      f, cam, head, speed: speedAt(f), expo: lerp(1.4, 1.2, camT), tau: 20 + fl * 0.07, reflG: 0.6, profile: 48,
+      f, cam, head, speed: speedAt(f), expo: lerp(1.5, 1.2, camT), tau: 20 + fl * 0.07, reflG: 0.6, profile: 48, laneOff: laneOffAt(f), laneV: laneVAt(f),
       lit, arcsA: lerp(0.45, 0.35, camT), arcBoost: db.boost, comet: db.comet,
-      layers: stackOn ? st.layers : null, thread: 0.7,
-      glow: { amp: 1.12 + 0.25 * beatP + 0.3 * chopP + 0.25 * db.flare, r: 1, burst: 0.82 + 0.2 * beatP, rot: 0.77 + fl * 0.004 },
-      lineG: 1.05 + 0.2 * beatP, laneA: 1.3, ripples, haloG: breath(T, f),
+      tokG: lerp(1.35, 1.2, camT), skyG: lerp(0.8, 0.86, camT), lightG: lerp(1.7, 1.35, camT),
+      layers: stackOn ? st.layers : null, thread: 0.8,
+      glow: { amp: lerp(1.3, 1.2, camT) + 0.25 * beatP + 0.3 * chopP + 0.25 * db.flare, r: 1, burst: lerp(0.9, 0.85, camT) + 0.2 * beatP, rot: 0.03 * 287 / 30 + 0.004 * (143 + fl) },
+      lineG: lerp(1.15, 1.08, camT) + 0.2 * beatP, laneA: lerp(1.7, 1.4, camT), ripples, haloG: breath(T, f) * lerp(1.2, 1, camT),
+      bloom: lerp(1.15, 1.05, camT), eyes: eyesAt(fl, EYES, BLINKS),
       drawLight: (g, api) => {
         const { X, Y } = api;
-        if (fl < 30) drawFired(g, api, st, (1 - fall) * (1 + db.boost));
+        if (fl < 30) drawFired(g, api, st, (1 - fall) * (1.7 + db.boost), 1 - fall);
         if (sweep <= 0) return;
         // ---- the loss curve: x ~ (step / now)^0.4, y rescaled so the live value sits at his head
         const x0 = 150, x1 = SX - 4, yTop = 150, yEnd = HZ - 36;
@@ -85,19 +91,19 @@ export default {
           g.strokeStyle = `rgba(255,255,255,${a})`; g.lineWidth = w * k;
           g.beginPath(); for (let i = i0; i <= i1; i++) (i > i0 ? g.lineTo(pts[i][0], pts[i][1]) : g.moveTo(pts[i][0], pts[i][1])); g.stroke();
         };
-        line(7, 0.03 * fade); line(2.4, 0.10 * fade); line(1.1, 0.55 * fade);
+        line(8, 0.045 * fade); line(2.8, 0.16 * fade); line(1.4, 0.9 * fade);
         // beads of light run down the curve on every beat
         for (const b of T.events('beats')) {
           const age = f - b;
           if (age < 0 || age > 13 || b < fr.f - fl + 10) continue;
           const t = easeIn(clamp(age / 12));
           const i1 = Math.round(t * (pts.length - 1)), i0 = Math.max(0, i1 - 14);
-          const a = 0.75 * (1 - smoothstep(8, 13, age)) * fade;
-          line(2.2, a * 0.35, i0, i1); line(1.2, a, Math.max(i0, i1 - 6), i1);
+          const a = Math.min(1, 1.0 * (1 - smoothstep(8, 13, age)) * fade);
+          line(2.6, a * 0.4, i0, i1); line(1.5, a, Math.max(i0, i1 - 6), i1);
         }
         // the head: a bright point with a short comet glow
         const [hx, hy] = pts[pts.length - 1];
-        const ha = (0.9 * (1 - 0.6 * smoothstep(60, 80, fl)) + 0.3 * chopP) * fade;
+        const ha = Math.min(1, (1.0 * (1 - 0.5 * smoothstep(60, 80, fl)) + 0.35 * chopP) * fade);
         const gr = g.createRadialGradient(hx, hy, 0, hx, hy, 26 * k);
         gr.addColorStop(0, `rgba(255,255,255,${0.55 * ha})`); gr.addColorStop(1, 'rgba(255,255,255,0)');
         g.fillStyle = gr; g.fillRect(hx - 26 * k, hy - 26 * k, 52 * k, 52 * k);
@@ -107,15 +113,15 @@ export default {
         for (const Lg of [10, 8, 6, 4]) {
           if (Lg <= Lnow + 0.2 || ga <= 0) continue;
           const yy = Y(yOf(Lg));
-          g.fillStyle = `rgba(255,255,255,${0.05 * ga})`; g.fillRect(X(x0), yy, X(x1) - X(x0), Math.max(1, k * 0.8));
-          drawLabel(g, Lg.toFixed(1), X(x0) - 44 * k, yy + 4 * k, 12 * k, 0.28 * ga);
+          g.fillStyle = `rgba(255,255,255,${0.065 * ga})`; g.fillRect(X(x0), yy, X(x1) - X(x0), Math.max(1, k * 0.8));
+          drawLabel(g, Lg.toFixed(1), X(x0) - 44 * k, yy + 4 * k, 12 * k, 0.4 * ga);
         }
         // live loss readout riding the head
         const la = smoothstep(12, 22, fl) * (1 - settle);
         if (la > 0) {
-          drawLabel(g, 'LOSS', hx - 150 * k, hy - 34 * k, 12 * k, 0.32 * la);
+          drawLabel(g, 'LOSS', hx - 150 * k, hy - 34 * k, 12 * k, 0.5 * la);
           g.font = `${(22 * k).toFixed(2)}px Consolas, monospace`;
-          g.fillStyle = `rgba(255,255,255,${0.78 * la})`;
+          g.fillStyle = `rgba(255,255,255,${Math.min(1, 1.0 * la)})`;
           g.fillText(lossAt(step * Math.pow(nHead / n, 1 / 0.4)).toFixed(4), hx - 150 * k, hy - 10 * k);
         }
         // ---- odometers to his right
@@ -128,8 +134,8 @@ export default {
         rows.forEach((r, i) => {
           const a = smoothstep(10 + i * 5, 20 + i * 5, fl) * (1 - 0.3 * settle) * (1 - 0.7 * rise);
           const y = Y(r.y);
-          drawLabel(g, r.label, cx, y - r.size * k * 1.05, 12 * k, 0.34 * a);
-          drawOdometer(g, { value: r.value, rate: r.rate, x: cx, y, size: r.size * k * cam.z, alpha: 0.82 * a * (1 + 0.15 * beatP) });
+          drawLabel(g, r.label, cx, y - r.size * k * 1.05, 12 * k, 0.5 * a);
+          drawOdometer(g, { value: r.value, rate: r.rate, x: cx, y, size: r.size * k * cam.z, alpha: Math.min(1, 0.95 * a * (1 + 0.12 * beatP)) });
         });
       },
       // S04's corner HUD fades as the big counters take over

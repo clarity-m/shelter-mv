@@ -35,7 +35,7 @@ uniform float uMaxH;
 uniform float uHumanOn; uniform vec3 uHPos, uHF, uHR; uniform vec4 uHB;
 uniform float uTreeOn; uniform vec3 uTPos; uniform vec4 uTB; uniform vec4 uTrA[4]; uniform vec4 uTrB[4]; uniform vec4 uCan[11]; uniform vec4 uCanG[11]; uniform float uCanK, uLeafAmp;
 uniform vec4 uCGlow; uniform float uAuraK, uAuraS;
-uniform int uNTow; uniform vec4 uTowA[24]; uniform vec4 uTowB[24]; uniform float uTowWin, uTowEdge, uCityPulse, uTime;
+uniform int uNTow; uniform vec4 uTowA[64]; uniform vec4 uTowB[64]; uniform float uTowWin, uTowEdge, uCityPulse, uTime;
 uniform vec4 uRingC, uRingN; uniform vec3 uRingE1; uniform float uRing;
 uniform vec3 uCloudOff;
 uniform float uGridA, uFloorGrid, uFog, uTowFog;
@@ -221,7 +221,7 @@ float iTower(vec3 ro, vec3 rd, int i, float tmax, out vec3 nOut) {
 }
 float castTowers(vec3 ro, vec3 rd, float tmax, out vec3 n, out int idx) {
   float tb = tmax; idx = -1; n = vec3(0.0, 1.0, 0.0);
-  for (int i = 0; i < 24; i++) {
+  for (int i = 0; i < 64; i++) {
     if (i >= uNTow) break;
     vec3 ni; float t = iTower(ro, rd, i, tb, ni);
     if (t < tb) { tb = t; n = ni; idx = i; }

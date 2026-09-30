@@ -198,23 +198,31 @@ function onTable(x, z) {
 // the drafting ring round the base (the beams come from them), and the sea: rows across the camera's
 // wedge to the horizon, spacing growing with depth, each arriving (a flash, a hop) as the crowd's
 // front, racing outward from the base (exponential in the radius), passes it; none stands in front
-// of the platform, and none on the diagram's table.
+// of the platform, and none on the diagram's table. Revision 19 (Claire): the crowd stands back from
+// the base so the anchor reads: the ring from 6.8 m out, and no one whose figure (at rest) would
+// overlap the platform's lines.
 const CLAWD_W = CLAWD_U * 18;
+const BASE = [755, 765, 1165, 895];                                  // the platform's lines at rest, px
+const hidesBase = (sx, zc) => {
+  const hw = 0.5 * F3 * CLAWD_W / zc + 4, yb = PPY + F3 * CAM_Y / zc, yt = yb - F3 * 10 * CLAWD_U / zc - 4;
+  return sx + hw > BASE[0] && sx - hw < BASE[2] && yb > BASE[1] && yt < BASE[3];
+};
 const RING = (() => {
   const out = [];
   for (let i = 0; out.length < 44 && i < 600; i++) {
-    const a = 2 * Math.PI * hash(i, 1), r = 3.2 + 4.2 * Math.sqrt(hash(i, 2));
+    const a = 2 * Math.PI * hash(i, 1), r = 6.8 + 4.0 * Math.sqrt(hash(i, 2));
     const x = AXIS[0] + r * Math.cos(a), z = AXIS[2] + r * Math.sin(a);
     const p = project(B3, [x, 0.3, z]);
     if (p[2] < 11 || p[0] < 60 || p[0] > 1860) continue;
     if (p[2] < D + 2 && Math.abs(p[0] - PPX) < 250 + 0.5 * F3 * CLAWD_W / p[2]) continue;
+    if (hidesBase(p[0], p[2])) continue;
     if (out.some((o) => Math.hypot(o.x - x, o.z - z) < 0.8)) continue;
     const [lx, lz] = lat([x, 0, z]);
     out.push({ x, z, ph: hash(i, 3), back: hash(i, 4), table: onTable(lx, lz) });
   }
   return out;
 })();
-const FRONT = [[0, 7.5], [34, 28], [70, 170], [96, 900]];
+const FRONT = [[0, 11], [34, 30], [70, 170], [96, 900]];
 const bornAt = (r) => {
   for (let i = 1; i < FRONT.length; i++) if (r <= FRONT[i][1]) { const [a, ra] = FRONT[i - 1], [b, rb] = FRONT[i]; return a + (b - a) * Math.log(Math.max(r, ra) / ra) / Math.log(rb / ra); }
   return 1e9;
@@ -228,7 +236,8 @@ const SEA = (() => {
       const xl = -half + (k + ph + 0.9 * (hash(row, k, 41) - 0.5)) * s, zl = z + 0.6 * (hash(row, k, 42) - 0.5) * s;
       const x = B3.pos[0] + B3.fw[0] * zl + B3.right[0] * xl, zz = B3.pos[2] + B3.fw[2] * zl + B3.right[2] * xl;
       const r = Math.hypot(x - AXIS[0], zz - AXIS[2]);
-      if (r < 7.6) continue;                                   // the ring's ground
+      if (r < 11.0) continue;                                  // the ring's ground
+      if (hidesBase(PPX + F3 * xl / zl, zl)) continue;         // the base stays clear
       if (zl < D + 3 && Math.abs(F3 * xl / zl) < 250 + 0.5 * F3 * CLAWD_W / zl) continue;   // the lane
       out.push({ x, z: zz, ph: hash(row, k, 43), born: bornAt(r) + 3 * (hash(row, k, 44) - 0.5), r, table: onTable(xl, zl) });
     }

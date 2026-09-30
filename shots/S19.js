@@ -132,7 +132,9 @@ export default {
       const press = Math.max(Math.exp(-Math.pow((s - SEL) / 2.2, 2)), Math.exp(-Math.pow((s - ENTER) / 2.2, 2)));
       // its label (S10's paper panel): typed after the selection, run on the second click
       const open = easeOut(clamp((s - SEL - 1) / 4)) * (1 - easeInOut(clamp((s - ENTER - 2) / 6)));
-      if (open > 0.001) CUR.panel(g, x + 64, y + 34, CODE, { open, typed: clamp((s - SEL - 3) / 10), caret: s < ENTER, flash: Math.exp(-Math.pow((s - ENTER) / 4, 2)) * (s >= ENTER - 2 ? 1 : 0) });
+      // (revision 19, lead) the humans' panel at 1.5x, like S02's and S15's, readable at phone size
+      if (open > 0.001) { g.save(); g.translate(x + 64, y + 34); g.scale(1.5, 1.5);
+        CUR.panel(g, 0, 0, CODE, { open, typed: clamp((s - SEL - 3) / 10), caret: s < ENTER, flash: Math.exp(-Math.pow((s - ENTER) / 4, 2)) * (s >= ENTER - 2 ? 1 : 0) }); g.restore(); }
       if (away < 1) CUR.draw(g, x, y, { s: 1.2, press, rot: -0.06, fill: PAPER.slate, bs: 1.2 * k / 1.45 });
     }
     g.restore();

@@ -21,6 +21,11 @@
 // painted and there are no props; the chips exist only as light. The hero die is a flat teal floor
 // for the chip. Clawd watches from the floor of a well; the crowd arrives with one hop each and then
 // stands still, arms up (the eyes carry it). Structure, timing and the landing are unchanged.
+// Revision 19 (Claire): the crowd stands scattered, not in a row; and beside the chip, on the lattice,
+// the physics is drawn in light like S27's force diagram: the band structure the periodic potential
+// makes (Kronig-Penney, P = 3pi/2), energy against crystal momentum k in the extended zone, over the
+// free-electron parabola, with the gaps opening at the zone edges k = +-pi/a. It draws in as the chip
+// spreads and fades before the camera looks down, so the landing is untouched.
 // Sung onsets (local): 15, 28, 63, 72, 94, 118, 145, 172, 190, 198, 208.
 import { makeStage, clamp, lerp, ss, easeInOut, easeOut } from '../sets/valley/shotkit.js';
 import { NEUTRAL, RUN, solidGrid } from '../sets/valley/clawd3d.js';
@@ -81,6 +86,76 @@ const CLAWD = { x: W.x0 - 0.5 * PITCH, z: W.z0 + 0.5 * PITCH };     // (revision
 const ROW_N = 22, ACC = 0.1, LINE_Z = W.z0, LANE_V = 2.4;
 let St, SM, STROKES, CUR, LL, GT, CROWD, CHIP, STREAM, RINGS;
 
+// ---------------------------------------------------------------- revision 19: the band structure in light
+// On die (-1, 0), left of the chip: k across (x), E up the ground away from the lens (+z). The Kronig-
+// Penney relation cos(ka) = cos(qa) + P sin(qa)/qa, P = 3pi/2, qa the free wavenumber; E ~ (qa)^2.
+// Extended zone, bands 1-2 (k to +-2pi/a) over the free-electron parabola; the gaps open at +-pi/a.
+const BAND = (() => {
+  const Pk = 1.5 * Math.PI, EMAX = 4 * Math.PI * Math.PI;
+  const dw = (u, v) => { const q = dieToWorld(W, -1, 0, u, v); return [q[0], q[1]]; };
+  const at = (kA, E) => dw(0.66 + 0.135 * kA / Math.PI, 0.9 - 0.8 * E / EMAX);   // kA = k a (in -2pi..2pi); in view, beside the chip
+  const lines = [];   // { pts: [[x, z]], t0, t1, heat, w, alpha, dash }
+  const add = (pts, t0, t1, heat, w, alpha, dash = 0) => lines.push({ pts, t0, t1, heat, w, alpha, dash });
+  // axes: k across at E = 0, E up at k = 0, with arrowheads
+  add([at(-2.2 * Math.PI, 0), at(2.25 * Math.PI, 0)], 84, 92, -0.55, 2.4, 0.9);
+  add([at(0, -1.5), at(0, EMAX * 1.08)], 86, 94, -0.55, 2.4, 0.9);
+  const ah = (a, b, c) => add([a, b, c], 93, 95, -0.55, 2.0, 0.85);
+  ah(at(2.1 * Math.PI, 0.9), at(2.25 * Math.PI, 0), at(2.1 * Math.PI, -0.9));
+  ah(at(-0.1 * Math.PI, EMAX * 1.03), at(0, EMAX * 1.08), at(0.1 * Math.PI, EMAX * 1.03));
+  // the free-electron parabola, dashed
+  const par = []; for (let i = 0; i <= 80; i++) { const kA = -2 * Math.PI + 4 * Math.PI * i / 80; par.push(at(kA, kA * kA)); }
+  add(par, 92, 106, -0.3, 1.6, 0.45, 1);
+  // the bands (both signs of k)
+  const f = (qa) => Math.cos(qa) + Pk * Math.sin(qa) / qa;
+  const bands = [[], []], edges = [[1e9, -1e9], [1e9, -1e9]];
+  for (let i = 1; i <= 1600; i++) {
+    const qa = 2 * Math.PI * i / 1600, v = f(qa), band = qa <= Math.PI ? 0 : 1;
+    if (Math.abs(v) > 1) continue;
+    const ac = Math.acos(Math.max(-1, Math.min(1, v))), kA = band === 0 ? ac : 2 * Math.PI - ac, E = qa * qa;
+    bands[band].push([kA, E]); edges[band][0] = Math.min(edges[band][0], E); edges[band][1] = Math.max(edges[band][1], E);
+  }
+  bands.forEach((B, bi) => {
+    for (const sg of [1, -1]) add(B.map(([kA, E]) => at(sg * kA, E)), 98 + 7 * bi, 110 + 7 * bi, 0.9, 3.2, 1.0);
+  });
+  // the zone edges +-pi/a (dashed) and the first gap's edges across (dotted)
+  for (const sg of [1, -1]) add([at(sg * Math.PI, -1), at(sg * Math.PI, EMAX * 0.98)], 110, 118, 0.5, 1.5, 0.6, 1);
+  add([at(-2 * Math.PI, edges[0][1]), at(2 * Math.PI, edges[0][1])], 116, 122, -0.4, 1.2, 0.5, 2);
+  add([at(-2 * Math.PI, edges[1][0]), at(2 * Math.PI, edges[1][0])], 116, 122, -0.4, 1.2, 0.5, 2);
+  // labels (ground text, left to right from the lens)
+  const lab = (text, kA, E, h, t0) => { const [x, z] = at(kA, E); return { text, x, z, h, t0, a: (fl) => ss(t0, t0 + 3, fl) * (1 - ss(186, 196, fl)) * 0.8 }; };
+  const gapE = 0.5 * (edges[0][1] + edges[1][0]);
+  const labels = [
+    lab('E', 0.14 * Math.PI, EMAX * 1.04, 0.5, 96), lab('k', 2.32 * Math.PI, -0.6, 0.5, 94),
+    lab('pi/a', 0.8 * Math.PI, -4.0, 0.4, 114), lab('-pi/a', -1.35 * Math.PI, -4.0, 0.4, 114),
+    lab('gap', 1.1 * Math.PI, gapE - 1.2, 0.42, 120), lab('gap', -1.9 * Math.PI, gapE - 1.2, 0.42, 120),
+    lab('cos(ka) = cos(qa) + P*sin(qa)/qa', -2.3 * Math.PI, -7.5, 0.3, 124),
+  ];
+  return { lines, labels };
+})();
+// the diagram's segments at frame fl: each line drawn on from its start, dashes as gaps, fading at the end
+function bandSegs(out, n, fl, V) {
+  const fade = 1 - ss(186, 196, fl);
+  if (fade <= 0 || fl < 84) return n;
+  for (const L of BAND.lines) {
+    const p = clamp((fl - L.t0) / (L.t1 - L.t0));
+    if (p <= 0) continue;
+    const segN = L.pts.length - 1, m = p * segN;
+    for (let i = 0; i < segN && i < m; i++) {
+      if (L.dash === 1 && (i % 2)) continue;
+      const a = L.pts[i], b0 = L.pts[i + 1], t = Math.min(1, m - i), b = [a[0] + (b0[0] - a[0]) * t, a[1] + (b0[1] - a[1]) * t];
+      if (L.dash === 2) {       // dotted: short dashes along a long line
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]), K = Math.floor(len / 0.35);
+        for (let q = 0; q < K; q += 2) { const u0 = q / K, u1 = (q + 1) / K; out.set([a[0] + (b[0] - a[0]) * u0, 0.05, a[1] + (b[1] - a[1]) * u0, a[0] + (b[0] - a[0]) * u1, 0.05, a[1] + (b[1] - a[1]) * u1, L.w, L.heat, L.alpha * fade], n * 9); n++; }
+        continue;
+      }
+      const front = Math.exp(-Math.max(0, m - i - 1) / 4);      // the drawing tip is hottest
+      out.set([a[0], 0.05, a[1], b[0], 0.05, b[1], L.w, L.heat > 0 ? Math.min(1, L.heat + 0.3 * front) : L.heat, L.alpha * fade], n * 9); n++;
+      if (n * 9 + 9 > out.length) return n;
+    }
+  }
+  return n;
+}
+
 // the chip's lines in die-local coords, resampled into short pieces with their distance from the
 // seed (for the radial spread)
 function pieces(lines, step = 0.012) {
@@ -123,9 +198,10 @@ function planCrowd() {
   const R = rng(3458);
   return Array.from({ length: 12 }, (_, k) => {
     const out = Math.abs(k - 5.5) - 0.5;                    // 0 at the centre .. 5 at the ends
-    const col = k < 6 ? k - 6 : k - 5, x = -9.9 + 1.8 * k;
+    const col = k < 6 ? k - 6 : k - 5, x = -9.9 + 1.8 * k + 1.1 * (R() - 0.5);
+    const zz = LINE_Z + 0.25 + 3.2 * R() * R() + 0.9 * Math.sin(k * 1.7);   // (revision 19: scattered behind the chip)
     const pop = T_CROWD + 0.9 * out + 0.8 * R(), land = pop + 13, fire = land + 1 + 0.9 * out;
-    return { k, x, col, pop, land, fire, head: fire + Math.abs(colX(col) - x) / LANE_V,
+    return { k, x, zz: Math.max(LINE_Z + 0.2, zz), yawJ: 0.5 * (R() - 0.5), col, pop, land, fire, head: fire + (Math.abs(zz - LINE_Z) + Math.abs(colX(col) - x)) / LANE_V,
       speed: 0.55 + 0.1 * R(), off: 187 + 0.8 * out + R(), ph: R() * 4, ang: (k / 12) * Math.PI * 2 };
   });
 }
@@ -136,9 +212,9 @@ function crowdAt(c, fl) {
   const burst = easeOut(clamp(tp / 6));
   const bx = CLAWD.x + Math.cos(c.ang) * 1.4 * burst, bz = CLAWD.z + Math.sin(c.ang) * 0.9 * burst;
   const u = easeInOut(clamp((tp - 5) / 8));
-  let x = lerp(bx, c.x, u), z = lerp(bz, LINE_Z, u);
-  const leap = Math.hypot(c.x - bx, LINE_Z - bz);
-  let grid = G.hopApex, dy = 0, yaw = Math.PI;
+  let x = lerp(bx, c.x, u), z = lerp(bz, c.zz, u);
+  const leap = Math.hypot(c.x - bx, c.zz - bz);
+  let grid = G.hopApex, dy = 0, yaw = Math.PI + c.yawJ;
   if (tp < 6) dy = 0.3 * Math.sin(Math.PI * tp / 6);
   else if (tp < 13) { grid = G.hopStretch; dy = Math.min(1.6, 0.12 * leap) * Math.sin(Math.PI * clamp((tp - 5) / 8)); }
   else grid = G.wonder;
@@ -149,8 +225,8 @@ function crowdAt(c, fl) {
   // then it turns and runs off up the wafer after the light
   const to = fl - c.off;
   if (to >= 0) {
-    yaw = lerp(Math.PI, 0, easeInOut(clamp(to / 5)));
-    if (to >= 3) { const r = to - 3; z = LINE_Z + 0.22 * r + 0.014 * r * r; grid = RUN[Math.floor((r + c.ph) / 2) & 3]; dy = 0.05 * Math.abs(Math.sin(r * 0.9 + c.ph)); }
+    yaw = lerp(Math.PI + c.yawJ, 0, easeInOut(clamp(to / 5)));
+    if (to >= 3) { const r = to - 3; z = c.zz + 0.22 * r + 0.014 * r * r; grid = RUN[Math.floor((r + c.ph) / 2) & 3]; dy = 0.05 * Math.abs(Math.sin(r * 0.9 + c.ph)); }
   }
   return { x, z, dy, grid, yaw };
 }
@@ -219,12 +295,20 @@ export default {
       segs.set([C[0], y, C[1], C[0], y + 0.001, C[1], 7 + 20 * flash, 1, 1], n * 9); n++;
     }
     if (R >= 0) n = dieSegs(segs, n, 0, 0, CHIP, R, 1 - 0.35 * ss(T_GROW[1], 190, fl), 1, 2.8, 0.6);
+    n = bandSegs(segs, n, fl, V);
     // the lane light: from each Clawd's feet along the lane to its column's head
     for (const c of CROWD) {
       if (fl < c.fire) continue;
-      const x1 = colX(c.col), dir = Math.sign(x1 - c.x), L = Math.abs(x1 - c.x), reach = Math.min(L, (fl - c.fire) * LANE_V);
+      const x1 = colX(c.col), dir = Math.sign(x1 - c.x), dz = c.zz - LINE_Z, L = Math.abs(x1 - c.x);
       const fade = (1 - 0.7 * ss(c.head + 4, c.head + 24, fl)) * (1 - ss(182, 194, fl));
       if (fade <= 0.01) continue;
+      // (revision 19: first from its feet down to the lane)
+      const r0 = (fl - c.fire) * LANE_V, rz = Math.min(dz, r0);
+      for (let d = 0; d < rz; d += 0.6) {
+        const d1 = Math.min(rz, d + 0.6), za = c.zz - d, zb = c.zz - d1, hot = r0 < dz ? Math.exp(-(rz - d1) / 3) : 0.2;
+        segs.set([c.x, V.heightAt(c.x, za) + 0.05, za, c.x, V.heightAt(c.x, zb) + 0.05, zb, 2.4, 0.25 + 0.75 * hot, (0.35 + 0.65 * hot) * fade], n * 9); n++;
+      }
+      const reach = Math.max(0, Math.min(L, r0 - dz));
       for (let d = 0; d < reach; d += 0.6) {
         const d1 = Math.min(reach, d + 0.6), xa = c.x + dir * d, xb = c.x + dir * d1, hot = Math.exp(-(reach - d1) / 3);
         segs.set([xa, V.heightAt(xa, LINE_Z) + 0.05, LINE_Z, xb, V.heightAt(xb, LINE_Z) + 0.05, LINE_Z, 2.4, 0.25 + 0.75 * hot, (0.35 + 0.65 * hot) * fade], n * 9); n++;
@@ -274,6 +358,10 @@ export default {
         const text = STREAM.slice(((b + 5) * 4) % STREAM.length).concat(STREAM).slice(0, 6).join('   ');
         runs.push({ path: textPath([[x, zs], [x, C[1] + 150]]), text, h: 0.4, s0: 4 - (fl - T_CROWD) * 0.9, alpha: 0.8 * a });
       }
+    }
+    for (const lb of BAND.labels) {
+      const a = lb.a(fl);
+      if (a > 0.01) runs.push({ path: textPath([[lb.x, lb.z], [lb.x + 30, lb.z]]), text: lb.text, h: lb.h, s0: 0, alpha: a, n: Math.min(lb.text.length, Math.floor((fl - lb.t0) * 2.2) + 1) });
     }
     const P = {
       cam, time: fr.t, learn: { spawn: [0, 0, 0, 1] }, strokes,

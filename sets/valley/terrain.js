@@ -441,11 +441,11 @@ export function buildProps(hl, opts = {}) {
   // --- the spawn pad: a low hexagonal plinth with a warm ring (always "learned"; off in S34's fields)
   if (opts.pad !== false) {
   anchor(0, 0, 2, S('#c8bcaa'), 0.62, 0, 0.1);
-  prism([0, -0.3, 0], [0, 0.07, 0], 1.25, 6, 0, 0, Math.PI / 6);
+  prism([0, -0.3, 0], [0, 0.07, 0], 1.45, 4, 0, 0, 0);          // revision 19: square, like the worlds' tiles (Claire)
   setCol(S('#fff1dc'), 0.95, 0.9);
-  for (let i = 0; i < 6; i++) {
-    const g0 = (i / 6) * 2 * Math.PI + Math.PI / 6, g1 = ((i + 1) / 6) * 2 * Math.PI + Math.PI / 6;
-    const r0 = 0.94, r1 = 1.1, y = 0.076;
+  for (let i = 0; i < 4; i++) {
+    const g0 = (i / 4) * 2 * Math.PI + Math.PI / 4, g1 = ((i + 1) / 4) * 2 * Math.PI + Math.PI / 4;
+    const r0 = 1.09, r1 = 1.28, y = 0.076;
     const p = (r, g) => [Math.cos(g) * r, y, Math.sin(g) * r];
     tri(p(r0, g0), p(r1, g0), p(r1, g1), [0, -1, 0]); tri(p(r0, g0), p(r1, g1), p(r0, g1), [0, -1, 0]);
   }

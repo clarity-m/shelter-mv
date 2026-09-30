@@ -19,22 +19,24 @@ export const STEP_END = 131072;
 
 // Stream speed in chars per frame (at Clawd, in text space).
 export function speedAt(f) {
-  if (f < 587) {                                   // S03: slow, then a subtle build through bars 7-8
-    const u = clamp((f - 443) / 144);
-    return 0.11 + 0.36 * Math.pow(u, 2.2);
+  if (f < 587) {                                   // S03: reading pace, then the riser builds it
+    const u = smoothstep(449, 568, f);              // bar 7.1 -> the end of bar 8's drum-out
+    return 0.12 + 0.24 * Math.pow(u, 1.4);          // stays readable beside him (the lens multiplies it)
   }
-  if (f < 731) return 0.50 + 0.12 * (f - 587) / 144;   // S04: fast motion
-  if (f < 875) return 0.62 + 0.53 * smoothstep(731, 749, f);   // S05: continues S04's pace, then speeds up
+  if (f < 731) return 0.9 + 0.1 * (f - 587) / 144;     // S04: fast motion
+  if (f < 875) return 1.0 + 0.15 * smoothstep(731, 760, f);    // S05: continues S04's pace, then a little faster
   if (f < 1019) return 1.6;                            // S06 (outside; unseen)
   return 2.0 + 1.6 * smoothstep(1019, 1147, f);        // S07: at speed
 }
 
-// Stream head in text space (chars) = sum of speeds; the '#d97757' line reaches him in bar 8.
-const H0 = 1463.5;
+// Stream head in text space (chars) = sum of speeds, placed so the '#d97757' tokens pass through
+// him early in bar 7 (text position ~1492 at frame 468), as the build begins.
 const HEAD = new Float64Array(1300);
 {
-  let h = H0;
+  let h = 0;
   for (let f = 0; f < HEAD.length; f++) { HEAD[f] = h; if (f >= F_START) h += speedAt(f); }
+  const off = 1492 - HEAD[468];
+  for (let f = 0; f < HEAD.length; f++) HEAD[f] += off;
 }
 export function headAt(f) {
   const x = clamp(f, 0, HEAD.length - 1.001), i = Math.floor(x), a = x - i;

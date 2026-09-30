@@ -45,6 +45,7 @@ function cursorOffset(fl) {
   return cur;
 }
 const TURN = [37, 79];     // B's head turn toward the glow (from the kick at 37), done before the push
+const TURN_HEAD = 0.45;    // (R19) the head alone: the first part of people.js's turn (S20's coda turns him fully)
 const FILL_R = 690;        // fill radius: wider than S09's 480 (Clawd covers its hot centre); frame mean matches cut 2
 const TZ = 1650;           // push depth: through the glass (the screen fills the frame, about 6.3x)
 // the four-bar cut's ending, on its own clock (its local frames 0-287, global 1163-1450): the push,
@@ -71,7 +72,7 @@ export function s08State(T, fr) {
   const pose = {
     A: { hand: [HAND_REST[0] + dx / 3.2, HAND_REST[1] + dy / 8] },
     cursor: [CURSOR_REST[0] + dx, CURSOR_REST[1] + dy],
-    B: { turn },
+    B: { turn: TURN_HEAD * turn },
   };
   // the dust on the four-bar cut's time, so the last frame is its last frame
   const st = { cam, light, pose, clawd: SC.clawd, screen: { glow: 0.5 + 0.2 * v }, dust: labDust((REF.f0 + REF.last - (last - fl)) / 30) };

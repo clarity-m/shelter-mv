@@ -127,19 +127,20 @@ export function cityScene(o = {}) {
   const COOL = lin('#9FB3D9');
 
   // revision 9: the ring of satellites (a timed layer: each appears, lit, at its code)
-  if (SATS.at.length) add({ name: 'sats', z: -900, col: PAPER.deep, alb: 0.4, ao: 0, timed: 0.012, ew: 3.2, ef: 0.2, draw: (m) => {
+  // R19 (Claire: highlight the satellites): larger and brighter, and the ring's line bolder
+  if (SATS.at.length) add({ name: 'sats', z: -900, col: PAPER.deep, alb: 0.4, ao: 0, timed: 0.012, ew: 4.6, ef: 0.2, draw: (m) => {
     for (let i = 0; i < RING.n; i++) {
       const t = i / (RING.n - 1), [x, y] = ringAt(t), [x2, y2] = ringAt(Math.min(1, t + 0.002)), ang = Math.atan2(y2 - y, x2 - x);
-      const s = 1.6 * (0.8 + 0.35 * ((i * 7) % 5) / 4), rot = (pts) => pts.map(([px, py]) => [x + (px * Math.cos(ang) - py * Math.sin(ang)) * s, y + (px * Math.sin(ang) + py * Math.cos(ang)) * s]);
+      const s = 2.3 * (0.8 + 0.35 * ((i * 7) % 5) / 4), rot = (pts) => pts.map(([px, py]) => [x + (px * Math.cos(ang) - py * Math.sin(ang)) * s, y + (px * Math.sin(ang) + py * Math.cos(ang)) * s]);
       // (no card: unlit, a satellite is invisible against the night; it appears as it lights)
       const pan = [rot(S2.rect(-10.5, -2.4, 7, 4.8)), rot(S2.rect(3.5, -2.4, 7, 4.8))];
-      pan.forEach((p) => m.timed(p, code(SATS.at[i]), 0.85));
+      pan.forEach((p) => m.timed(p, code(SATS.at[i]), 1.0));
       m.timed(rot(S2.ellipse(0, 0, 2.2, 2.2, 0, 10)), code(SATS.at[i] + 1), 1.0);
     }
     // the ring's own line: fine segments along the arch, lighting as it closes
     for (let k = 0; k < 240; k++) {
       const t0 = k / 240, t1 = (k + 1) / 240, a = ringAt(t0), b = ringAt(t1);
-      m.timed(S2.bar(a, b, 1.6), code(SATS.line((t0 + t1) / 2)), 0.5);
+      m.timed(S2.bar(a, b, 2.6), code(SATS.line((t0 + t1) / 2)), 0.8);
     }
   } });
   add({ name: 'far', z: -620, col: PAPER.far, ao: 0.2, em: COOL.map(v => v * 0.45), draw: (m, rnd) => {

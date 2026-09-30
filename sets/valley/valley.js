@@ -257,6 +257,7 @@ export function createValley(canvas, opts = {}) {
     u1f(p, 'uVoid', P.void || 0); u3f(p, 'uVoidCol', P.voidCol || [0.035, 0.03, 0.09]); u1f(p, 'uExposure', P.exposure || 0.9); u1f(p, 'uFogK', P.fogK === undefined ? 1 : P.fogK); u1f(p, 'uCloudK', P.cloudK === undefined ? 1 : P.cloudK);
     u3f(p, 'uClawdP', S.clawdP); u1f(p, 'uClawdGlow', S.clawdGlow);
     u3f(p, 'uSkyHor', S.sky.hor); u3f(p, 'uSkyLow', S.sky.low); u3f(p, 'uSkyMid', S.sky.mid); u3f(p, 'uSkyZen', S.sky.zen);
+    u1f(p, 'uGreyK', P.greyK === undefined ? 1 : P.greyK);
     u1f(p, 'uHideAgents', P.hideAgents ? 1 : 0); u4f(p, 'uPropGate', P.propGate || [0, 0, -1, -1]); u1f(p, 'uFloor', P.floor || 0); u1f(p, 'uFloorLook', P.floorLook || 0); u2f(p, 'uFloorR', P.floorR || [1e6, 2e6]); u1f(p, 'uMeadowLift', P.meadowLift || 0); u1f(p, 'uCloudFade', P.cloudFade || 0); u1f(p, 'uGhost', 0);
     { const l = L(p, 'uRings[0]'); if (l) { const r = new Float32Array(16); (P.rings || []).slice(0, 4).forEach((q, i) => r.set(q, i * 4)); gl.uniform4fv(l, r); } } u4f(p, 'uVoidGlow', P.voidGlow || [0, 0, 0, 1]);
     u3f(p, 'uCPos', S.clawdP); u4f(p, 'uCRot', S.crot); u1f(p, 'uClawdFill', P.clawdFill || 0);

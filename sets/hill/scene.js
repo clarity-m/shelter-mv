@@ -213,7 +213,18 @@ export const SKYLINE = (() => {
   add(31, 140, 36, 2.8, 0); add(-22, 146, 40, 3.0, 10); add(2, 150, 52, 3.4, 16);
   add(40, 126, 22, 2.2, 0); add(-45, 120, 20, 2.0, 0); add(50, 150, 30, 2.6, 0);
   add(-55, 150, 26, 2.4, 0); add(18, 165, 38, 3.0, 0);
-  return T.slice(0, 24);
+  // (revision 19) the lower city (Claire: it looked sparse): broader, flat-topped mid-rise blocks with
+  // lit windows filling the skyline's base, on a jittered grid through the city, clear of the towers;
+  // appended after them, so the towers (and S24's seed cluster) keep their indices and shapes
+  const tall = T.slice();
+  for (let gz = 0; gz < 6 && T.length < 64; gz++) for (let gx = 0; gx < 12 && T.length < 64; gx++) {
+    const x = -64 + gx * 11.5 + (rnd() - 0.5) * 7, z = 92 + gz * 14 + (rnd() - 0.5) * 8;
+    const w = 2.2 + 1.9 * rnd(), h = 7 + 9 * rnd() * rnd() + 3 * rnd();
+    const taper = 0.02 + 0.06 * rnd(), cap = w * (0.12 + 0.25 * rnd()), rot = rnd() * 0.8;
+    if (tall.some((t) => Math.hypot(t[0] - x, t[1] - z) < t[2] + w + 1.5) || T.slice(tall.length).some((t) => Math.hypot(t[0] - x, t[1] - z) < t[2] + w + 1.0)) continue;
+    T.push([x, z, w, h, taper, cap, rot]);
+  }
+  return T.slice(0, 64);
 })();
 // the shelter's land beyond the hill: a broad low ridge the city stands behind
 export const FAR_RIDGE = [1.3, -4, 62, 55, 11];

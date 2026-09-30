@@ -92,7 +92,7 @@ export const VIEWCAM = [
   // (R14: closer, so the near sails are large and cut by the frame and the sheet's regularity breaks up)
   { look: SOURCE, aim: [330, 880], at0: [1180, 400, 8.6], at1: [1200, 410, 7.8], F: 900, beta: [0.01, 0.012] },  // looking back at the Sun
   { look: SOURCE, aim: [230, 900], at0: [1300, 380, 9.6], at1: [1320, 390, 8.6], F: 900, beta: [0.04, 0.32] },   // the Sun among the stars
-  { look: APEX, aim: [560, 330], at0: [1720, 920, 11], at1: [1730, 900, 12.4], F: 900, beta: [0.3, 0.34] },      // A and B ahead
+  { look: APEX, aim: [560, 330], at0: [1860, 1080, 15], at1: [1870, 1060, 16.5], F: 900, beta: [0.3, 0.34] },    // A and B ahead, in clear sky
 ];
 VIEWCAM.forEach((V) => Object.assign(V, aim(V.look, V.aim[0], V.aim[1], V.F)));
 function viewCam(b, u) {
@@ -146,10 +146,10 @@ function pinhole(m, x, y, r, v, spike = 0, turn = 0) {
 }
 export const SUN = VIEWCAM[0].aim;                                    // view 0's Sun (the source, behind)
 export const SUN1 = VIEWCAM[1].aim;                                   // view 1's
-export const AB = [[470, 262, 46], [742, 432, 27]];                 // view 2: A and B (x, y, disc radius), by the point ahead
+export const AB = [[250, 640, 44], [362, 858, 26]];                 // view 2: A and B (x, y, disc radius), ahead, in clear sky
 const ORBITS = [25, 38, 54, 80, 144, 236, 350, 468];                 // Mercury to Neptune, small
 function drawStars(m, rnd, b) {
-  if (b === 2) { const [[ax, ay, ar], [bx, by, br]] = AB; pinhole(m, ax, ay, ar, 1, 260, 0.15); pinhole(m, bx, by, br, 0.85, 150, 0.55); }
+  if (b === 2) { const [[ax, ay, ar], [bx, by, br]] = AB; pinhole(m, ax, ay, ar, 1, 150, 0.15); pinhole(m, bx, by, br, 0.85, 95, 0.55); }
   if (b !== 0) return;                                              // views 1 and 2: the stars are drawn with aberration
   const R = mulberry32(711 + b);
   for (let i = 0; i < 150; i++) {
@@ -190,6 +190,26 @@ export function viewState(b, t) {
 }
 
 // ---------------------------------------------------------------- glows and view 1's moving stars
+const smooth01 = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+// a star's sparkle over the paper: four thin tapered spikes that turn slowly and flicker, plus a brief
+// glint every so often (all a pure function of the view's frame t)
+function sparkle(g, k, x, y, r, t, seed) {
+  g.save(); g.globalCompositeOperation = 'lighter'; g.lineCap = 'round';
+  const turn = 0.25 * seed + 0.012 * t, glint = Math.max(0, Math.sin((t + 7 * seed) * 0.35)) ** 12;
+  for (let j = 0; j < 4; j++) {
+    const a = turn + j * Math.PI / 4 * (j % 2 ? 1.02 : 1), fl = 0.65 + 0.35 * Math.sin(t * 0.9 + j * 2.1 + seed * 3.3);
+    const L = r * (j % 2 ? 1.6 : 2.6) * fl * (1 + 0.5 * glint);
+    for (const sg of [1, -1]) {
+      const ex = x + sg * Math.cos(a) * L, ey = y + sg * Math.sin(a) * L;
+      const gr = g.createLinearGradient(x * k, y * k, ex * k, ey * k);
+      gr.addColorStop(0, `rgba(255,236,214,${(0.5 + 0.4 * glint).toFixed(3)})`); gr.addColorStop(1, 'rgba(255,170,110,0)');
+      g.strokeStyle = gr; g.lineWidth = Math.max(1, r * 0.08) * k;
+      g.beginPath(); g.moveTo(x * k, y * k); g.lineTo(ex * k, ey * k); g.stroke();
+    }
+  }
+  if (glint > 0.02) { const gr = g.createRadialGradient(x * k, y * k, 0, x * k, y * k, r * 1.8 * k); gr.addColorStop(0, `rgba(255,248,236,${(0.55 * glint).toFixed(3)})`); gr.addColorStop(1, 'rgba(255,200,150,0)'); g.fillStyle = gr; g.fillRect((x - 2 * r) * k, (y - 2 * r) * k, 4 * r * k, 4 * r * k); }
+  g.restore();
+}
 function glowOver(g, k, x, y, r0, a) {
   const R = r0 * 9, gr = g.createRadialGradient(x * k, y * k, 0, x * k, y * k, R * k);
   for (let i = 0; i <= 12; i++) { const r = R * (i / 12) ** 2, v = i === 12 ? 0 : a / (1 + (r / r0) ** 2) - a / 82; gr.addColorStop((i / 12) ** 2, `rgba(255,150,96,${Math.max(v, 0).toFixed(4)})`); }
@@ -257,13 +277,17 @@ export function createVoyage(canvas, opts = {}) {
       const sd = aberrate(SOURCE, beta).dop;
       glowOver(g, kk, SUN1[0], SUN1[1], 13, 0.55 * sd);
       g.save(); g.fillStyle = rgba([255, Math.round(236 * sd), Math.round(214 * sd * sd)], 0.95); g.beginPath(); g.arc(SUN1[0] * kk, SUN1[1] * kk, 2.2 * kk, 0, TAU); g.fill(); g.restore();
-      drawFleet(g, kk, B, { beams: 0.6, back: 1 });
+      // (R19) the beams belong to the first view, near the Sun: out here the fleet coasts, so they fade
+      drawFleet(g, kk, B, { beams: 0.6 * (1 - smooth01((u - 0.05) / 0.55)), back: 1 });
     } else {
       const s = lerp(1, 1.06, u), at = (x, y) => [560 + s * (x - 560), 330 + s * (y - 330)];
       const [[ax, ay, ar], [bx, by, br]] = AB;
       drawAberration(g, kk, B, beta);
       glowOver(g, kk, ...at(ax, ay), ar * 2.2 * s, 0.8); glowOver(g, kk, ...at(bx, by), br * 2.2 * s, 0.7);
-      drawFleet(g, kk, B, {});
+      drawFleet(g, kk, B, { beams: 0 });          // (R19) coasting: no beams this far out
+      // (R19) A and B sparkle: slow-turning diffraction spikes that flicker, and a glint now and then
+      sparkle(g, kk, ...at(ax, ay), ar * s, tt, 1);
+      sparkle(g, kk, ...at(bx, by), br * s, tt, 2);
     }
   }
   return { voyageFrame, frame: voyageFrame, engine: E, gl: E.gl };

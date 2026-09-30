@@ -17,6 +17,10 @@
 // eyes       { dx, dy, open } Clawd's eyes in glyph units (glance) and openness (blink).
 // presence   0..1 the far slopes fill with people: tiny figures gather out of the light on the
 //            far ridge and kites rise over the slopes beyond the hill. Default 0 (S30 unchanged).
+// waveT      (revision 19) frames since the vocal drop (81.1, S31's first frame): a wave of warm light
+//            runs out from the pair across the land and through the city; each tower's windows
+//            flash as it passes and stay a little brighter, and the ring brightens. Undefined
+//            (S30) or <= 0 (S31's first frame): exactly as before.
 // Any other key is passed through to the hill renderer's state (see hill.js defaultState).
 import { createHill, CLAWD_U } from './hill.js';
 import { HILL, SKYLINE, FAR_RIDGE, hillH } from './scene.js';
@@ -48,6 +52,25 @@ export const SHELTER_SEEDING = {
   air: { min: [-7, 0.9, 5.2], size: [9, 2.8, 6.5], n: 900, sizePx: 2.0, bright: 0.8 },
 };
 export const RING = { c: [0, -100, 420], R: 360, n: [0, 0.25, -1], w: 2.2 };
+
+// ---------------------------------------------------------------- the vocal drop's wave (revision 19)
+// It starts at the pair and runs outward, accelerating: past the far ridge by 81.2, through the
+// towers on 81.3, to the ring on 81.4. A tower's windows (and the ring) flash as the front reaches
+// them and stay a little brighter after.
+export const WAVE_C = [-2.95, 8.45];
+export const waveR = (t) => 2.2 * (Math.exp(t / 11) - 1);          // front radius (m), t frames since 81.1
+const waveAt = (d) => 11 * Math.log(1 + d / 2.2);                   // the frame the front reaches d
+const RING_D = Math.hypot(0 - WAVE_C[0], 507 - WAVE_C[1]);          // the ring's crown, as the front sees it
+function waveHit(t, d) {                                            // [flash 0..1, after 0..1] at distance d
+  if (!(t > 0)) return [0, 0];
+  const dt = t - waveAt(d);
+  if (dt <= 0) return [0, 0];
+  return [(1 - Math.exp(-dt / 1.5)) * Math.exp(-dt / 14), clamp(dt / 12)];
+}
+export function waveState(t) {
+  if (!(t > 0) || t > 140) return null;
+  return { c: WAVE_C, r: waveR(t), k: ease(t / 5) * Math.exp(-t / 80) };
+}
 
 // ---------------------------------------------------------------- the people of the shelter
 // Tiny faceless figures on the far ridge (z ~ 61, 60 m out: about 40 px tall) and kites over the
@@ -91,10 +114,12 @@ export function shelterState(o = {}) {
   const gHill = ease(build / 0.3);
   const hill = HILL.concat([FAR_RIDGE]).map((b) => [b[0] * gHill, b[1], b[2], b[3], b[4]]);
   const gTree = clamp((build - 0.25) / 0.35);
+  const wt = o.waveT;
   const towers = SKYLINE.map(([x, z, w, h, taper, cap, rot], i) => {
     const st = 0.2 + 0.6 * ((i * 0.618) % 1);
     const g = easeOut((build - st) / 0.12);
-    return { x, z, w, h: h * g, taper, cap: cap * g, rot, lit: 0.5 };
+    const [fl, af] = waveHit(wt, Math.hypot(x - WAVE_C[0], z - WAVE_C[1]));
+    return { x, z, w, h: h * g, taper, cap: cap * g, rot, lit: 0.5 + 1.6 * fl + 0.25 * af };
   }).filter((t) => t.h > 0.05);
   const S = SHELTER_SPOTS;
   const showFig = o.figure ?? build >= 1;
@@ -112,7 +137,8 @@ export function shelterState(o = {}) {
     ...shelterPeople(time, o.presence || 0),
     towers,
     towerWin: 0.9, towerEdge: 0.55, towerFog: 0.5, cityPulse: o.cityPulse || 0,
-    ring: Object.assign({}, RING, { on: ease((build - 0.6) / 0.4) }),
+    ring: Object.assign({}, RING, { on: ease((build - 0.6) / 0.4) * (1 + 1.5 * waveHit(wt, RING_D)[0] + 0.45 * waveHit(wt, RING_D)[1]) }),
+    wave: waveState(wt),
     pal: SHELTER,
     floorGrid: 0.0, grid: 0, fog: 0.017,
     ghost: 0.66, contour: 0.9, contourStep: 0.16, edge: 0.9,
@@ -120,7 +146,7 @@ export function shelterState(o = {}) {
     moteNear: 3.0, moteRise: 0.8, motes: 1,
     aura: 0.35, exposure: 1.0, vignette: 0.18,
   };
-  const own = ['build', 'crane', 'figure', 'cam', 'time', 'cityPulse', 'clawdGlow', 'lean', 'eyes', 'presence'];
+  const own = ['build', 'crane', 'figure', 'cam', 'time', 'cityPulse', 'clawdGlow', 'lean', 'eyes', 'presence', 'waveT'];
   for (const [k, v] of Object.entries(o)) if (v !== undefined && !own.includes(k)) st[k] = v;
   return st;
 }

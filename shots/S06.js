@@ -5,8 +5,12 @@
 // arrives as hardware. The camera pushes in slowly.
 // Revision 2: data pulses run down the feed cables and into the units, and LED cascades run along
 // the rack on the beats, pumping with the kicks; the motion calms down over the last frames.
+// Revision 19 (Claire: the pulses read on 2 and 4): the main cascade lands on beats 1 and 3 (a faint
+// one on 2 and 4), starting LEAD frames early so its brightest moment falls on the beat; the feeds'
+// data pulses swell on 1 and 3 too.
 import { createPaper, smooth, clamp, easeOut, easeInOut, lerp } from '../sets/paper-kit/kit.js';
-import { rackScene, sledXf, RACK } from '../sets/paper-kit/rack.js';
+import { rackScene, sledXf, RACK, beatWave } from '../sets/paper-kit/rack.js';
+const LEAD = 5;          // the cascade is fullest about five frames in
 
 let E, STOPS;
 const SLIDE = 8;
@@ -25,11 +29,12 @@ export function s06State(T, fr, stops) {
   // (revision 2) data pulses stream down the feeds into the rack, and an LED cascade runs along
   // the units on every beat; both pump with the kicks, hush in the bass stops, and calm to nothing
   // over the last frames, so the final frame (S07 dissolves out of it) is the same as before
-  const kick = T.pulse('kicks', fr.f, 5), sb = T.since('beats', fr.f), ss = T.since('stops', fr.f);
+  const kick = T.pulse('kicks', fr.f, 5), w = beatWave(T, fr.f, LEAD), ss = T.since('stops', fr.f);
   const stopDim = 1 - 0.75 * (ss === Infinity ? 0 : smooth(-1, 1, ss) * (1 - smooth(9, 13, ss)));
   const calm = 1 - smooth(fr.n - 20, fr.n - 5, fl);
-  const servers = { cc: 1.9 * fr.t, cg: (0.7 + 0.3 * kick) * stopDim * calm };
-  const frame = { cc: sb === Infinity ? 1 : Math.min(sb / 18, 1), cg: (0.5 + 0.5 * kick) * stopDim * calm };
+  const accent = w.main ? 1.25 : 0.15, swell = w.sb === Infinity ? 0 : Math.exp(-Math.max(w.sb - LEAD, 0) / 7) * smooth(0, LEAD, w.sb);
+  const servers = { cc: 1.9 * fr.t, cg: (0.35 + 0.8 * (w.main ? swell : 0.15 * swell)) * stopDim * calm };
+  const frame = { cc: w.sb === Infinity ? 1 : Math.min(w.sb / 18, 1), cg: accent * (0.5 + 0.5 * kick) * stopDim * calm };
   const st = { layers: { sledA: A, sledB: B, servers, frame } };
   // warm light: in front of each seated sled, growing as its pinholes come on
   st.light = { x: 960, y: RACK.bayA + 44, z: 40, I: 1.1e4 * smooth(0.1, 1, A.t) };

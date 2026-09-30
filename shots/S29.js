@@ -20,6 +20,12 @@
 //  76      (local 228) a forest of beams rises from below, one to each sail at normal incidence: every
 //          sail faces the source, so all are parallel. They light orange, and the push carries the
 //          flock away along the beams.
+// Revision 19 (Claire; drop 2):
+//   - the launch on 73.1 (local 12) is an ignition: a bloom from the climber that floods the frame;
+//   - the star trails start on that downbeat (they used to fade in over two beats);
+//   - the lasers are brighter (a white-hot core in a warm halo) and the sails larger;
+//   - once the beams have lit the sails the push accelerates all the way to the cut (it used to ease
+//     out), and the camera rides along at about a third of the flock's speed.
 import { createPaper, smooth, clamp, lerp, easeInOut, easeOut, toScreen, panFor } from '../sets/paper-kit/kit.js';
 import { groundScene, spaceScene, layerXF } from '../sets/paper-kit/elevator.js';
 import { EL, STROKES, heat } from '../sets/paper-kit/elevatorlines.js';
@@ -29,7 +35,8 @@ import { project, camBasis, CAM, slotAt, sailMesh, drawSail, beamFrom, N_SAILS, 
 import { makeSky, skyCam, turn, projectDir, unprojectDir, drawSky3 } from '../sets/paper-kit/sky2d.js';
 import { hash } from '../lib/util.js';
 
-export const DROP = 12, X0 = 26, X1 = 34, STOP = 134, FLING = 138, BURST = 156, BEAMS = 228, AWAY = 248, LAST = 299;
+export const DROP = 12, X0 = 26, X1 = 34, STOP = 134, FLING = 138, BURST = 156, BEAMS = 228, AWAY = 238, LAST = 299;
+const SAIL_K = 1.4, FOLLOW = 0.3, PUSH_D = 12;        // (R19) sail size, the camera's share of the push, the push
 // ---------------------------------------------------------------- the launch and the climb (as in revision 11)
 export const zoomAt = (fl) => 1 + 1.25 * smooth(DROP, X1, fl) - 1.25 * smooth(114, STOP, fl);
 const tau = (fl) => Math.max(0, fl - DROP);
@@ -59,11 +66,12 @@ const poleY = (fl) => (fl < X1 ? lerp(690, climberY(fl), smooth(DROP, X1, fl)) :
 const skyPitch = (fl) => Math.atan((poleY(fl) - 540) / SKY_F) + 0.06 * awayAt(fl);
 const skyCamAt = (fl) => skyCam(-0.05 * awayAt(fl), skyPitch(fl), SKY_F);
 const dipAt = (fl) => 1.2 * smooth(DROP + 4, X1 + 6, fl);
-const rateAt = (f) => (f < DROP || f >= FLING ? 0 : RATE * smooth(DROP, 70, f));
+const startK = (f) => (f < DROP ? 0 : 0.45 + 0.55 * smooth(DROP, 60, f));      // (R19) the trails start on the drop
+const rateAt = (f) => (f < DROP || f >= FLING ? 0 : RATE * startK(f));
 const ANG = []; { let a = 0; for (let f = 0; f <= LAST + 1; f++) { ANG.push(a); a += rateAt(f); } }
 const skyAngle = (fl) => ANG[clamp(Math.floor(fl), 0, LAST)];
 // the exposure's arc: it lengthens with the climb and, at release, the trails stop dead
-const trailAt = (fl) => RATE * EXPO * smooth(DROP, 70, fl) * (fl < FLING ? 1 : Math.max(0, 1 - (fl - FLING) / 3));
+const trailAt = (fl) => RATE * EXPO * startK(fl) * smooth(DROP - 0.5, DROP + 1.5, fl) * (fl < FLING ? 1 : Math.max(0, 1 - (fl - FLING) / 3));
 const MOON_D = unprojectDir(skyCam(0, Math.atan((690 - 540) / SKY_F), SKY_F), 300, 170);   // the moon, where the landing shows it
 
 // ---------------------------------------------------------------- the ground (the landing, the launch)
@@ -130,7 +138,8 @@ const B0 = camBasis(CAM);
 const depthOf = (B, p) => (p[0] - B.pos[0]) * B.fw[0] + (p[1] - B.pos[1]) * B.fw[1] + (p[2] - B.pos[2]) * B.fw[2];
 const un = (sx, sy, z) => [0, 1, 2].map((j) => B0.pos[j] + B0.fw[j] * z + B0.rt[j] * (sx - B0.pp[0]) * z / B0.f + B0.up[j] * (B0.pp[1] - sy) * z / B0.f);
 const BURST_AT = [960, CLIMB_Y - 5], BURST3 = un(BURST_AT[0], BURST_AT[1], 12);
-const awayAt = (fl) => easeInOut(clamp((fl - AWAY) / (LAST - AWAY), 0, 1));
+// the push (R19): from AWAY the displacement grows as the square of time and a little faster, to the cut
+const awayAt = (fl) => { const p = clamp((fl - AWAY) / (LAST - AWAY), 0, 1); return p * p * (0.75 + 0.25 * p); };
 function clipSeg(B, a, b, near = 0.5) {
   let za = depthOf(B, a), zb = depthOf(B, b);
   if (za < near && zb < near) return null;
@@ -139,8 +148,8 @@ function clipSeg(B, a, b, near = 0.5) {
   return [a, b];
 }
 function drawFlock(g, s, fl, tsec) {
-  const away = awayAt(fl), D = 9 * away * away;                     // pushed along the beams, accelerating
-  const cam = Object.assign({}, CAM, { pitch: CAM.pitch + 0.06 * away, yaw: CAM.yaw - 0.05 * away }), B = camBasis(cam);
+  const away = awayAt(fl), D = PUSH_D * away;                       // pushed along the beams, accelerating
+  const cam = Object.assign({}, CAM, { pos: TRAVEL.map((v) => v * FOLLOW * D), pitch: CAM.pitch + 0.06 * away, yaw: CAM.yaw - 0.05 * away }), B = camBasis(cam);
   const P = (p) => project(p, cam);
   const sails = [];
   for (let i = 0; i <= N_SAILS; i++) {                              // (N_SAILS is the hero, the nearest member)
@@ -161,12 +170,16 @@ function drawFlock(g, s, fl, tsec) {
     const src = beamFrom(q.c, 60), end = [0, 1, 2].map((j) => lerp(src[j], q.c[j], q.grow));
     const seg = clipSeg(B, src, end);
     if (!seg) continue;
-    const a = P(seg[0]), bb = P(seg[1]), hero = q.i === N_SAILS;
-    g.strokeStyle = `rgba(${FC.beam.join(',')},${hero ? 0.36 : 0.26})`; g.lineWidth = (hero ? 2.0 : 1.2) * s;
+    const a = P(seg[0]), bb = P(seg[1]), hero = q.i === N_SAILS, on = clamp(q.grow * 1.6, 0, 1);
+    // (R19: a bright laser) a warm halo round a white-hot core
+    g.strokeStyle = `rgba(${FC.beam.join(',')},${((hero ? 0.2 : 0.12) * on).toFixed(3)})`; g.lineWidth = (hero ? 9 : 5) * s;
+    g.beginPath(); g.moveTo(a[0] * s, a[1] * s); g.lineTo(bb[0] * s, bb[1] * s); g.stroke();
+    g.strokeStyle = `rgba(255,228,200,${((hero ? 0.85 : 0.6) * on).toFixed(3)})`; g.lineWidth = (hero ? 2.4 : 1.4) * s;
     g.beginPath(); g.moveTo(a[0] * s, a[1] * s); g.lineTo(bb[0] * s, bb[1] * s); g.stroke();
   }
   let n = 0;
-  for (const q of sails) if (drawSail(g, s, P, sailMesh(q.i, { c: q.c, open: q.open, spin: q.spin, t: tsec }), { lit: q.lit, light: SHEET.N, hot: q.lit })) n++;
+  g.globalCompositeOperation = 'screen';                            // (R19) larger sails overlap: screen, not add
+  for (const q of sails) if (drawSail(g, s, P, sailMesh(q.i, { c: q.c, open: q.open, spin: q.spin, t: tsec, side: SHEET.side * SAIL_K }), { lit: q.lit, light: SHEET.N, hot: q.lit })) n++;
   g.globalCompositeOperation = 'source-over';
   return n;
 }
@@ -239,6 +252,19 @@ function drawFlashes(g, s, fl) {
     gr.addColorStop(0, `rgba(255,236,214,${a.toFixed(3)})`); gr.addColorStop(1, 'rgba(255,170,110,0)');
     g.fillStyle = gr; g.beginPath(); g.arc(x * s, y * s, r * s, 0, 2 * Math.PI); g.fill();
   };
+  // (R19) the ignition on 73.1: a hot core at the climber, a bloom that floods the frame, and a brief
+  // lens streak through it
+  if (fl >= DROP - 1 && fl < DROP + 20) {
+    const k = Math.max(0, fl - DROP), pre = smooth(DROP - 1, DROP, fl), cy = climberY(fl);
+    at(960, cy, 90 + 55 * k, pre * Math.exp(-k / 3.5));
+    at(960, cy, 760 + 30 * k, 0.5 * pre * Math.exp(-k / 6));
+    const sa = 0.75 * pre * Math.exp(-k / 3);
+    if (sa > 0.01) {
+      const gr = g.createLinearGradient(0, 0, 1920 * s, 0);
+      gr.addColorStop(0, 'rgba(255,190,140,0)'); gr.addColorStop(0.5, `rgba(255,236,214,${sa.toFixed(3)})`); gr.addColorStop(1, 'rgba(255,190,140,0)');
+      g.fillStyle = gr; g.fillRect(0, (cy - 2.5) * s, 1920 * s, 5 * s);
+    }
+  }
   if (fl >= FLING && fl < FLING + 14) at(960, CLIMB_Y - 5, 40 + 5 * (fl - FLING), 0.55 * Math.exp(-(fl - FLING) / 3.5));   // the release
   if (fl >= BURST && fl < BURST + 22) { const k = fl - BURST; at(BURST_AT[0], BURST_AT[1], 30 + 22 * k, 0.9 * Math.exp(-k / 4)); }   // the burst
 }

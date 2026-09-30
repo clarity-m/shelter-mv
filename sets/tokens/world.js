@@ -25,8 +25,12 @@ const ATL_ROW = 10;                      // atlas rows per layer (device px at k
 const MAXL = 24;
 
 // ---- fisheye: text offset d (chars from the head) -> world px offset from Clawd ----------------
-export const fishS = (d) => { const d0 = d < 0 ? D0L : D0R; return SFAR + (S0 - SFAR) / (1 + (d / d0) * (d / d0)); };
-export const fishM = (d) => { const d0 = d < 0 ? D0L : D0R; return SFAR * d + (S0 - SFAR) * d0 * Math.atan(d / d0); };
+// P.mag swells the lens near Clawd (tokens grow, he does not); the core narrows so the flanks keep
+// about the same amount of context on screen.
+let S0E = S0, D0F = 1;
+function setMag(m) { S0E = SFAR + (S0 - SFAR) * m; D0F = 1 / Math.pow(m, 0.9); }
+export const fishS = (d) => { const d0 = (d < 0 ? D0L : D0R) * D0F; return SFAR + (S0E - SFAR) / (1 + (d / d0) * (d / d0)); };
+export const fishM = (d) => { const d0 = (d < 0 ? D0L : D0R) * D0F; return SFAR * d + (S0E - SFAR) * d0 * Math.atan(d / d0); };
 
 const sm = (a, b, x) => { const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); };
 const edgeW = (x) => 0.55 + 0.45 * sm(0, 640, x) * sm(1920, 1280, x);
@@ -66,12 +70,13 @@ uniform float uLWarm;
 uniform sampler2D uLight;
 uniform sampler2D uAtlas; uniform float uAtlRow, uAtlH;
 uniform int uNL; uniform float uLY[${MAXL}]; uniform float uLA[${MAXL}]; uniform float uLP[${MAXL}];
-uniform sampler2D uLanes; uniform float uLaneOff, uLaneA;
+uniform sampler2D uLanes; uniform float uLaneOff, uLaneA, uLaneV;
 uniform float uTau, uLineG, uFieldG, uReflG, uThread, uThreadTop;
 uniform vec4 uGlow;              // amp, radius scale, burst amp, burst rotation
 uniform vec2 uClawdW;            // world centre of the burst
 uniform vec4 uClawd;             // x0, y0 (device, top-left), cell (device), on
-uniform int uGlyph[5];
+uniform int uGlyph[5]; uniform int uEyes[5];
+uniform float uSkyG, uLightG;
 uniform float uRayTh[11]; uniform float uRayL[11]; uniform float uRayW[11];
 uniform float uTime;
 uniform vec4 uRip[8];            // beat ripples: age (frames), amp, speed (world px/frame), width (world px)
@@ -86,11 +91,20 @@ float ripple(float x, float delay){
     if (i >= uNRip) break;
     float age = uRip[i].x - delay;
     if (age < 0.) continue;
-    float d = age*uRip[i].z, w = uRip[i].w;
-    float dec = uRip[i].y*exp(-age/14.);
-    float front = exp(-sq((dx - d)/w));
-    float trail = dx < d ? 0.35*exp(-(d - dx)/(w*3.)) : 0.;
-    r += dec*(front + trail);
+    float w = uRip[i].w;
+    if (uRip[i].z >= 0.){
+      float d = age*uRip[i].z;
+      float dec = uRip[i].y*exp(-age/14.);
+      float front = exp(-sq((dx - d)/w));
+      float trail = dx < d ? 0.35*exp(-(d - dx)/(w*3.)) : 0.;
+      r += dec*(front + trail);
+    } else {
+      float d = max(0., 1500. + age*uRip[i].z);
+      float grow = uRip[i].y*(0.35 + 0.65*smoothstep(1500., 0., d));
+      float front = exp(-sq((dx - d)/w));
+      float trail = dx > d ? 0.45*exp(-(dx - d)/(w*4.)) : 0.;
+      r += grow*(front + trail);
+    }
   }
   return r;
 }
@@ -165,6 +179,7 @@ void main(){
       }
     }
   }
+  col *= uSkyG;
   float rip0 = uNRip > 0 ? ripple(x, 0.) : 0.;
   // ---- horizon halo (sky side and mirrored in the field)
   {
@@ -184,7 +199,13 @@ void main(){
   if (abs(y - uHZ) < 31.5){
     float row = floor(y - uHZ + 32.);
     float rate = 0.75 + 0.5*h3(row, 3., 9.);
-    float lv = texture(uLanes, vec2((x + uLaneOff*rate)/4096., (row + 0.5)/64.)).r;
+    // motion-blurred over this frame's scroll, so the racing batch streaks instead of strobing
+    float lv = 0.;
+    for (int t = 0; t < 6; t++){
+      float o = uLaneV*rate*(float(t)/5. - 0.5);
+      lv += texture(uLanes, vec2((x + uLaneOff*rate + o)/4096., (row + 0.5)/64.)).r;
+    }
+    lv /= 6.;
     float dxc = abs(x - uSX);
     float capx = 3.4 + 26.*(1./(1. + sq(dxc/(x < uSX ? 330. : 230.))));
     float dy = y - uHZ;
@@ -235,12 +256,12 @@ void main(){
     col += WARM*uThread*exp(-sq(dx/1.3))*0.30*smoothstep(uHZ - 20., uHZ - 60., y)*smoothstep(uThreadTop - 30., uThreadTop + 10., y);
   }
   // ---- light layer (arcs, counters) + its faint, slightly smeared mirror in the field
-  col += light(xs, ys);
+  col += light(xs, ys)*uLightG;
   if (ys > HZs + 1.){
     float dy = ys - HZs;
     float ry = HZs - dy - 3.*zk;
     vec3 r = light(xs, ry)*0.45 + light(xs, ry + zk)*0.35 + light(xs, ry + 2.*zk)*0.2;
-    col += r*0.16*exp(-dy/(220.*zk))*uReflG;
+    col += r*0.16*exp(-dy/(220.*zk))*uReflG*uLightG;
   }
   // ---- the spark: warm glow, burst, haze, and a glitter path on the field
   {
@@ -299,6 +320,7 @@ void main(){
     if (q.x >= 0. && q.x < 18. && q.y >= 0. && q.y < 5.){
       int cx = int(q.x), cy = int(q.y);
       if (((uGlyph[cy] >> (17 - cx)) & 1) == 1) col = mix(col, WARM, uClawd.w);
+      else if (((uEyes[cy] >> (17 - cx)) & 1) == 1) col = mix(col, vec3(0.0077, 0.0037, 0.0033), uClawd.w);
     }
   }
   o = vec4(col, 1.);
@@ -342,7 +364,8 @@ uniform vec4 uBW;
 uniform float uFrame, uBlack, uUIA, uGrain;
 uniform vec2 uUIR;
 uniform vec4 uWash;           // amount, radius (device px), centre x, centre y (device, top-down)
-uniform vec4 uClawd; uniform int uGlyph[5];
+uniform vec4 uClawd; uniform int uGlyph[5]; uniform int uEyes[5];
+uniform vec3 uFlash;          // amount, line y (device, top-down), his x (device)
 out vec4 o;
 float sh(float v){ return v < 0.8 ? v : 0.8 + 0.2*(1. - exp(-(v - 0.8)/0.2)); }
 void main(){
@@ -358,6 +381,13 @@ void main(){
     float warmth = 1. - clamp(uWash.y/(2600.*uK), 0., 1.);
     vec3 wc = mix(vec3(0.90, 0.76, 0.63), vec3(1.05, 0.50, 0.30), smoothstep(0.1, 0.9, warmth))*(1. + 0.12*exp(-sq(d/(uWash.y*0.3 + 1.))));
     c = mix(c, wc, clamp(m, 0., 1.));
+  }
+  // the drop: a white bloom flash out of the line (a band of light, never a flat white frame)
+  if (uFlash.x > 0.){
+    float fdy = (ys - uFlash.y)/uK, fdx = (xs - uFlash.z)/uK;
+    float band = exp(-sq(fdy/190.))*(0.35 + 0.65*exp(-sq(fdx/760.)));
+    float core = exp(-(fdx*fdx + fdy*fdy*3.)/(2.*sq(140.)));
+    c += vec3(1., 0.985, 0.96)*uFlash.x*(0.9*band + 1.5*core);
   }
   c *= 1. - uBlack;
   // HUD: diegetic, composited before grain (the UI canvas covers only the bottom-left corner)
@@ -383,6 +413,7 @@ void main(){
     if (q.x >= 0. && q.x < 18. && q.y >= 0. && q.y < 5.){
       int cx = int(q.x), cy = int(q.y);
       if (((uGlyph[cy] >> (17 - cx)) & 1) == 1) c = mix(c, vec3(217., 119., 87.)/255., uClawd.w);
+      else if (((uEyes[cy] >> (17 - cx)) & 1) == 1) c = mix(c, vec3(28., 20., 19.)/255., uClawd.w);
     }
   }
   o = vec4(clamp(c, 0., 1.), 1.);
@@ -529,7 +560,23 @@ export function createTokenWorld(canvas, { W, H, log = () => {} }) {
   const T_UI = tex(UIW, UIH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, null);
 
   // Clawd glyph bits and the eleven rays (01-pretrain values)
-  const glyphBits = GLYPH.map((row) => { let b = 0; for (let c = 0; c < 18; c++) if (row[c] === '#') b |= 1 << (17 - c); return b; });
+  // Clawd's body and ink eyes (#1c1413, as the early-env glyph). eyes: { dc: -1|0|1 (glance),
+  // row: 1 (level) or 2 (looking down), open: 0|1 (blink) }; the canonical holes are the eyes at rest.
+  function clawdBits(e = {}) {
+    const dc = e.dc ?? 0, er = e.row ?? 1, open = (e.open ?? 1) > 0.5;
+    const body = [], eyes = [];
+    for (let r = 0; r < 5; r++) {
+      let b = 0, ey = 0;
+      for (let c = 0; c < 18; c++) {
+        let ch = GLYPH[r][c];
+        if (r === 1 && (c === 5 || c === 12)) ch = '#';
+        if (open && r === er && (c === 5 + dc || c === 12 + dc)) ey |= 1 << (17 - c);
+        else if (ch === '#') b |= 1 << (17 - c);
+      }
+      body.push(b); eyes.push(ey);
+    }
+    return { body, eyes };
+  }
   const rays = { th: [], L: [], w: [] };
   { let s = 1111; const rr = () => hash(s++, 4, 4); for (let i = 0; i < 11; i++) { rays.th.push(-0.24 + i * 2 * Math.PI / 11 + (rr() - 0.5) * 0.26); rays.L.push(40 + rr() * 66); rays.w.push(1.9 + rr() * 1.8); } }
 
@@ -575,7 +622,7 @@ export function createTokenWorld(canvas, { W, H, log = () => {} }) {
     for (let x = 0; x < W; x++) {
       const xw = Xinv(x + 0.5), dpx = Math.abs(xw - SX);
       // text offset under this column (invert the fisheye by a few Newton steps)
-      let d = (xw - SX) / S0;
+      let d = (xw - SX) / S0E;
       for (let it = 0; it < 6; it++) d -= (fishM(d) - (xw - SX)) / fishS(d);
       const vs = speed * fishS(d) * cam.z * k;                  // device px per frame
       if (blurOnly) {                                            // plain motion blur (hidden-state dashes)
@@ -638,6 +685,7 @@ export function createTokenWorld(canvas, { W, H, log = () => {} }) {
   function render(P) {
     const tp0 = performance.now();
     cam = P.cam;
+    setMag(P.mag ?? 1);
     const zk = cam.z * k;
     const head = P.head, speed = P.speed ?? 0.1;
     const HZs = Y(HZ);
@@ -680,6 +728,7 @@ export function createTokenWorld(canvas, { W, H, log = () => {} }) {
       const xc = X(v.xc), dpx = Math.abs(v.xc - SX);
       let I = 0.66 * edgeW(v.xc) * (0.55 + 0.45 * hash(v.i, 3, 71)) * (v.dc > 0 ? 0.82 : 1) * (1 + 0.5 * sm(250, 700, dpx));
       if (v.i & 1) I *= 0.72;
+      if (P.tokG) I *= 1 + (P.tokG - 1) * Math.exp(-Math.pow(dpx / 380, 2));
       if (t.t === '\n' || t.t === '<|endoftext|>' || /^ +$/.test(t.t)) I *= 0.55;
       const L = lit.get(v.i) || 0;
       I *= (1 + 2.4 * L) * bandA;
@@ -867,15 +916,18 @@ export function createTokenWorld(canvas, { W, H, log = () => {} }) {
     // atlas block l holds layer l; the shader loop index is l-1, so shift the atlas by one block
     gl.uniform1i(U.uNL, nL);
     gl.uniform1fv(U.uLY, LY); gl.uniform1fv(U.uLA, LA); gl.uniform1fv(U.uLP, LP);
-    gl.uniform1f(U.uLaneOff, head * SFAR); gl.uniform1f(U.uLaneA, P.laneA ?? 1);
+    gl.uniform1f(U.uLaneOff, head * SFAR + (P.laneOff ?? 0)); gl.uniform1f(U.uLaneA, P.laneA ?? 1);
+    gl.uniform1f(U.uLaneV, (P.laneV ?? 0) + speed * SFAR);
     gl.uniform1f(U.uTau, P.tau ?? 0); gl.uniform1f(U.uLineG, P.lineG ?? 1); gl.uniform1f(U.uFieldG, P.fieldG ?? 1);
     gl.uniform1f(U.uReflG, P.reflG ?? 1); gl.uniform1f(U.uThread, nL > 0 ? (P.thread ?? 0.5) : 0);
     gl.uniform1f(U.uThreadTop, nL > 0 ? Math.min(...L.y.slice(1, nL + 1)) : HZ);
     const G = P.glow || { amp: 1, r: 1, burst: 0, rot: 0 };
     gl.uniform4f(U.uGlow, G.amp, G.r, G.burst, G.rot || 0);
     gl.uniform2f(U.uClawdW, SX, CYw);
+    const CB = clawdBits(P.eyes);
     gl.uniform4f(U.uClawd, cx0, cy0, cell, clawdOn);
-    gl.uniform1iv(U.uGlyph, glyphBits);
+    gl.uniform1iv(U.uGlyph, CB.body); gl.uniform1iv(U.uEyes, CB.eyes);
+    gl.uniform1f(U.uSkyG, P.skyG ?? 1); gl.uniform1f(U.uLightG, P.lightG ?? 1);
     gl.uniform1fv(U.uRayTh, rays.th); gl.uniform1fv(U.uRayL, rays.L); gl.uniform1fv(U.uRayW, rays.w);
     gl.uniform1f(U.uTime, P.f / 30);
     {
@@ -904,7 +956,8 @@ export function createTokenWorld(canvas, { W, H, log = () => {} }) {
     bindTex(U, 'uNoise', 0, T_NOISE);
     bindTex(U, 'uScene', 1, RT.scene.t); bindTex(U, 'uG1', 2, RT.g1.t); bindTex(U, 'uG2', 3, RT.g2.t);
     bindTex(U, 'uG3', 4, RT.g3.t); bindTex(U, 'uG4', 5, RT.g4.t); bindTex(U, 'uUI', 6, T_UI);
-    const bw = P.bloom ?? 1;
+    const flash = P.flash ?? 0;
+    const bw = (P.bloom ?? 1) * (1 + 3 * flash);
     gl.uniform4f(U.uBW, 0.20 * bw, 0.16 * bw, 0.15 * bw, 0.09 * bw);
     gl.uniform1f(U.uFrame, P.grainF ?? P.f); gl.uniform1f(U.uBlack, P.black ?? 0); gl.uniform1f(U.uUIA, P.drawUI ? (P.uiA ?? 1) : 0);
     gl.uniform2f(U.uUIR, UIW, UIH);
@@ -912,7 +965,8 @@ export function createTokenWorld(canvas, { W, H, log = () => {} }) {
     const Wsh = P.wash || { amp: 0, r: 1 };
     gl.uniform4f(U.uWash, Wsh.amp, Wsh.r * k, X(SX), Y(CYw));
     gl.uniform4f(U.uClawd, cx0, cy0, cell, clawdOn);
-    gl.uniform1iv(U.uGlyph, glyphBits);
+    gl.uniform1iv(U.uGlyph, CB.body); gl.uniform1iv(U.uEyes, CB.eyes);
+    gl.uniform3f(U.uFlash, flash, Y(HZ), X(SX));
     draw(null, W, H);
     if (P.profile) {
       gl.finish();

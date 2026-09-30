@@ -1,31 +1,23 @@
-# paper-kit: the outside world (S06, S16, S23, S25b, S26, S29, S35) and the sail
+# paper-kit: the outside world (S06, S16, S23, S26, S29, S35) and the sail
 
 **Engine and modules.**
-- `kit.js` has two opt-in layer params: `lpx` (R13, edges in the layer's own pixels) and `xs`
-  (R14, an explicit edge stencil). Unflagged layers are bit-identical.
-- Also: `sail.js`, `burn.js`, `smear.js`, `sky2d.js`, `fleet3d.js`, `elevator*.js`.
-- `hall.js`: the card (`drawCard`) and the die's floorplan.
-- `datacenter.js`: S35's aisle (S16's bays from rack.js, reused exactly, with an end row and the
-  card) and its campus (the die's floorplan as data halls).
+- `kit.js` has opt-in `lpx` and `xs` (edge stencils); unflagged layers are bit-identical.
+- `rack.js` gained `beatWave(T, f, lead)` (R19). `fleet3d.js` is unchanged (D's voyage uses it).
+- `datacenter.js` is S35's aisle and campus (unchanged since R15).
 
-**S35 (R15: 4331-4420, 90 frames to 62.2; about 110 ms/frame).**
-- Local 0-47 are R14's exactly: frame 0 is bit-identical, and the log-zoom schedule is identical
-  through 47.
-  - The landing is done by local 14.
-  - The bays enter as a tunnel book (17-23) and the lit hall holds a beat (25-31).
-  - Through the roof (29-34); the full campus is in frame by 47.
-- The hold is now 42 frames:
-  - R14's settle continues as a cubic (value and slope matched), resting on 89;
-  - the wave front keeps R14's path to 47, then slows toward the far edge, so the outer halls and
-    the generator ring light through about 78;
-  - the power lines then pulse outward, and the glow swells to the end.
-- There are no tunnel gaps (each bay carries the nearer bays' paper); the far bays draw at up to 7x.
-- Checks:
-  - the die lines are within 6e-12 px;
-  - S34→S35 is exact on the lines (41.3, P's new palette);
-  - S35→S36 is 35.1 (against D's pre-R15 S36).
+**Revision 19 (Claire's notes on cut 17).**
+- **S06 and S16:** the main pulse lands on beats 1 and 3, a faint echo on 2 and 4. Waves peak a
+  few frames in, so each starts early (S16 by 4 frames, S06 by 5), and peaks now fall on the beat.
+  S16's per-beat highlight is 0.15 / 0.04 / 0.18 / 0.08. S16's rows light on 1 (left) and 3 (right).
+- **S23:** the satellites are 45% larger and brighter, flare and then twinkle; the closed ring
+  glows, and a glint runs out from its middle on every beat.
+- **S26:** the slit slides open in one smootherstep move (local 3-50), not a notch per chop.
+- **S29:**
+  - an ignition bloom peaks on 73.1 (frame 5195), and the star trails start on it;
+  - the lasers have a white-hot core in a warm halo;
+  - the sails are 1.4x (via `sailMesh`'s `side`), screen-blended;
+  - the push accelerates to the cut, and the camera follows at 30%.
+- **Cuts:** S27→S29 is 45.9 (landing unchanged), S29→S30 106.6, S23→S26 19.6, S26→S27 16.2.
 
 **Known issues.**
 - S29 holds three GL contexts and S35 two.
-- S26's shaft is a drawn fan.
-- The entering near bays read as mildly out of focus, by design.

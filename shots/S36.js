@@ -55,7 +55,7 @@ const WARM = [1.0, 0.84, 0.64], HOT = [1.0, 0.95, 0.86];
 // ---------------------------------------------------------------- timing (local frames of 216)
 // sung onsets 28, 51, 91, 98, 125, 198; beats every 18; the snare pickup 194, 203, 208; bar 65's kick 216
 const OUT = [12, 28];                     // the cursors come out of his light and fly to the sun
-const PAINT = [0, 17];                    // (R14) first they paint the world in from grey
+const PAINT = [0, 72];                    // (R14) first they paint the world in from grey; (R19) over bar 62's three beats
 const HOOK = 28;                          // they hook its rim (sung onset)
 const PULL = [44, 104];                   // the pull: the sun comes down out of the sky to the water
 const PRESS = [96, 124];                  // pressed flat and hollow into the ring
@@ -139,11 +139,15 @@ function sunAt(fl) {
   const c = hermite3(SUN0, [0, -40, -40], C, [0, -2, -24], p);
   // pressed smaller as it comes: about the same size in the sky all the way down, the ring's at the end
   const R = R_SUN0 * Math.pow(Math.hypot(c[0] - C[0], c[1] - C[1], c[2] - C[2]) / Math.hypot(SUN0[0] - C[0], SUN0[1] - C[1], SUN0[2] - C[2]), 0.92) * (1 - p) + (RING_R + TUBE) * p;
-  const k = easeIO((fl - PRESS[0]) / (PRESS[1] - PRESS[0]));          // 0 the disc .. 1 the ring
-  const phi = k * Math.PI / 2;                                         // facing the lens .. lying flat
+  // (R19) first its hole opens while it still faces the lens (a torus seen face on), then it lies down
+  const u = clamp((fl - PRESS[0]) / (PRESS[1] - PRESS[0]));
+  const k = easeIO(u / 0.6);                                           // 0 the disc .. 1 the ring
+  const phi = easeIO((u - 0.35) / 0.65) * Math.PI / 2;                 // facing the lens .. lying flat
   const U = [1, 0, 0], V = [0, Math.cos(phi), Math.sin(phi)];
-  const rc = lerp(R / 2, RING_R, k), hw = lerp(R / 2, TUBE * 1.15, k);
-  return { c, R, k, U, V, rc, hw, p };
+  // (R19) pressed into a torus, not a flat ring: its hole opens as it is pressed and its band rounds
+  // into a tube (the plasma, a little inside the vessel's lines); tb: 0 the flat band .. 1 the tube
+  const rc = lerp(R / 2, RING_R, k), hw = lerp(R / 2, TUBE * 0.9, k), tb = smoothstep(0.2, 0.9, k);
+  return { c, R, k, U, V, rc, hw, p, tb };
 }
 const onRim = (s, th, out = 1) => add(s.c, add(mul(s.U, Math.cos(th) * (s.rc + s.hw * out)), mul(s.V, Math.sin(th) * (s.rc + s.hw * out))));
 
@@ -167,9 +171,10 @@ function palAt(fl, kN) {
 // the aurora: curtains far over the sea, faint at dusk, brighter as night falls, flaring as the
 // coils are called down (140-156), then spent into them
 const AUR_COLS = [[0.16, 0.95, 0.72], [0.3, 1.0, 0.42], [0.62, 0.42, 1.0], [0.2, 0.8, 0.95]];
+// (R19) taller, into the sky the lower horizon gives them
 const CURTAINS = [
-  { x0: -52, x1: -4, z: 110, y: 17, h: 11, ph: 0.3, c: 0 }, { x0: -16, x1: 36, z: 130, y: 22, h: 14, ph: 1.7, c: 1 },
-  { x0: 14, x1: 66, z: 105, y: 16, h: 10, ph: 2.9, c: 2 }, { x0: -36, x1: 24, z: 90, y: 13, h: 8, ph: 4.1, c: 3 },
+  { x0: -52, x1: -4, z: 110, y: 17, h: 20, ph: 0.3, c: 0 }, { x0: -16, x1: 36, z: 130, y: 22, h: 25, ph: 1.7, c: 1 },
+  { x0: 14, x1: 66, z: 105, y: 16, h: 18, ph: 2.9, c: 2 }, { x0: -36, x1: 24, z: 90, y: 13, h: 14, ph: 4.1, c: 3 },
 ];
 const auroraK = (fl) => (0.3 + 0.5 * smoothstep(50, 110, fl) + 0.9 * Math.exp(-(((fl - 126) / 12) ** 2))) * (1 - smoothstep(150, 196, fl));
 // each curtain is a row of thin vertical rays (painted strokes) hanging from a wavy hem, green-teal
@@ -228,40 +233,154 @@ const STROKES = [0, 1, 2, 3].map((c) => {
     const z = z0 + 0.8 * Math.sin(x / 2.2 + c);
     P.push([x, 0.05 + (z < 8.5 ? LAND.reduce((h, b) => h + b[0] * Math.exp(-(((x - b[1]) / b[3]) ** 2 + ((z - b[2]) / b[4]) ** 2)), 0) : 0), z]);
   }
-  return { P, t0: PAINT[0] + 1 + 1.5 * c, t1: PAINT[0] + 1 + 1.5 * c + 11 };
+  return { P, t0: PAINT[0] + 1 + 2 * c, t1: PAINT[0] + 1 + 2 * c + 13 };
 });
 const strokeHead = (st, fl) => { const u = clamp((fl - st.t0) / (st.t1 - st.t0)), f = u * (st.P.length - 1), i = Math.min(st.P.length - 2, Math.floor(f)); return { u, p: lerp3(st.P[i], st.P[i + 1], f - i), i }; };
-function paintMask(M, k, fl, cam, B) {
+// (R19) less like a wipe: the four strokes are laid in the first beat and their paint soaks outward
+// over the next two; the sky's colour blooms out from the sun with a ragged edge; what grey is left
+// fades in the last beat (see render)
+function paintMask(M, k, fl, cam, B, sunC) {
   const g = M.getContext('2d');
   g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, M.width, M.height);
   g.setTransform(k, 0, 0, k, 0, 0); g.lineCap = 'round'; g.lineJoin = 'round';
+  // (R19) each stroke is a band lying on the land and the sea (so it never paints the sky), five
+  // bristles across it, and it widens as its paint soaks outward
+  const landY = (x, z) => 0.05 + (z < 8.5 ? LAND.reduce((h, b) => h + b[0] * Math.exp(-(((x - b[1]) / b[3]) ** 2 + ((z - b[2]) / b[4]) ** 2)), 0) : 0);
+  const zMin = cam.pos[2] + 1.0;
   for (const st of STROKES) {
     const h = strokeHead(st, fl);
     if (h.u <= 0) continue;
-    const pts = st.P.slice(0, h.i + 1).concat([h.p]).map((p) => project(B, p)).filter((q) => q[2] > 0.3);
+    const spread = 1 + 1.7 * easeIO((fl - st.t1 + 6) / 46);
+    const W = st.P.slice(0, h.i + 1).concat([h.p]);
+    if (W.length < 2) continue;
     for (let b = -2; b <= 2; b++) {
-      const wk = b === 0 ? 1 : 0.82 + 0.05 * Math.abs(b), off = b * 0.22;
-      g.strokeStyle = b === 0 ? '#fff' : 'rgba(255,255,255,0.55)';
-      for (let i = 1; i < pts.length; i++) {
-        const a = pts[i - 1], q = pts[i], w = B.F * STROKE_W * wk / ((a[2] + q[2]) / 2);
-        const dx = q[0] - a[0], dy = q[1] - a[1], l = Math.hypot(dx, dy) || 1, nx = -dy / l * w * off * 0.5, ny = dx / l * w * off * 0.5;
-        g.lineWidth = w; g.beginPath(); g.moveTo(a[0] + nx, a[1] + ny); g.lineTo(q[0] + nx, q[1] + ny); g.stroke();
+      const hw = 0.5 * STROKE_W * spread * (b === 0 ? 1 : 0.82 + 0.05 * Math.abs(b)), off = b * 0.11 * STROKE_W * spread;
+      const L = [], R = [];
+      for (let i = 0; i < W.length; i++) {
+        const a = W[Math.max(0, i - 1)], c = W[Math.min(W.length - 1, i + 1)];
+        let dx = c[0] - a[0], dz = c[2] - a[2];
+        const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+        const rag = 1 + 0.12 * Math.sin(i * 0.9 + b * 2.1 + st.t0) + 0.06 * Math.sin(i * 2.3 + b);
+        const side = (d) => {
+          const x = W[i][0] - dz * d, z = Math.max(zMin, W[i][2] + dx * d);
+          return project(B, [x, landY(x, z), z]);
+        };
+        L.push(side(off + hw * rag)); R.push(side(off - hw * rag));
       }
+      g.fillStyle = b === 0 ? '#fff' : 'rgba(255,255,255,0.55)';
+      g.beginPath();
+      L.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1])));
+      for (let i = R.length - 1; i >= 0; i--) g.lineTo(R[i][0], R[i][1]);
+      g.closePath(); g.fill();
     }
   }
-  // the sky and the far sea: a sweep from the left with a loaded brush's ragged edge
-  const hz = cam.pp[1] + cam.F * Math.tan(cam.pitch) + 120, sx = lerp(-200, 2200, easeIO((fl - 3) / 13));
-  if (sx > -150) {
-    g.fillStyle = '#fff'; g.beginPath(); g.moveTo(-10, -10);
-    for (let y = -10; y <= hz + 10; y += 20) g.lineTo(sx + 40 * Math.sin(y / 37 + 1.3) + 25 * Math.sin(y / 11), y);
-    g.lineTo(-10, hz + 10); g.closePath(); g.fill();
+  // the sky and the far sea: the colour blooms out from the sun, a loaded brush's ragged edge
+  const u = Math.pow(clamp((fl - 4) / 66), 1.3);                         // (over all three beats)
+  if (u > 0) {
+    const c = project(B, sunC), R = 1750 * u;
+    g.fillStyle = '#fff'; g.beginPath();
+    for (let j = 0; j <= 90; j++) {
+      const th = j / 90 * 2 * Math.PI;
+      const r = R * (1 + 0.1 * Math.sin(5 * th + 1.3) + 0.05 * Math.sin(9 * th + 0.4 + 0.05 * fl) + 0.025 * Math.sin(17 * th + 2.1));
+      const x = c[0] + r * Math.cos(th), y = c[1] + 0.75 * r * Math.sin(th);
+      if (j) g.lineTo(x, y); else g.moveTo(x, y);
+    }
+    g.closePath(); g.fill();
   }
 }
 
+// ---------------------------------------------------------------- the binding energy curve (revision 19)
+// A physics diagram in light in the sky while the sun comes down: the binding energy per nucleon B/A
+// (MeV) against the mass number A (log scale): the light nuclei's steep, jagged climb to helium-4's
+// spike, the broad peak at iron and nickel, the slow fall to uranium. D + T -> 4He + n is marked:
+// from D (1.11) and T (2.83) up to 4He (7.07); the energy released is 4 x 7.07 - 2 x 1.11 - 3 x 2.83
+// = 17.6 MeV. It lies on a plane far over the sea (z 150), up and left of the sun, and leaves the frame
+// as the camera cranes down to the ring; the lines are the engine's lines of light, the labels 2D.
+const BE = [[1, 0], [2, 1.112], [3, 2.827], [4, 7.074], [6, 5.332], [7, 5.606], [9, 6.463], [10, 6.475], [11, 6.928],
+  [12, 7.68], [14, 7.476], [16, 7.976], [20, 8.032], [24, 8.261], [28, 8.448], [32, 8.493], [40, 8.551], [56, 8.79],
+  [62, 8.795], [84, 8.717], [120, 8.505], [138, 8.393], [184, 8.005], [208, 7.867], [238, 7.57]];
+const BD = { x0: -93.2, y0: 21.3, w: 63.8, h: 35.2, z: 150, amax: 250, emax: 9.5 };
+const BCLK = { ax0: 36, ax1: 46, cv0: 42, cv1: 68, mk0: 66, ar0: 70, ar1: 78, lb0: 76, lb1: 90, out0: 108, out1: 124 };
+const bdPt = (A, e) => [BD.x0 + BD.w * Math.log10(A) / Math.log10(BD.amax), BD.y0 + BD.h * e / BD.emax, BD.z];
+const BE_P = BE.map(([A, e]) => bdPt(A, e));
+const BE_S = BE_P.reduce((s, p, i) => (i ? s.concat(s[i - 1] + Math.hypot(p[0] - BE_P[i - 1][0], p[1] - BE_P[i - 1][1])) : [0]), []);
+const PALE = [0.9, 0.86, 0.8], COOL = [0.62, 0.8, 1.15];
+const bdFade = (fl) => smoothstep(BCLK.ax0, BCLK.ax0 + 4, fl) * (1 - smoothstep(BCLK.out0, BCLK.out1, fl));
+function bindingCurve(fl, lines) {
+  const fade = bdFade(fl);
+  if (fade <= 0.01) return;
+  const seg = (a, b, w, I, c, glow = 3) => lines.push([...a, ...b, w, I * fade, c[0], c[1], c[2], glow]);
+  const ring = (A, e, r, w, I, c) => {
+    const o = bdPt(A, e);
+    for (let j = 0; j < 16; j++) {
+      const a0 = 2 * Math.PI * j / 16, a1 = 2 * Math.PI * (j + 1) / 16;
+      seg([o[0] + r * Math.cos(a0), o[1] + r * Math.sin(a0), o[2]], [o[0] + r * Math.cos(a1), o[1] + r * Math.sin(a1), o[2]], w, I, c, 2.5);
+    }
+  };
+  // the axes, drawn out from the origin, with a few ticks (B/A 2, 4, 6, 8 MeV; A 10, 100)
+  const ua = easeIO((fl - BCLK.ax0) / (BCLK.ax1 - BCLK.ax0));
+  if (ua > 0) {
+    const o = bdPt(1, 0);
+    seg(o, bdPt(Math.pow(BD.amax, ua), 0), 0.8, 0.5, PALE, 2);
+    seg(o, bdPt(1, BD.emax * ua), 0.8, 0.5, PALE, 2);
+    for (const e of [2, 4, 6, 8]) if (e < BD.emax * ua) { const p = bdPt(1, e); seg(p, [p[0] + 0.9, p[1], p[2]], 0.7, 0.4, PALE, 2); }
+    for (const A of [10, 100]) if (Math.log10(A) < ua * Math.log10(BD.amax)) { const p = bdPt(A, 0); seg(p, [p[0], p[1] + 0.9, p[2]], 0.7, 0.4, PALE, 2); }
+  }
+  // the curve, drawn from hydrogen to uranium
+  const uc = easeIO((fl - BCLK.cv0) / (BCLK.cv1 - BCLK.cv0)), sEnd = uc * BE_S[BE_S.length - 1];
+  for (let i = 1; i < BE_P.length && BE_S[i - 1] < sEnd; i++) {
+    const r = Math.min(1, (sEnd - BE_S[i - 1]) / (BE_S[i] - BE_S[i - 1]));
+    const b = [lerp(BE_P[i - 1][0], BE_P[i][0], r), lerp(BE_P[i - 1][1], BE_P[i][1], r), BD.z];
+    seg(BE_P[i - 1], b, 1.3, 1.25, WARM, 3);
+  }
+  // D and T light, the arrow climbs to 4He (bowed out to the right of the curve), which flashes as it
+  // arrives
+  const um = smoothstep(BCLK.mk0, BCLK.mk0 + 4, fl);
+  if (um > 0) { ring(2, 1.112, 0.75, 1.0, 1.2 * um, COOL); ring(3, 2.827, 0.75, 1.0, 1.2 * um, COOL); }
+  const ur = easeIO((fl - BCLK.ar0) / (BCLK.ar1 - BCLK.ar0));
+  if (ur > 0) {
+    const a = bdPt(2.5, 1.5), c = bdPt(6.5, 2.6), he = bdPt(4, 7.074), end = [he[0] + 0.55, he[1] - 0.85, BD.z];
+    const bz = (t) => [0, 1].map((m) => (1 - t) ** 2 * a[m] + 2 * (1 - t) * t * c[m] + t * t * end[m]).concat(BD.z);
+    for (let j = 1; j <= 14; j++) { if ((j - 1) / 14 >= ur) break; seg(bz((j - 1) / 14), bz(Math.min(ur, j / 14)), 1.1, 1.3, HOT, 3); }
+    if (ur >= 1) {
+      const dx = end[0] - c[0], dy = end[1] - c[1], l = Math.hypot(dx, dy), ux = dx / l, uy = dy / l;
+      for (const s of [1, -1]) seg(end, [end[0] - 1.2 * ux + s * 0.75 * uy, end[1] - 1.2 * uy - s * 0.75 * ux, BD.z], 1.1, 1.3, HOT, 3);
+    }
+    const flash = ur >= 1 ? Math.exp(-(fl - BCLK.ar1) / 6) : 0;
+    ring(4, 7.074, 0.95, 1.2, 1.3 + 2.2 * flash, HOT);
+  }
+}
+// its labels: small and quiet for the axes, the reaction and its energy brighter, typed in
+function drawBindingLabels(g, k, fl, B) {
+  const fade = bdFade(fl);
+  if (fade <= 0.01 || fl < BCLK.ax1) return;
+  const px = (A, e) => project(B, bdPt(A, e));
+  const o = px(1, 0), t = px(1, BD.emax);
+  if (o[2] < 0.3) return;
+  const sc = Math.hypot(t[0] - o[0], t[1] - o[1]) / 330;                     // the diagram's size on screen
+  const type = (s, t0, t1) => s.slice(0, Math.round(s.length * clamp((fl - t0) / (t1 - t0))));
+  g.save(); g.setTransform(k, 0, 0, k, 0, 0); g.textBaseline = 'middle';
+  const put = (s, p, size, col, glow, align = 'left') => {
+    if (!s) return;
+    g.font = `${(size * sc).toFixed(1)}px Consolas, "Courier New", monospace`; g.textAlign = align;
+    g.shadowColor = glow; g.shadowBlur = 8 * sc; g.fillStyle = col; g.fillText(s, p[0], p[1]);
+  };
+  const a1 = (0.75 * fade).toFixed(3), a2 = fade.toFixed(3);
+  put(type('binding energy per nucleon', BCLK.ax1, BCLK.ax1 + 14), [t[0] + 8 * sc, t[1] - 16 * sc], 17, `rgba(236,228,214,${a1})`, 'rgba(255,220,180,0.5)');
+  const ax = px(BD.amax, 0);
+  put(type('A', BCLK.cv1 - 4, BCLK.cv1), [ax[0] + 12 * sc, ax[1]], 17, `rgba(236,228,214,${a1})`, 'rgba(255,220,180,0.5)');
+  const lp = px(9, 4.6), ep = px(9, 3.1);
+  put(type('D + T → ⁴He + n', BCLK.lb0, BCLK.lb0 + 10), lp, 25, `rgba(255,242,224,${a2})`, 'rgba(255,190,120,0.8)');
+  put(type('17.6 MeV', BCLK.lb0 + 7, BCLK.lb1), ep, 25, `rgba(255,196,128,${a2})`, 'rgba(255,160,90,0.8)');
+  g.restore();
+}
+
 // ---------------------------------------------------------------- the camera
-const camShore = { pos: [0.3, 1.5, -2.5], pitch: 0.02, yaw: 0, F: 1500, ppy: 640 };
-const camOver = { pos: [0.35, 2.9, -4.6], pitch: -0.035, yaw: 0, F: 1350, ppy: 640 };
-const camOver2 = { pos: [0.38, 3.4, -3.6], pitch: -0.07, yaw: 0, F: 1450, ppy: 610 };
+// (R19) the horizon lower (about 130 px) so the aurora has the sky: the lens shifted down and the
+// camera brought down toward the Clawds so they stay in frame; the landing camera is unchanged
+const camShore = { pos: [0.3, 1.15, -2.5], pitch: 0.02, yaw: 0, F: 1500, ppy: 780 };
+const camOver = { pos: [0.35, 2.2, -4.6], pitch: -0.035, yaw: 0, F: 1350, ppy: 770 };
+const camOver2 = { pos: [0.38, 2.7, -3.6], pitch: -0.07, yaw: 0, F: 1450, ppy: 730 };
 const camLand = { pos: CAM_LAND.pos, pitch: CAM_LAND.pitch, yaw: 0, F: CAM_LAND.F, ppy: CAM_LAND.pp[1] };
 // a cubic Hermite through the keys (Catmull-Rom tangents, zero at the ends); from the last key on,
 // exactly the fusion camera
@@ -285,19 +404,20 @@ function sceneAt(T, f, fl) {
   const sung = T.pulse('sung', f, 7), snare = fl >= 186 ? T.pulse('snares', f, 5) : 0;
   const sun = sunAt(fl);
   const lines = [], ribbons = [], tips = [];
-  // the sun, then the ring: a painted band round its centre, in its own plane (bb 0)
+  // the sun, then the ring: a painted band round its centre, in its own plane (bb 0), rounding into a
+  // tube as it is pressed (bb 1: the band faces the lens all round, a torus)
   {
-    const N = 96, P = [], Sd = [], col = [];
+    const N = 96, P = [], Sd = [], col = [], bb = [];
     const I = lerp(5.2, 1.7, sun.k) * (1 + 0.9 * snare) * (1 + 0.2 * smoothstep(RING_DRAW[0], COIL_DRAW[1], fl));
     const tint = lerp3([1.0, 0.8, 0.52], [1.0, 0.62, 0.36], sun.k);
     for (let i = 0; i <= N; i++) {
       const a = 2 * Math.PI * i / N, d = add(mul(sun.U, Math.cos(a)), mul(sun.V, Math.sin(a)));
-      P.push(add(sun.c, mul(d, sun.rc))); Sd.push(d);
+      P.push(add(sun.c, mul(d, sun.rc))); Sd.push(d); bb.push(sun.tb);
       const w = 1 + 0.12 * Math.sin(3 * a + fl * 0.2) * sun.k;           // the plasma stirs
       col.push(mul(tint, I * w));
     }
     aurora(fl, ribbons); floes(fl, ribbons, smoothstep(PULL[0] + 6, PRESS[1], fl));
-    ribbons.push({ P, w: sun.hw, S: Sd, bb: 0, col, a: 1, seed: 0.61 });
+    ribbons.push({ P, w: sun.hw, S: Sd, bb, col, a: 1, seed: 0.61 });
     // its light: a wide halo while it is the sun, then the ring's own glow
     const halo = (1 - sun.k) * (1 - 0.5 * sun.p);
     if (halo > 0.01) lines.push([...sun.c, ...sun.c, 30 * halo, 1.1 * halo, 1.0, 0.7, 0.42, 90 * halo]);
@@ -331,6 +451,7 @@ function sceneAt(T, f, fl) {
       }
     }
   }
+  bindingCurve(fl, lines);
   // the Clawds: arms up while they hold the sun and while they draw; each with a beam to its hook, or
   // to a live tip once the core is being drawn
   const holding = fl >= HOOK + 2 && fl < PRESS[1];
@@ -501,12 +622,15 @@ export default {
     g2.setTransform(1, 0, 0, 1, 0, 0);
     g2.drawImage(glc, 0, 0);
     if (painting) {
-      paintMask(maskCv, k, fl, I.cam, I.B);
-      const mb = maskBlur.getContext('2d'); mb.clearRect(0, 0, ctx.W, ctx.H); mb.filter = `blur(${(2.5 * k).toFixed(1)}px)`; mb.drawImage(maskCv, 0, 0); mb.filter = 'none';
+      paintMask(maskCv, k, fl, I.cam, I.B, I.sun.c);
+      const mb = maskBlur.getContext('2d'); mb.clearRect(0, 0, ctx.W, ctx.H); mb.filter = `blur(${(10 * k).toFixed(1)}px)`; mb.drawImage(maskCv, 0, 0); mb.filter = 'none';
       const gg = greyCv.getContext('2d'); gg.globalCompositeOperation = 'destination-out'; gg.drawImage(maskBlur, 0, 0); gg.globalCompositeOperation = 'source-over';
+      g2.globalAlpha = 1 - smoothstep(PAINT[1] - 24, PAINT[1], fl);
       g2.drawImage(greyCv, 0, 0);
+      g2.globalAlpha = 1;
     }
     const m = I.state.clawd, cp = project(I.B, [m.x, m.y + 0.45, m.z]);
+    drawBindingLabels(g2, k, fl, I.B);
     drawBeamCode(g2, k, fl, I.B, I.beams);
     drawOverlay(g2, k, fl, I.B, I.sun, [cp[0], cp[1]]);
     // out of S35's warm hall: the first half-beat opens a little dimmer and warmer

@@ -1,3 +1,5 @@
+// (Revision 19: Claire approved this version and it is now S10's default; this test shot renders the
+// same thing and is kept only for reference.)
 // Test shot (not in shots.json): an alternate S10 for Claire to compare. The camera scrolls gently
 // with Clawd, side-scroller style, while he explores (bars 18-19), into a world that extends a little
 // beyond the screen's left edge, and settles on S10's fixed framing before he reaches the gap; the

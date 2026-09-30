@@ -289,6 +289,38 @@ void main(){
   oB = vec4(B.rgb*(1.0 - a) + Bc*a, 1.0);
 }`;
 
+// ---------------------------------------------------------------- revision 19 (S02): the click's burst of light
+// Opt-in with st.burst = { c: [x, y] (the cursor's tip, card px in Clawd's frame), r (the front's radius, card
+// px), soft (its width), glow, rim, core (light added to the warm scalar W), coreR (card px) }. One pass after
+// the cursor adds the burst to W, so it runs through the one warm ramp and blooms like the rest of the light:
+// a white-hot core at the tip, a front running out across the card with a bright rim, and behind it the card
+// glowing through like lit tissue (the tissue's own fibre, so the flood becomes the wash behind the card).
+// Without st.burst no program or pass changes (S01, S33, and S02 before the click).
+const BURST_FS = HDR + NOISE + PAPER + `
+uniform sampler2D uL, uB; uniform vec2 uRes, uCC, uTC; uniform float uSc, uMC, uMT, uRotC, uCardOn;
+uniform vec4 uBurst;    // the tip x, y (card px, Clawd's frame), the front's radius, its width (card px)
+uniform vec4 uBurstI;   // the glow behind the front, the rim, the core, the core's radius (card px)
+uniform float uBurstK;  // the glow's falloff from the tip to the front (0: even)
+layout(location = 0) out vec4 oL;
+layout(location = 1) out vec4 oB;
+void main(){
+  vec2 uv = gl_FragCoord.xy/uRes;
+  vec4 L = texture(uL, uv);
+  vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y)/uSc;
+  vec2 wc = rot2(-uRotC)*(p - uCC)/uMC;                           // Clawd's frame on the card
+  vec2 wt = (p - uTC)/uMT;                                          // the tissue
+  float d = length(wc - uBurst.xy), r = uBurst.z, sw = uBurst.w;
+  float lead = r - d + 0.3*sw*(fbm(wc*0.008 + 5.0, 3));            // the front's edge, not quite round
+  float inside = uCardOn > 0.5 ? smoothstep(0.0, sw, lead) : 1.0;
+  float rim = uCardOn > 0.5 ? exp(-pow(lead/(0.3*sw + 3.0), 2.0)) : 0.0;
+  float prof = 1.0 - uBurstK*clamp(d/max(r, 1.0), 0.0, 1.0);       // brightest at the tip
+  float tex = 0.55 + 0.45*paperT(wt*1.15, 3.0);                     // the tissue's fibre in the light
+  float core = exp(-pow(d/uBurstI.w, 2.0));
+  float Wb = uBurstI.x*inside*prof*tex + uBurstI.y*rim*(0.75 + 0.25*tex) + uBurstI.z*core;
+  oL = vec4(L.x + Wb, L.yzw);
+  oB = texture(uB, uv);
+}`;
+
 export function createCard(canvas, log = () => {}) {
   const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
   if (!gl) throw new Error('no webgl2');
@@ -313,8 +345,8 @@ export function createCard(canvas, log = () => {}) {
     RAYB.set([r1 * G.tip, 0, Math.atan2(Math.sin(a), Math.cos(a)), j], j * 4);
   });
   const glyphBits = GLYPH.map((row) => [...row].reduce((m, ch, c) => (ch === '#' ? m | (1 << c) : m), 0));
-  // the cursor's programs and target, made on first use (revision 5)
-  let pSceneCur = null, pCur = null, tScene3 = null;
+  // the cursor's programs and target, made on first use (revision 5); the burst's (revision 19)
+  let pSceneCur = null, pCur = null, tScene3 = null, pBurst = null, tScene4 = null;
   const ARROW_F = new Float32Array(ARROW.flat());
   const slate = [0x15, 0x19, 0x2B].map((v) => Math.pow(v / 255, 2.2));
 
@@ -378,9 +410,16 @@ export function createCard(canvas, log = () => {}) {
       setArrow(pCur);
       K.tex(pCur, { uL: sc2.texs[0], uB: sc2.texs[1], uGlow: glow.tex }); K.draw(pCur, tScene3); sc2 = tScene3;
     }
+    if (st.burst) {                                // (revision 19) the click's burst, over the card and the cursor
+      if (!pBurst) { pBurst = K.program(BURST_FS, 'card-burst'); tScene4 = K.target(W, H, 2); }
+      const b = st.burst, c = st.cc || [960, 540];
+      K.setU(pBurst, { uRes: [W, H], uSc: sc, uCC: c, uMC: st.mc || 1, uTC: st.tc || c, uMT: st.mt || 1, uRotC: rot - Math.PI,
+        uCardOn: st.cardOn ?? 1, uBurst: [b.c[0], b.c[1], b.r, b.soft], uBurstI: [b.glow, b.rim, b.core, b.coreR], uBurstK: b.fall || 0 });
+      K.tex(pBurst, { uL: sc2.texs[0], uB: sc2.texs[1] }); K.draw(pBurst, tScene4); sc2 = tScene4;
+    }
     // 3. bloom on the hottest light, then the photograph
     const bloom = pyramid({ tex: sc2.texs[0], w: W, h: H }, down, up, [2.2, 1.6], true);
-    K.setU(pFinal, { uRes: [W, H], uExp: st.exposure ?? 1.0, uBloomW: st.bloom ?? 0.35, uBloomK: 0.3, uGrain: 0.03, uVig: 0.2,
+    K.setU(pFinal, { uRes: [W, H], uExp: st.exposure ?? 1.0, uBloomW: st.bloom ?? 0.35, uBloomK: 0.3, uGrain: 0.03, uVig: st.vig ?? 0.2,
       uFade: st.fade ?? 1, uAddW: st.god ?? 0.35, uFloor: st.floor ?? 1, uSeed: st.seed || 0 });
     K.tex(pFinal, { uL: sc2.texs[0], uB: sc2.texs[1], uBloom: bloom.tex, uAdd: tRays.tex });
     K.draw(pFinal, null, W, H);

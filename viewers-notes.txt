@@ -1,0 +1,29 @@
+cut 17 notes
+
+S02: remove the cursor, or create a burst of light that transitions into S03 on click
+
+S06/S16: lights pulse on (what i think is) the 2nd and 4th beat; move it to the 1st and 3rd
+
+S08/S20: the human silhouettes are a little off - try finding and tracing over a reference?
+
+S10: the cursor disappears instead of moving smoothly offscreen
+
+S11: the cursor's response to clawd's successful attempt isn't clear - maybe have it hover nearby and arc a beat after clawd makes the slope (surprised? pleased?). to consider - having the cursor present in the scene after, and then move away. 
+
+S14: absurd little nitpick - clawd's spawn point is a hexagon, while the environments are squares
+
+S20: timing feels somewhat off - placing amino acids is slow, while the folding is quick
+
+S20/S34/S36: the force diagram on S27 is a great touch, similar references to physics could be a neat visual touch
+
+S36: having the sun deform into a torus rather than a disk would be more visually appealing. do whatever's more representative of the physics. the aurora is beautiful, moving the horizon down to highlight it more could be nice
+
+S23: highlight the satellites more?
+
+S26: instead of moving with the beat, the observatory window should slide cleanly open
+
+S27: the clawds obscure the base of the blueprint somewhat
+
+S29: for greater impact, a bright laser, and larger sails. currently, the lasers fire, the sails accelerate, then slow down. either keep the acceleration throughout, or move with the sails. i'm not sure what the beams in the post-launch sails are, though. pls clarify. you've already mentioned the two stars overlapping sails. maybe make the stars sparkle? they're static right now
+
+S31: the human pops in there. add a transition. the lower part of the city looks somewhat sparse
