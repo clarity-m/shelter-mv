@@ -1,4 +1,4 @@
-// S10, verse 1 into pre-chorus 1a (bars 17-25, frames 1163-1810): the first environment, a pixel
+// S10, verse 1 into pre-chorus 1a (bars 17-25.3, frames 1163-1792; S11 takes 25.4): the first environment, a pixel
 // gridworld (rung 1). S08 ends pushed through the paper screen onto the bare glyph in a warm peach
 // field on the bar-16 drop-out; S10 opens on exactly that frame (same glyph cells, same peach, the
 // pixel world's own dither seen at 27x) and, as the verse enters, pulls back out of the light to the
@@ -186,13 +186,15 @@ function clawdR4(fl) {
     return { x, y: GY, frame: F.WALK[Math.floor((x - LAND) / 6) & 3], stepping: true };
   }
   // bar 25: the flag and +1 on the downbeat's last kick; in the breath that follows he looks up
-  // where the help came from, waves, and sits by the flag
+  // where the help came from, waves, and sits by the flag. Revision 20: the shot ends a beat
+  // earlier (fl 413, S11 takes the vocal pickup), so the breath is tighter and he is seated for
+  // the last eleven frames
   const g0 = { x: GOAL, y: GY, goal: fl - GOALF, stepping: false };
-  if (fl < 378) return { ...g0, frame: F.HAPPY };
-  if (fl < 392) return { ...g0, frame: F.LOOKUP };
-  if (fl < 408) return { ...g0, frame: F.WAVE[Math.floor((fl - 392) / 4) % 4], mirror: true };
-  if (fl < 411) return { ...g0, frame: F.SQUASH };
-  return { ...g0, frame: fl >= 419 && fl < 422 ? F.BLINK : F.SIT };
+  if (fl < 372) return { ...g0, frame: F.HAPPY };
+  if (fl < 383) return { ...g0, frame: F.LOOKUP };
+  if (fl < 399) return { ...g0, frame: F.WAVE[Math.floor((fl - 383) / 4) % 4], mirror: true };
+  if (fl < 402) return { ...g0, frame: F.SQUASH };
+  return { ...g0, frame: F.SIT };
 }
 
 // the paper cursor (Revision 4's frames): comes down from above the frame to the cell, clicks,

@@ -46,9 +46,10 @@
 // last frames are unchanged.
 // Revision 19 (Claire: placing the amino acids is slow and the fold is quick): the beads now drop
 // briskly (three rounds on the onsets 33, 44, 55) and the fold down the funnel gets the time (74-184).
-// A physics diagram rhymes with S27's force diagram: the chain's contact map, a 15 x 15 grid of light
-// lying on the funnel's far rim; each cell lights as its pair of chain segments comes into contact
-// during the fold, filling into the native pattern (helix bands beside the diagonal, sheet streaks).
+// A physics diagram rhymes with S27's force diagram: the chain's contact map, a 15 x 15 grid; each cell
+// lights as its pair of chain segments comes into contact during the fold, filling into the native
+// pattern (helix bands beside the diagonal, sheet streaks). Revision 20 (Claire: like S34's, part of
+// the world): the map is painted on the funnel's far-right terraces in perspective, not a panel.
 import { loadHillxIcy } from '../sets/door/hillx-fix.js';  // hillx, with S18's glacier caps on the far peaks (revision 11)
 import { nightPal } from '../sets/inside-montage/night.js';
 import { EXT, LOOSE, NEAR, FOLD, blendConf, chainPoints, NRES } from '../sets/inside-montage/protein.js';
@@ -316,14 +317,17 @@ function inside(T, f, fl, lineK) {
   const k = smoothstep(NIGHT0, PB1, fl), n = easeIO((fl - SETTLE[0]) / (SETTLE[1] - SETTLE[0]));
   const kN = k * lerp(NIGHT_K[0], NIGHT_K[1], n), palLin = kN > 0 ? palMix(FIELDPAL, LNIGHT, kN) : FIELDPAL;
   const l19 = 1 - 0.35 * easeIO((fl - 40) / 150);
+  // (R20) the contact map, painted on the terraces
+  const mapOn = fl >= CMAP_T[0] && fl < CMAP_T[3], ribbons = mapOn ? pr.ribbons.slice() : pr.ribbons;
+  if (mapOn) contactMapWorld(fl, { now: contactMap(ch), before: contactMap(chainAt(Math.max(0, fl - 5))) }, lines, ribbons, lineK);
   return {
     state: {
       rung: 4, time: 64 + clockAt(fl) / 30, cam: horizonSafe(toX(cam), KB), hill: bumps, sun: { az: 19.8, el: 5.3 },
       tree: null, props: false, salt: -1,                  // (R14) the field, no trees or props
-      clawd: main, crowd, lines, ribbons: pr.ribbons, ribbonCore: 0.4, palLin,
+      clawd: main, crowd, lines, ribbons, ribbonCore: 0.4, palLin,
       keyAz: lerp(19.8 + 62, 19.8 + 12, l19), keyEl: lerp(30, 16, l19), exposure: lerp(1, 0.8, l19), vignette: lerp(0.16, 0.42, l19),
     },
-    cam, B, ch, homes, cmap: fl >= CMAP_T[0] && fl < CMAP_T[3] ? { now: contactMap(ch), before: contactMap(chainAt(Math.max(0, fl - 5))) } : null,
+    cam, B, ch, homes,
   };
 }
 
@@ -510,69 +514,64 @@ function paintMask(M, k, fl, cam, B) {
   }
 }
 
-// ---------------------------------------------------------------- the contact map (revision 19)
+// ---------------------------------------------------------------- the contact map (revisions 19-20)
 // 15 segments of the chain (one per bead); a pair is in contact when their centroids come within
-// about 0.3-0.58 m. The map is a square of light on the far inner wall below the rim, where the
-// camera sees it face-on while the knot spirals down: row i (down) against column j (across).
-const CM_N = 15, CM_G = [8.6, 9.6], CM_CS = 0.115, CM_FACE = 170, CM_OFF = 0.1;
+// about 0.3-0.58 m. (R20, Claire: part of the world, like S34's band diagram) it is painted on the
+// funnel's far-right terraces: its rows follow the terraces (arcs round the funnel at equal steps
+// down the wall), its columns run down the slope a constant width apart, row i against column j from
+// the top left. The grid is lines of light on the land, and the lit cells are paint on it, flashing as
+// a contact forms.
+const CM_N = 15, CM_PHI = 30 * Math.PI / 180, CM_R = [3.4, 1.8], CM_CW = 0.115, CM_LIFT = 0.035;
+const CM_GOLD = [1.0, 0.8, 0.46], CM_WHITE = [1.0, 0.97, 0.9];
 function contactMap(ch) {
   const sum = Array.from({ length: CM_N }, () => [0, 0, 0, 0]);
   ch.P.forEach((p, i) => { const b = Math.min(CM_N - 1, Math.floor(ch.R[i] / NRES * CM_N)); sum[b][0] += p[0]; sum[b][1] += p[1]; sum[b][2] += p[2]; sum[b][3]++; });
   const c = sum.map((q) => [q[0] / q[3], q[1] / q[3], q[2] / q[3]]);
   return c.map((a, i) => c.map((b, j) => (i === j ? 1 : smoothstep(0.58, 0.3, Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])))));
 }
-// its plane: through the wall at CM_G, halfway between the land's normal and the way to the camera,
-// its rows level with the camera's horizon (so it reads square), lifted a hand's width off the land
-let CM_AX = null;
-function cmAxes() {
-  if (CM_AX) return CM_AX;
-  const h = (x, z) => hillH(HILL_F, x, z), e = 0.01, [gx, gz] = CM_G, G = [gx, h(gx, gz), gz];
-  const nrm = (a) => { const l = Math.hypot(...a); return a.map((x) => x / l); };
-  const Nt = nrm([-(h(gx + e, gz) - h(gx - e, gz)) / (2 * e), 1, -(h(gx, gz + e) - h(gx, gz - e)) / (2 * e)]);
-  const cf = camFrame(CM_FACE), Bf = camBasis(cf), Nc = nrm(cf.pos.map((v, m) => v - G[m]));
-  const U = nrm([Bf.right[0], 0, Bf.right[2]]);
-  let N = Nt.map((v, m) => 0.5 * v + 0.5 * Nc[m]);
-  const d = N[0] * U[0] + N[2] * U[2];
-  N = nrm([N[0] - d * U[0], N[1], N[2] - d * U[2]]);
-  const V = [U[1] * N[2] - U[2] * N[1], U[2] * N[0] - U[0] * N[2], U[0] * N[1] - U[1] * N[0]];
-  return (CM_AX = { U, V, C: G.map((v, m) => v + CM_OFF * N[m]) });
+// the rows' radii: equal steps of distance along the wall, so the cells are square on the land
+const CM_RR = (() => {
+  const h = (r) => hillH(HILL_F, FUN[0] + r * Math.cos(CM_PHI), FUN[1] + r * Math.sin(CM_PHI));
+  const n = 400, S = [0], out = [];
+  for (let k = 1; k <= n; k++) { const a = lerp(CM_R[0], CM_R[1], (k - 1) / n), b = lerp(CM_R[0], CM_R[1], k / n); S.push(S[k - 1] + Math.hypot(b - a, h(b) - h(a))); }
+  for (let i = 0; i <= CM_N; i++) {
+    const s = S[n] * i / CM_N;
+    let k = 0; while (k < n - 1 && S[k + 1] < s) k++;
+    out.push(lerp(CM_R[0], CM_R[1], (k + clamp((s - S[k]) / (S[k + 1] - S[k] || 1))) / n));
+  }
+  out.step = S[n] / CM_N;
+  return out;
+})();
+// a point of the map on the land: i down the rows, j across the columns (both may be fractional)
+function cmPt(i, j) {
+  const a = Math.min(CM_N - 1, Math.floor(clamp(i, 0, CM_N))), r = lerp(CM_RR[a], CM_RR[a + 1], clamp(i, 0, CM_N) - a);
+  const phi = CM_PHI - (j - CM_N / 2) * CM_CW / r, x = FUN[0] + r * Math.cos(phi), z = FUN[1] + r * Math.sin(phi);
+  return [x, hillH(HILL_F, x, z) + CM_LIFT, z];
 }
-function cmPoint(i, j) {                                             // cell corner, i and j in 0..15
-  const { U, V, C } = cmAxes(), a = (j - CM_N / 2) * CM_CS, b = (CM_N / 2 - i) * CM_CS;
-  return [0, 1, 2].map((m) => C[m] + a * U[m] + b * V[m]);
-}
-function drawContactMap(g, k, fl, B, cm) {
-  if (!cm) return;
+function contactMapWorld(fl, cm, lines, ribbons, lineK) {
   const a = smoothstep(CMAP_T[0], CMAP_T[1], fl) * (1 - smoothstep(CMAP_T[2], CMAP_T[3], fl));
-  if (a <= 0.01) return;
-  const P = [];
-  for (let i = 0; i <= CM_N; i++) { P.push([]); for (let j = 0; j <= CM_N; j++) P[i].push(project(B, cmPoint(i, j))); }
-  if (P.some((row) => row.some((q) => q[2] < 0.3))) return;
-  const quad = (i, j, s) => {
-    const q = [P[i][j], P[i][j + 1], P[i + 1][j + 1], P[i + 1][j]], cx = (q[0][0] + q[2][0]) / 2, cy = (q[0][1] + q[2][1]) / 2;
-    g.beginPath(); q.forEach((p, m) => { const x = cx + (p[0] - cx) * s, y = cy + (p[1] - cy) * s; if (m) g.lineTo(x, y); else g.moveTo(x, y); }); g.closePath();
-  };
-  g.save(); g.setTransform(k, 0, 0, k, 0, 0); g.globalCompositeOperation = 'lighter'; g.lineJoin = 'round';
-  // a faint pane, the grid, a firmer frame
-  g.fillStyle = `rgba(255,190,130,${(0.06 * a).toFixed(3)})`;
-  g.beginPath(); g.moveTo(P[0][0][0], P[0][0][1]); g.lineTo(P[0][CM_N][0], P[0][CM_N][1]); g.lineTo(P[CM_N][CM_N][0], P[CM_N][CM_N][1]); g.lineTo(P[CM_N][0][0], P[CM_N][0][1]); g.closePath(); g.fill();
-  g.strokeStyle = `rgba(245,214,150,${(0.16 * a).toFixed(3)})`; g.lineWidth = 0.7;
-  g.beginPath();
-  for (let i = 1; i < CM_N; i++) { g.moveTo(P[i][0][0], P[i][0][1]); g.lineTo(P[i][CM_N][0], P[i][CM_N][1]); g.moveTo(P[0][i][0], P[0][i][1]); g.lineTo(P[CM_N][i][0], P[CM_N][i][1]); }
-  g.stroke();
-  g.strokeStyle = `rgba(252,228,178,${(0.6 * a).toFixed(3)})`; g.lineWidth = 1.5;
-  g.beginPath(); g.moveTo(P[0][0][0], P[0][0][1]); g.lineTo(P[0][CM_N][0], P[0][CM_N][1]); g.lineTo(P[CM_N][CM_N][0], P[CM_N][CM_N][1]); g.lineTo(P[CM_N][0][0], P[CM_N][0][1]); g.closePath(); g.stroke();
-  // the cells: light where the pair touches (the diagonal is each segment with itself), and a
-  // white flash with a little bloom as a contact forms
+  if (!cm || a <= 0.01) return;
+  // the grid: the terraces' arcs and the lines down the slope, the outline firmer
+  const seg = (p, q, I, w) => lines.push([...p, ...q, w * lineK, I * a, ...CM_GOLD, 2 * Math.sqrt(lineK)]);
+  for (let i = 0; i <= CM_N; i++) {
+    const edge = i === 0 || i === CM_N;
+    for (let j = 0; j < 2 * CM_N; j++) seg(cmPt(i, j / 2), cmPt(i, (j + 1) / 2), edge ? 0.75 : 0.3, edge ? 1.2 : 0.7);
+  }
+  for (let j = 0; j <= CM_N; j++) {
+    const edge = j === 0 || j === CM_N;
+    for (let i = 0; i < CM_N; i++) seg(cmPt(i, j), cmPt(i + 1, j), edge ? 0.75 : 0.3, edge ? 1.2 : 0.7);
+  }
+  // the cells: paint where the pair touches (the diagonal is each segment with itself), whiter and
+  // brighter for a moment as the contact forms
   for (let i = 0; i < CM_N; i++) for (let j = 0; j < CM_N; j++) {
     const v = cm.now[i][j], fresh = Math.min(1, 2 * Math.max(0, v - cm.before[i][j]));
     if (v < 0.05) continue;
-    const al = a * (i === j ? 0.5 : 0.25 + 0.65 * v);
-    if (fresh > 0.05) { g.fillStyle = `rgba(255,236,200,${(0.35 * fresh * a).toFixed(3)})`; quad(i, j, 1.5); g.fill(); }
-    g.fillStyle = `rgba(255,${Math.round(lerp(200 + 18 * v, 250, fresh))},${Math.round(lerp(120 + 40 * v, 236, fresh))},${Math.min(1, al + 0.5 * fresh * a).toFixed(3)})`;
-    quad(i, j, 0.8); g.fill();
+    const p0 = cmPt(i + 0.5, j + 0.12), p1 = cmPt(i + 0.5, j + 0.88), up = cmPt(i + 0.1, j + 0.5), dn = cmPt(i + 0.9, j + 0.5);
+    const sd = [up[0] - dn[0], up[1] - dn[1], up[2] - dn[2]];
+    const I = (i === j ? 0.7 : 0.45 + 0.8 * v) * (1 + 1.6 * fresh);
+    const col = CM_GOLD.map((c, m) => lerp(c, CM_WHITE[m], fresh) * I);
+    ribbons.push({ P: [p0, p1], w: 0.4 * CM_RR.step, S: [sd, sd], bb: [0, 0], col, a: a * clamp(0.4 + 0.6 * v + 0.3 * fresh), seed: 0.11 * i + 0.07 * j + 0.3 });
   }
-  g.restore();
 }
 
 let CURSOR = null;
@@ -701,7 +700,6 @@ export default {
         g2.drawImage(greyCv, 0, 0);
       }
       const m = I.state.clawd, cp = project(I.B, [m.x, m.y + 0.45, m.z]);
-      drawContactMap(g2, k, fl, I.B, I.cmap);
       drawChainCode(g2, k, fl, I.B, I.ch);
       drawOverlay(g2, k, fl, I.B, I.homes);
       return;

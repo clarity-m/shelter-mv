@@ -345,7 +345,7 @@ function insideFrame(ctx, fr) {
     if (ATLAS) decals = { src: ATLAS.canvas, key: ATLAS.key, quads: codeQuads(fl) };
   }
   hill.render(Object.assign({}, WORLD, {
-    rung: 4, time: 112 + fr.tl, cam: dark ? CAM3 : cam, clawd: null, crowd, lines, decals,
+    rung: 4, time: 112 + fr.tl, cam: dark ? CAM3 : cam, clawd: null, crowd, lines, decals, linesOverClawd: true,   // (revision 20, Claire)
     dim: dark ? [0, 0, 0] : [0.8, 0.8, 0.8], palLin: worldPal(1), grid: 0.04, lineDepth: dark ? 0 : 1,
   }));
   return cvH;

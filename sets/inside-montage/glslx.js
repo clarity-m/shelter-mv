@@ -1509,7 +1509,7 @@ void main() {
 export const LINE_FS = `#version 300 es
 precision highp float; precision highp sampler2D;
 in vec2 vP; in vec2 vA; in vec2 vB; in vec4 vW; in vec3 vC; in vec2 vD;
-uniform sampler2D uAux, uClawd; uniform float uK, uDepthK;
+uniform sampler2D uAux, uClawd; uniform float uK, uDepthK, uClawdK;   // (revision 20) uClawdK 0: lines over the Clawds
 out vec4 o;
 void main() {
   vec2 pa = vP - vA, ba = vB - vA; float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
@@ -1525,7 +1525,7 @@ void main() {
   float dist = mix(vD.x, vD.y, h);
   float scene = texelFetch(uAux, ivec2(gl_FragCoord.xy), 0).y;
   float vis = mix(1.0, smoothstep(dist - 0.6, dist - 0.15, scene), uDepthK);
-  vis *= 1.0 - texelFetch(uClawd, ivec2(gl_FragCoord.xy), 0).a;
+  vis *= 1.0 - uClawdK * texelFetch(uClawd, ivec2(gl_FragCoord.xy), 0).a;
   o = vec4(vC * vW.y * (core + glow) * vis * win, 0.0);
 }`;
 

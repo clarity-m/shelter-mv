@@ -29,24 +29,25 @@ export const solveFrame = (t, f0, span) => f0 + (0.15 + 0.85 * Math.pow(t.h3 * 0
 
 // ---------------------------------------------------------------- revision 14: the replicated grid
 // S15: the learned valley and the three worlds the humans' cursor drops beside it (a funnel crater,
-// an icy shore, a salt flat) form one 2 x 2 block, gi in {-1, 0}, gj in {0, 1}. Then
+// an icy shore, a salt flat) form one 2 x 2 block, gi in {0, 1}, gj in {-1, 0} (revision 20: on the
+// far side of S15's lens, which now looks at his face the way he spawns). Then
 // `envs.replicate(4096)` stamps the block outward in rings of blocks, a wave per beat, to 32 x 32
 // blocks (64 x 64 tiles). Every copy keeps its original's kind and orientation; the kind follows the
 // tile's parity (valleys at even gi and gj, craters odd/even, ice even/odd, salt odd/odd). Frames
 // are S15-local; S17 rebuilds the same tiles from S15's first frame.
 export const REP = {
-  DROPS: [[-1, 0, 55], [0, 1, 91], [-1, 1, 127]],      // [gi, gj, the click that drops it] (41.4, 42.2, 42.4)
+  DROPS: [[1, 0, 55], [0, -1, 91], [1, -1, 127]],      // [gi, gj, the click that drops it] (41.4, 42.2, 42.4)
   CLICK: 145,                                          // the 43.1 downbeat: the command runs
   // [first frame, first ring, last ring]: 43.1, 43.2, 43.3, 43.4, 44.1, 44.2, 44.3
   WAVES: [[145, 1, 1], [163, 2, 2], [181, 3, 4], [199, 5, 6], [217, 7, 9], [235, 10, 12], [253, 13, 16]],
   B0: -16, B1: 15,                                     // the block range (32 x 32 blocks)
   DIVE: [0, 2],                                        // S17's grey valley copy, never solved
 };
-export const blockOf = (gi, gj) => [Math.floor((gi + 1) / 2), Math.floor(gj / 2)];
+export const blockOf = (gi, gj) => [Math.floor(gi / 2), Math.floor((gj + 1) / 2)];
 export const kindOf = (gi, gj) => ((gi & 1) ? ((gj & 1) ? 3 : 1) : ((gj & 1) ? 2 : 0));
 export function replicaTiles(f0) {
   const T = [];
-  for (let gj = 2 * REP.B0; gj <= 2 * REP.B1 + 1; gj++) for (let gi = 2 * REP.B0 - 1; gi <= 2 * REP.B1; gi++) {
+  for (let gj = 2 * REP.B0 - 1; gj <= 2 * REP.B1; gj++) for (let gi = 2 * REP.B0; gi <= 2 * REP.B1 + 1; gi++) {
     const [bi, bj] = blockOf(gi, gj), ring = Math.max(Math.abs(bi), Math.abs(bj));
     const h1 = hash(gi + 99, gj + 99, 21), h2 = hash(gi + 99, gj + 99, 22), h3 = hash(gi + 99, gj + 99, 23), h4 = hash(gi + 99, gj + 99, 24);
     const hero = gi === 0 && gj === 0, dive = gi === REP.DIVE[0] && gj === REP.DIVE[1], kind = kindOf(gi, gj);

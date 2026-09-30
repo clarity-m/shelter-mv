@@ -1,11 +1,12 @@
-// S02, intro A bars 3-4 (frames 155-298). The spark's ray flaps swing shut on the chop notes
+// S02, intro A bars 3-4 and a beat (frames 155-316; R20: the click lands on the bar-5 kick, 299,
+// and the flood ends in the warm wash at 316, which S03 dissolves from). The spark's ray flaps swing shut on the chop notes
 // while Clawd's pieces open outward from the square (arms, then head and body, then legs): the
 // light is refolded into a Clawd-shaped cut, with his eyes left standing as card. Bar 4 lets the
 // light pour through; its last beat flies the camera through the hole into the lit tissue, and
 // the shot ends on a warm wash for S03. Same timeline function as S01 (sets/paper-card/opening.js).
 // In bar 4 the humans' cursor returns to Clawd's shape and types `train(corpus)` in the humans' code
 // panel, the same panel as S13's (sets/valley/papercursor.js, read only), drawn here over the card
-// render at S13's size; the click on 281 flashes it and launches the fly-through.
+// render; (R20) the cursor hovers and settles before typing, lifts a moment after, and clicks on 299.
 // R19 (Claire): the click is a burst of warm light from the cursor's tip that floods the frame, through
 // Clawd's shape, into the warm wash S03 opens from (opening.js burstAt, card.js st.burst); the cursor and
 // the panel dissolve into it.

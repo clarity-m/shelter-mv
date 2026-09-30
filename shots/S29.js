@@ -26,6 +26,11 @@
 //   - the lasers are brighter (a white-hot core in a warm halo) and the sails larger;
 //   - once the beams have lit the sails the push accelerates all the way to the cut (it used to ease
 //     out), and the camera rides along at about a third of the flock's speed.
+// Revision 20 (Claire):
+//   - the pulses inside the ribbon pass behind the climber and its payload;
+//   - the beams reach the sails in three waves, mirroring S23's satellites: a few on 76.1, more on
+//     the half-beat, then all the rest at once on 76.2. Each sail is pushed from the moment it lights
+//     (at most 6 frames ahead of the rest).
 import { createPaper, smooth, clamp, lerp, easeInOut, easeOut, toScreen, panFor } from '../sets/paper-kit/kit.js';
 import { groundScene, spaceScene, layerXF } from '../sets/paper-kit/elevator.js';
 import { EL, STROKES, heat } from '../sets/paper-kit/elevatorlines.js';
@@ -35,7 +40,7 @@ import { project, camBasis, CAM, slotAt, sailMesh, drawSail, beamFrom, N_SAILS, 
 import { makeSky, skyCam, turn, projectDir, unprojectDir, drawSky3 } from '../sets/paper-kit/sky2d.js';
 import { hash } from '../lib/util.js';
 
-export const DROP = 12, X0 = 26, X1 = 34, STOP = 134, FLING = 138, BURST = 156, BEAMS = 228, AWAY = 238, LAST = 299;
+export const DROP = 12, X0 = 26, X1 = 34, STOP = 134, FLING = 138, BURST = 156, BEAMS = 228, AWAY = 246, LAST = 299;
 const SAIL_K = 1.4, FOLLOW = 0.3, PUSH_D = 12;        // (R19) sail size, the camera's share of the push, the push
 // ---------------------------------------------------------------- the launch and the climb (as in revision 11)
 export const zoomAt = (fl) => 1 + 1.25 * smooth(DROP, X1, fl) - 1.25 * smooth(114, STOP, fl);
@@ -147,18 +152,24 @@ function clipSeg(B, a, b, near = 0.5) {
   if (zb < near) { const u = (near - zb) / (za - zb); b = b.map((v, i) => v + (a[i] - v) * u); }
   return [a, b];
 }
+// (R20) the beams' three waves: the hero and two near the middle, then twelve spread out, then the rest
+const WAVE_T = [BEAMS, BEAMS + 9, BEAMS + 18];
+const FIRST = new Set([N_SAILS, 5 * 14 + 6, 4 * 14 + 8]);
+const waveOf = (i) => (FIRST.has(i) ? 0 : hash(i, 17) < 0.09 ? 1 : 2);
+const beamAt = (i) => { const w = waveOf(i); return WAVE_T[w] - 6 + (w === 2 ? 1.5 : 3) * hash(i, 3); };
+const pushOf = (i, fl) => { const t0 = Math.max(beamAt(i) + 6, AWAY - 6), p = clamp((fl - t0) / (LAST - AWAY), 0, 1.15); return p * p * (0.75 + 0.25 * p); };
 function drawFlock(g, s, fl, tsec) {
-  const away = awayAt(fl), D = PUSH_D * away;                       // pushed along the beams, accelerating
+  const away = awayAt(fl), D = PUSH_D * away;                       // the main push (the camera follows it)
   const cam = Object.assign({}, CAM, { pos: TRAVEL.map((v) => v * FOLLOW * D), pitch: CAM.pitch + 0.06 * away, yaw: CAM.yaw - 0.05 * away }), B = camBasis(cam);
   const P = (p) => project(p, cam);
   const sails = [];
   for (let i = 0; i <= N_SAILS; i++) {                              // (N_SAILS is the hero, the nearest member)
     const t0 = BURST + 2 + 12 * hash(i, 5), u = clamp((fl - t0) / 32, 0, 1);
     if (u <= 0) continue;
-    const e = easeOut(u), slot = slotAt(i);
-    const c = [0, 1, 2].map((j) => lerp(BURST3[j], slot[j], e) + TRAVEL[j] * D);
+    const e = easeOut(u), slot = slotAt(i), Di = PUSH_D * pushOf(i, fl);
+    const c = [0, 1, 2].map((j) => lerp(BURST3[j], slot[j], e) + TRAVEL[j] * Di);
     const open = smooth(0.3, 1, u) * smooth(BURST + 6, BURST + 62, fl);
-    const tb = BEAMS + 8 * hash(i, 3), lit = clamp((fl - tb - 5) / 6, 0, 1), grow = clamp((fl - tb) / 7, 0, 1);
+    const tb = beamAt(i), lit = clamp((fl - tb - 5) / 6, 0, 1), grow = clamp((fl - tb) / 7, 0, 1);
     const warm = 0.55 * (1 - e) * (1 - smooth(BURST + 20, BURST + 44, fl));
     sails.push({ i, c, open, lit: Math.max(lit, warm), grow, z: depthOf(B, c), spin: (hash(i, 9) - 0.5) * 1.4 * (1 - open) });
   }
@@ -238,13 +249,18 @@ function drawTrail(g, s, fl, cy) {
 function drawPulses(g, s, fl, cy) {
   const on = smooth(DROP, DROP + 6, fl) * (1 - smooth(STOP - 12, STOP, fl)), Z = zoomAt(fl);
   if (on <= 0) return;
+  // (R20) they run inside the ribbon, so they pass behind the climber and its payload: nothing is
+  // drawn over the climber's body, packs and clamps (the same outline the stars are erased at)
+  const top = cy - 52 * Z - 3, bot = cy + 52 * Z + 3;             // (round caps reach 3Z further)
   g.lineCap = 'round';
   for (let k = 0; k < 7; k++) {
-    const y = ((k * 263 + dist(fl) * 1.35) % 1500) - 200;
+    const y0 = ((k * 263 + dist(fl) * 1.35) % 1500) - 200, y1 = y0 + 26 * Z;
     g.strokeStyle = `rgba(255,222,188,${(0.8 * on).toFixed(3)})`; g.lineWidth = 6 * Z * s;
-    g.beginPath(); g.moveTo(960 * s, y * s); g.lineTo(960 * s, (y + 26 * Z) * s); g.stroke();
+    for (const [a, b] of [[y0, Math.min(y1, top)], [Math.max(y0, bot), y1]]) {
+      if (b <= a) continue;
+      g.beginPath(); g.moveTo(960 * s, a * s); g.lineTo(960 * s, b * s); g.stroke();
+    }
   }
-  void cy;
 }
 function drawFlashes(g, s, fl) {
   const at = (x, y, r, a) => {

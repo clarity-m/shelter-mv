@@ -2,14 +2,14 @@
 
 **What.** Black card over a lamp-lit tissue. The hole is Clawd's heart square (72 px), eleven ray flaps (`lib/spark.js`) and Clawd's cells, each flap hinged at its far end.
 
-**S01.** The square lights on chop 0 (frame 11). The humans' paper cursor pulls one fan of rays open per chop (30, 44, 84, 106), then withdraws by 146.
+**S01 (R20; Claire: the spin is unnecessary now; "make it clear the cursor draws the outline, and it's later filled in").** The square lights on chop 0 (11).
+- **The outline.** The humans' paper cursor comes in from the bottom right and draws the starburst's outline ray by ray, clockwise (30-108). It leaves a thin line of light cut into the card, with a spark at the pen that flares on the chops. It lets go where it began and leaves (116-144).
+- **The fill.** From the chop at 116, the rays fill with light in a clockwise wave from the top (the paper glowing through), and their flaps swing open (123-151).
 
-**S02 (the pretraining command).** Bar 3 as before. In bar 4 the cursor returns to Clawd's shape (227-234) and types `train(corpus)` in S13's code panel (`sets/valley/papercursor.js`, read only), one keystroke per character (235-276).
-- **The click is a burst of light (R19; Claire: "a burst of light that transitions into S03 on click").** On 281 a white-hot flash at the cursor's tip. A front of light runs out through Clawd's shape and across the black card, which glows through like lit tissue. The frame floods white while the camera flies through (282-288), then settles into the warm wash by 298.
-- The cursor and panel stay put and dissolve into the light (the panel lit peach). The vignette lifts while the frame is white.
+**S02 (155-316).** Bar 3 folds the rays shut from the top as Clawd's cells ripple open. In bar 4 the cursor comes back, hovers and settles (227-253), and types `train(corpus)` (253-289, keys on the chops at 253, 271 and 289). It lifts a moment, then clicks on the bar-5 kick (299). The burst floods the frame through the fly-through into the warm wash at 316, which S03 dissolves from.
 
-**Technique.** WebGL2 passes: the hole's SDF and flaps, the air glow and shafts, the cursor (`st.cursor`). `st.burst` (R19) adds the burst to the warm scalar in Clawd's card frame (sharing the ramp and bloom), with the tissue's fibre, so the flood becomes the wash; `st.vig` sets the vignette. Without these, every program is the original.
+**Technique.** WebGL2 passes: the hole's SDF and flaps, the air glow and shafts, the cursor. Opt-in passes add to the warm scalar: `st.kerf` (R20: outline, fill, pen) and `st.burst` (R19). `st.rotC` sets Clawd's frame, `st.vig` the vignette. Without these, every program is the original.
 
-**Checks.** Bit-identical to cut 17: S01 30, 106 and 150; S02 155, 200, 226, 250, 276, 280 and 298; S33 6380, 6450 and 6500. S01→S02 is 2.7 and S02→S03 is 1.1. The glitch scan flags 283-286: the flood, one monotonic sweep.
+**Checks.** S33 is bit-identical (6350-6520). S01→S02 is 0.7 and S02→S03 is 1.1. The glitch scan flags 301-304: the flood, one monotonic sweep.
 
-**Page time.** S01 0.18 s/frame; S02 0.11 s.
+**Page time.** S01 0.09 s/frame; S02 0.17 s (shared GPU).

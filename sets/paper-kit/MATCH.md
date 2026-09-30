@@ -4,6 +4,19 @@ The positions are screen pixels in 1920x1080 (y down), at the outside shot's FIR
 twin's LAST frame puts its light on these marks. Revision 8 (2026-09-29 00:56) is at the top; the
 older targets it retired are listed at the end.
 
+## Revision 20: S06 -> S07, the rack's rows (for agent T)
+
+S06 is now bar 13 only (frames 875-946). Its last frame, 946, is still: the camera's push has eased
+to rest and the pulses have calmed by local 67. S07 opens on frame 947. In screen px (1920x1080) at 946:
+- **The six rows**, the rack's unit and bay centres, 121.2 px apart: **y 171, 292, 413, 535, 656,
+  777** (T's old `170 + 120 i` is within 1-7 px).
+- **The lit row:** only bay A (row 2, y 292) holds the new card.
+  - Its lit vents span **x 817-1146**, centred at **x 981.5** (the old match used about 978).
+  - Its warm LEDs are at x 1213-1248, and the bay spans y 233-351.
+- **The dark row:** bay B (row 5, y 656) is empty and dark.
+- **The rack's rails** are at x 685 and 1278.
+- **Reference:** `out/stills/match_S06_last.png`.
+
 ## Revision 8: the landings (S21's device: the drawing's lines land on the paper and burn off)
 
 ### S34 → S35: the chip (agent P; revision 10, 04:05). S35's first frame is 4331, the bar-61 downbeat
@@ -199,3 +212,4 @@ them.
   4331 and 4402 targets are unchanged.
 - 2026-09-29 19:58 (revision 15): S35 runs to 4420 (shift1 18). Frame 4331 is bit-identical, and the
   campus's square is now at 4420.
+- 2026-09-30 04:05 (revision 20): S06 -> S07's rows and the lit vents at frame 946 (for T).

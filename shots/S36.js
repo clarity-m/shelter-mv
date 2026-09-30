@@ -43,6 +43,7 @@ import { lookPal } from '../sets/inside-montage/valley.js';
 import { palLinear, palMix } from '../sets/hill/palettes.js';
 import { camBasis, project } from '../sets/hill/scene.js';
 import { createPaperCursor, HIS } from '../sets/valley/papercursor.js';
+import { codeAtlas } from '../sets/inside-montage/codeline.js';
 import { clamp, lerp, smoothstep, easeInOut, hash } from '../lib/util.js';
 
 const easeIO = (t) => easeInOut(clamp(t));
@@ -289,90 +290,126 @@ function paintMask(M, k, fl, cam, B, sunC) {
   }
 }
 
-// ---------------------------------------------------------------- the binding energy curve (revision 19)
-// A physics diagram in light in the sky while the sun comes down: the binding energy per nucleon B/A
-// (MeV) against the mass number A (log scale): the light nuclei's steep, jagged climb to helium-4's
-// spike, the broad peak at iron and nickel, the slow fall to uranium. D + T -> 4He + n is marked:
-// from D (1.11) and T (2.83) up to 4He (7.07); the energy released is 4 x 7.07 - 2 x 1.11 - 3 x 2.83
-// = 17.6 MeV. It lies on a plane far over the sea (z 150), up and left of the sun, and leaves the frame
-// as the camera cranes down to the ring; the lines are the engine's lines of light, the labels 2D.
+// ---------------------------------------------------------------- the binding energy curve (revisions 19-20)
+// A physics diagram in light: the binding energy per nucleon B/A (MeV) against the mass number A (log
+// scale): the light nuclei's steep, jagged climb to helium-4's spike, the broad peak at iron and
+// nickel, the slow fall to uranium. D + T -> 4He + n is marked: from D (1.11) and T (2.83) up to 4He
+// (7.07); the energy released is 4 x 7.07 - 2 x 1.11 - 3 x 2.83 = 17.6 MeV. (R20, like S34's band
+// diagram) it is drawn on the ice shelf in perspective, just in front of the crowd: A across (x), B/A
+// up the ice away from the lens (+z). Lines of light on the ice; the labels are ground text (decals),
+// long in depth so they read from the shore.
 const BE = [[1, 0], [2, 1.112], [3, 2.827], [4, 7.074], [6, 5.332], [7, 5.606], [9, 6.463], [10, 6.475], [11, 6.928],
   [12, 7.68], [14, 7.476], [16, 7.976], [20, 8.032], [24, 8.261], [28, 8.448], [32, 8.493], [40, 8.551], [56, 8.79],
   [62, 8.795], [84, 8.717], [120, 8.505], [138, 8.393], [184, 8.005], [208, 7.867], [238, 7.57]];
-const BD = { x0: -93.2, y0: 21.3, w: 63.8, h: 35.2, z: 150, amax: 250, emax: 9.5 };
-const BCLK = { ax0: 36, ax1: 46, cv0: 42, cv1: 68, mk0: 66, ar0: 70, ar1: 78, lb0: 76, lb1: 90, out0: 108, out1: 124 };
-const bdPt = (A, e) => [BD.x0 + BD.w * Math.log10(A) / Math.log10(BD.amax), BD.y0 + BD.h * e / BD.emax, BD.z];
-const BE_P = BE.map(([A, e]) => bdPt(A, e));
-const BE_S = BE_P.reduce((s, p, i) => (i ? s.concat(s[i - 1] + Math.hypot(p[0] - BE_P[i - 1][0], p[1] - BE_P[i - 1][1])) : [0]), []);
+const BD = { x0: -3.0, w: 6.4, z0: 3.2, d: 1.9, amax: 250, emax: 9.5, lift: 0.03 };
+const BCLK = { ax0: 40, ax1: 50, cv0: 46, cv1: 70, mk0: 68, ar0: 72, ar1: 80, lb0: 78, lb1: 92, out0: 104, out1: 118 };
+const landAt = (x, z) => LAND.reduce((h, b) => h + b[0] * Math.exp(-(((x - b[1]) / b[3]) ** 2 + ((z - b[2]) / b[4]) ** 2)), 0);
+const onIce = (x, z) => [x, landAt(x, z) + BD.lift, z];
+const bdXZ = (A, e) => [BD.x0 + BD.w * Math.log10(A) / Math.log10(BD.amax), BD.z0 + BD.d * e / BD.emax];
+const bdPt = (A, e) => onIce(...bdXZ(A, e));
+const BE_XZ = BE.map(([A, e]) => bdXZ(A, e));
+const BE_S = BE_XZ.reduce((s, p, i) => (i ? s.concat(s[i - 1] + Math.hypot(p[0] - BE_XZ[i - 1][0], p[1] - BE_XZ[i - 1][1])) : [0]), []);
 const PALE = [0.9, 0.86, 0.8], COOL = [0.62, 0.8, 1.15];
 const bdFade = (fl) => smoothstep(BCLK.ax0, BCLK.ax0 + 4, fl) * (1 - smoothstep(BCLK.out0, BCLK.out1, fl));
 function bindingCurve(fl, lines) {
   const fade = bdFade(fl);
   if (fade <= 0.01) return;
   const seg = (a, b, w, I, c, glow = 3) => lines.push([...a, ...b, w, I * fade, c[0], c[1], c[2], glow]);
-  const ring = (A, e, r, w, I, c) => {
-    const o = bdPt(A, e);
-    for (let j = 0; j < 16; j++) {
-      const a0 = 2 * Math.PI * j / 16, a1 = 2 * Math.PI * (j + 1) / 16;
-      seg([o[0] + r * Math.cos(a0), o[1] + r * Math.sin(a0), o[2]], [o[0] + r * Math.cos(a1), o[1] + r * Math.sin(a1), o[2]], w, I, c, 2.5);
-    }
+  // a polyline on the ice between two (x, z) points, in short steps so it follows the ice
+  const run = (p, q, w, I, c, glow = 3, n = 8) => {
+    for (let j = 0; j < n; j++) seg(onIce(lerp(p[0], q[0], j / n), lerp(p[1], q[1], j / n)), onIce(lerp(p[0], q[0], (j + 1) / n), lerp(p[1], q[1], (j + 1) / n)), w, I, c, glow);
   };
-  // the axes, drawn out from the origin, with a few ticks (B/A 2, 4, 6, 8 MeV; A 10, 100)
+  // the axes, drawn out from the origin, with ticks (B/A 2, 4, 6, 8 MeV; A 10, 100)
   const ua = easeIO((fl - BCLK.ax0) / (BCLK.ax1 - BCLK.ax0));
   if (ua > 0) {
-    const o = bdPt(1, 0);
-    seg(o, bdPt(Math.pow(BD.amax, ua), 0), 0.8, 0.5, PALE, 2);
-    seg(o, bdPt(1, BD.emax * ua), 0.8, 0.5, PALE, 2);
-    for (const e of [2, 4, 6, 8]) if (e < BD.emax * ua) { const p = bdPt(1, e); seg(p, [p[0] + 0.9, p[1], p[2]], 0.7, 0.4, PALE, 2); }
-    for (const A of [10, 100]) if (Math.log10(A) < ua * Math.log10(BD.amax)) { const p = bdPt(A, 0); seg(p, [p[0], p[1] + 0.9, p[2]], 0.7, 0.4, PALE, 2); }
+    const o = bdXZ(1, 0);
+    run(o, bdXZ(Math.pow(BD.amax, ua), 0), 1.4, 0.6, PALE, 2.5, 24);
+    run(o, bdXZ(1, BD.emax * ua), 1.4, 0.6, PALE, 2.5, 8);
+    for (const e of [2, 4, 6, 8]) if (e < BD.emax * ua) { const p = bdXZ(1, e); run(p, [p[0] + 0.14, p[1]], 1.1, 0.45, PALE, 2, 2); }
+    for (const A of [10, 100]) if (Math.log10(A) < ua * Math.log10(BD.amax)) { const p = bdXZ(A, 0); run(p, [p[0], p[1] + 0.12], 1.1, 0.45, PALE, 2, 2); }
   }
   // the curve, drawn from hydrogen to uranium
   const uc = easeIO((fl - BCLK.cv0) / (BCLK.cv1 - BCLK.cv0)), sEnd = uc * BE_S[BE_S.length - 1];
-  for (let i = 1; i < BE_P.length && BE_S[i - 1] < sEnd; i++) {
+  for (let i = 1; i < BE_XZ.length && BE_S[i - 1] < sEnd; i++) {
     const r = Math.min(1, (sEnd - BE_S[i - 1]) / (BE_S[i] - BE_S[i - 1]));
-    const b = [lerp(BE_P[i - 1][0], BE_P[i][0], r), lerp(BE_P[i - 1][1], BE_P[i][1], r), BD.z];
-    seg(BE_P[i - 1], b, 1.3, 1.25, WARM, 3);
+    run(BE_XZ[i - 1], [lerp(BE_XZ[i - 1][0], BE_XZ[i][0], r), lerp(BE_XZ[i - 1][1], BE_XZ[i][1], r)], 2.2, 1.3, WARM, 3.5, 4);
   }
-  // D and T light, the arrow climbs to 4He (bowed out to the right of the curve), which flashes as it
-  // arrives
+  // D and T light as points; the arrow climbs from them to 4He, which flashes as it arrives
   const um = smoothstep(BCLK.mk0, BCLK.mk0 + 4, fl);
-  if (um > 0) { ring(2, 1.112, 0.75, 1.0, 1.2 * um, COOL); ring(3, 2.827, 0.75, 1.0, 1.2 * um, COOL); }
+  if (um > 0) { const d = bdPt(2, 1.112), t = bdPt(3, 2.827); seg(d, d, 5, 1.3 * um, COOL, 11); seg(t, t, 5, 1.3 * um, COOL, 11); }
   const ur = easeIO((fl - BCLK.ar0) / (BCLK.ar1 - BCLK.ar0));
   if (ur > 0) {
-    const a = bdPt(2.5, 1.5), c = bdPt(6.5, 2.6), he = bdPt(4, 7.074), end = [he[0] + 0.55, he[1] - 0.85, BD.z];
-    const bz = (t) => [0, 1].map((m) => (1 - t) ** 2 * a[m] + 2 * (1 - t) * t * c[m] + t * t * end[m]).concat(BD.z);
-    for (let j = 1; j <= 14; j++) { if ((j - 1) / 14 >= ur) break; seg(bz((j - 1) / 14), bz(Math.min(ur, j / 14)), 1.1, 1.3, HOT, 3); }
+    const a = bdXZ(2.6, 1.3), c = bdXZ(5.5, 2.4), end = bdXZ(4.25, 6.3);
+    const bz = (t) => [0, 1].map((m) => (1 - t) ** 2 * a[m] + 2 * (1 - t) * t * c[m] + t * t * end[m]);
+    for (let j = 1; j <= 14; j++) { if ((j - 1) / 14 >= ur) break; run(bz((j - 1) / 14), bz(Math.min(ur, j / 14)), 1.6, 1.3, HOT, 3, 1); }
     if (ur >= 1) {
-      const dx = end[0] - c[0], dy = end[1] - c[1], l = Math.hypot(dx, dy), ux = dx / l, uy = dy / l;
-      for (const s of [1, -1]) seg(end, [end[0] - 1.2 * ux + s * 0.75 * uy, end[1] - 1.2 * uy - s * 0.75 * ux, BD.z], 1.1, 1.3, HOT, 3);
+      const dx = end[0] - c[0], dz = end[1] - c[1], l = Math.hypot(dx, dz), ux = dx / l, uz = dz / l;
+      for (const s of [1, -1]) run(end, [end[0] - 0.13 * ux + s * 0.08 * uz, end[1] - 0.13 * uz - s * 0.08 * ux], 1.6, 1.3, HOT, 3, 1);
     }
-    const flash = ur >= 1 ? Math.exp(-(fl - BCLK.ar1) / 6) : 0;
-    ring(4, 7.074, 0.95, 1.2, 1.3 + 2.2 * flash, HOT);
+    const he = bdPt(4, 7.074), flash = ur >= 1 ? Math.exp(-(fl - BCLK.ar1) / 6) : 0;
+    seg(he, he, 6, 1.4 + 2.4 * flash, HOT, 12 + 10 * flash);
   }
 }
-// its labels: small and quiet for the axes, the reaction and its energy brighter, typed in
-function drawBindingLabels(g, k, fl, B) {
+// its labels, lying on the ice (hillx decals): each row of the atlas laid along x from (x, z), its
+// glyphs `gz` deep and `gw` wide per character (long in depth, like road markings, so they read
+// from the low camera), typed in and fading with the diagram
+const BD_LABELS = [
+  { text: 'binding energy per nucleon', x: -3.0, z: 5.18, gw: 0.05, gz: 0.3, t0: BCLK.ax1, t1: BCLK.ax1 + 14, a: 0.75, col: [0.95, 0.9, 0.82] },
+  { text: 'A', x: 3.52, z: 3.12, gw: 0.07, gz: 0.3, t0: BCLK.cv1 - 4, t1: BCLK.cv1, a: 0.75, col: [0.95, 0.9, 0.82] },
+  { text: 'D + T → ⁴He + n', x: -1.05, z: 3.74, gw: 0.058, gz: 0.36, t0: BCLK.lb0, t1: BCLK.lb0 + 10, a: 1, col: [1.25, 1.12, 0.95] },
+  { text: '17.6 MeV', x: -1.05, z: 3.28, gw: 0.07, gz: 0.4, t0: BCLK.lb0 + 7, t1: BCLK.lb1, a: 1, col: [1.4, 0.82, 0.42] },
+];
+let BD_ATLAS = null;
+function bindingLabels(fl, quads) {
   const fade = bdFade(fl);
-  if (fade <= 0.01 || fl < BCLK.ax1) return;
-  const px = (A, e) => project(B, bdPt(A, e));
-  const o = px(1, 0), t = px(1, BD.emax);
-  if (o[2] < 0.3) return;
-  const sc = Math.hypot(t[0] - o[0], t[1] - o[1]) / 330;                     // the diagram's size on screen
-  const type = (s, t0, t1) => s.slice(0, Math.round(s.length * clamp((fl - t0) / (t1 - t0))));
-  g.save(); g.setTransform(k, 0, 0, k, 0, 0); g.textBaseline = 'middle';
-  const put = (s, p, size, col, glow, align = 'left') => {
-    if (!s) return;
-    g.font = `${(size * sc).toFixed(1)}px Consolas, "Courier New", monospace`; g.textAlign = align;
-    g.shadowColor = glow; g.shadowBlur = 8 * sc; g.fillStyle = col; g.fillText(s, p[0], p[1]);
-  };
-  const a1 = (0.75 * fade).toFixed(3), a2 = fade.toFixed(3);
-  put(type('binding energy per nucleon', BCLK.ax1, BCLK.ax1 + 14), [t[0] + 8 * sc, t[1] - 16 * sc], 17, `rgba(236,228,214,${a1})`, 'rgba(255,220,180,0.5)');
-  const ax = px(BD.amax, 0);
-  put(type('A', BCLK.cv1 - 4, BCLK.cv1), [ax[0] + 12 * sc, ax[1]], 17, `rgba(236,228,214,${a1})`, 'rgba(255,220,180,0.5)');
-  const lp = px(9, 4.6), ep = px(9, 3.1);
-  put(type('D + T → ⁴He + n', BCLK.lb0, BCLK.lb0 + 10), lp, 25, `rgba(255,242,224,${a2})`, 'rgba(255,190,120,0.8)');
-  put(type('17.6 MeV', BCLK.lb0 + 7, BCLK.lb1), ep, 25, `rgba(255,196,128,${a2})`, 'rgba(255,160,90,0.8)');
-  g.restore();
+  if (fade <= 0.01 || !BD_ATLAS) return;
+  BD_LABELS.forEach((lb, li) => {
+    const row = BD_ATLAS.rows[li], n = Math.round(row.n * clamp((fl - lb.t0) / (lb.t1 - lb.t0)));
+    for (let c0 = 0; c0 < n; c0 += 2) {
+      const c1 = Math.min(n, c0 + 2), xa = lb.x + c0 * lb.gw, xb = lb.x + c1 * lb.gw;
+      const a = lb.a * fade;
+      quads.push({ P: [onIce(xa, lb.z), onIce(xb, lb.z), onIce(xb, lb.z + lb.gz), onIce(xa, lb.z + lb.gz)],
+        uv: [row.x0 + c0 * BD_ATLAS.adv, row.y0, row.x0 + c1 * BD_ATLAS.adv, row.y1], col: lb.col, a: [a, a, a, a] });
+    }
+  });
+}
+
+// ---------------------------------------------------------------- the field's lines (revision 20)
+// The aurora as physics, kept faint: dipole field lines arc through the sky out of the pole (far north,
+// left of the sun, on the horizon) and come down into the curtains, which hang where the lines come
+// down: the field there is vertical, and an aurora's rays run along the field. Each line is
+// r = L sin^2(theta) in its own meridian plane, L the distance from the pole to its curtain. A little
+// light drifts down each line into the curtains (the electrons that light them); the tokamak's helices
+// later carry on the same language.
+const POLE = [-70, 0, 300];
+const FIELD = (() => {
+  const out = [];
+  CURTAINS.forEach((c, ci) => {
+    for (let k = 0; k < 4; k++) {
+      const x = lerp(c.x0, c.x1, (k + 0.5) / 4), ex = x - POLE[0], ez = c.z - POLE[2], L = Math.hypot(ex, ez);
+      const pts = [];
+      for (let j = 0; j <= 44; j++) {
+        const th = lerp(0.14, Math.PI / 2, j / 44), r = L * Math.sin(th) ** 2;
+        pts.push([POLE[0] + ex / L * r * Math.sin(th), r * Math.cos(th), POLE[2] + ez / L * r * Math.sin(th)]);
+      }
+      out.push({ pts, col: lerp3(AUR_COLS[c.c === 2 ? 0 : c.c], [0.85, 0.9, 1.0], 0.5), ph: hash(ci * 4 + k, 41) });
+    }
+  });
+  return out;
+})();
+function fieldLines(fl, lines) {
+  const A = Math.min(1, auroraK(fl));
+  if (A < 0.02) return;
+  for (const f of FIELD) {
+    const head = ((fl / 50 + f.ph) % 1) * 1.15;                    // the drifting light, out of the pole to the curtain
+    for (let j = 1; j < f.pts.length; j++) {
+      const s = j / (f.pts.length - 1), ends = smoothstep(0.02, 0.4, s) * (1 - 0.6 * smoothstep(0.85, 1, s));   // soft into the pole
+      const pulse = Math.exp(-(((s - head) / 0.05) ** 2));
+      const I = A * (0.1 + 0.28 * pulse) * ends;
+      if (I < 0.004) continue;
+      lines.push([...f.pts[j - 1], ...f.pts[j], 0.8, I, ...f.col, 2.5]);
+    }
+  }
 }
 
 // ---------------------------------------------------------------- the camera
@@ -452,6 +489,9 @@ function sceneAt(T, f, fl) {
     }
   }
   bindingCurve(fl, lines);
+  fieldLines(fl, lines);
+  const quads = [];
+  bindingLabels(fl, quads);
   // the Clawds: arms up while they hold the sun and while they draw; each with a beam to its hook, or
   // to a live tip once the core is being drawn
   const holding = fl >= HOOK + 2 && fl < PRESS[1];
@@ -500,6 +540,7 @@ function sceneAt(T, f, fl) {
       salt: 1 - smoothstep(170, 196, fl),
       river: { pts: SEA.pts, head: SEA.head, flow: 0.4 * fl / 30 },
       clawd: main, crowd, lines, ribbons, ribbonCore: 0.5, palLin: palAt(fl, kN),
+      decals: quads.length ? { src: BD_ATLAS.canvas, key: BD_ATLAS.key, quads } : undefined,
       // the night sea goes dark under the finished core (the Clawds are out of frame by then), so the
       // ring and coils carry the light into S21's flash; ribbons and lines are drawn over the dim
       dim: lerp(1, 0.4, smoothstep(146, 200, fl)),
@@ -605,6 +646,7 @@ export default {
     hill = createHill(glc, { log: ctx.log, seeding: SEEDING });
     hill.warm([4]);
     CURSOR = createPaperCursor(47);
+    BD_ATLAS = codeAtlas(BD_LABELS.map((l) => l.text), { px: 48, width: 2048, maxH: 512 });
     ctx.log(`S36: ${EDGES.length} core edges; ring ${RING_DRAW.join('-')}, coils ${COIL_DRAW.join('-')}; landing camera ${CAM_LAND.pos.map((v) => v.toFixed(2))}`);
   },
   render(ctx, fr) {
@@ -614,7 +656,7 @@ export default {
     const painting = fl < PAINT[1];
     if (painting) {
       // (R14) the unpainted world first, kept aside: grey, no sun, no aurora or floes
-      hill.render(Object.assign({}, I.state, { palLin: GREY36, salt: 1, ribbons: [], lines: [] }));
+      hill.render(Object.assign({}, I.state, { palLin: GREY36, salt: 1, ribbons: [], lines: [], decals: undefined }));
       const gg = greyCv.getContext('2d'); gg.globalCompositeOperation = 'source-over'; gg.setTransform(1, 0, 0, 1, 0, 0);
       gg.clearRect(0, 0, ctx.W, ctx.H); gg.drawImage(glc, 0, 0);
     }
@@ -630,7 +672,6 @@ export default {
       g2.globalAlpha = 1;
     }
     const m = I.state.clawd, cp = project(I.B, [m.x, m.y + 0.45, m.z]);
-    drawBindingLabels(g2, k, fl, I.B);
     drawBeamCode(g2, k, fl, I.B, I.beams);
     drawOverlay(g2, k, fl, I.B, I.sun, [cp[0], cp[1]]);
     // out of S35's warm hall: the first half-beat opens a little dimmer and warmer

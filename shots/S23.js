@@ -9,7 +9,7 @@
 // The sky glints too (revision 1): star-shaped pinholes twinkle, one flares on each beat, and two
 // paper satellites cross slowly; each catches one warm glint (bar 62's downbeat, the last beat).
 import { createPaper, smooth, lerp, easeInOut } from '../sets/paper-kit/kit.js';
-import { cityScene, cityState, SHOT_N, ONLINE, setOnline, setSats, SATS, RING, ringAt } from '../sets/paper-kit/city.js';
+import { cityScene, cityState, SHOT_N, ONLINE, setOnline, setSats, SATS, RING, ringAt, satAt } from '../sets/paper-kit/city.js';
 import { clamp, toScreen } from '../sets/paper-kit/kit.js';
 
 let E;
@@ -66,8 +66,9 @@ export function s23State(T, fr) {
 // revision 9: each satellite flares as it lights (a warm four-point glint that settles to a point),
 // drawn in 2D over the paper frame at its screen position through the camera.
 // R19 (Claire: highlight the satellites): bigger, clearer flares with a fine diagonal cross; each
-// satellite twinkles as it holds; once the ring closes, a soft glow lies along the arch and on every
-// beat a glint runs out along it from the middle to both horizons.
+// satellite twinkles as it holds; once the ring closes, a soft glow lies along the arch.
+// R20 (Claire): the satellites keep apart (48, evenly spaced), and the pulse runs along the ring left to
+// right, one beat per crossing, so it reads as an orbit.
 function drawGlints(g, s, st, fl, beats) {
   const cam = Object.assign({ Zc: 2400, zref: -180, c: [960, 540], t: [0, 0], tz: 0, pan: [0, 0] }, st.cam);
   const P = (t) => toScreen(cam, ringAt(t), -900);
@@ -85,13 +86,13 @@ function drawGlints(g, s, st, fl, beats) {
       g.beginPath(); g.moveTo(segs[k][0][0] * s, segs[k][0][1] * s); g.lineTo(segs[k + 1][0][0] * s, segs[k + 1][0][1] * s); g.stroke();
     }
   }
-  // the beat glints: out from the middle along the closed ring, on each beat after it closes
+  // the pulse: from the left end to the right along the closed ring, one beat per crossing
   const closed = SATS.line(0.5) + 6, ring = beats.filter((b) => b >= closed - 2);
-  const beatGlint = (t) => { let v = 0; for (const b of ring) { const at = b + 18 * Math.abs(t - 0.5), d = fl - at; if (d > -3 && d < 12) v = Math.max(v, Math.exp(-(d * d) / 4.5)); } return v; };
+  const beatGlint = (u) => { let v = 0; for (const b of ring) { const at = b + 18 * u, d = fl - at; if (d > -3 && d < 12) v = Math.max(v, Math.exp(-(d * d) / 4.5)); } return v; };
   for (let i = 0; i < RING.n; i++) {
     const a = fl - SATS.at[i];
     if (a < 0) continue;
-    const t = i / (RING.n - 1), [x, y] = P(t);
+    const t = i / (RING.n - 1), [x, y] = toScreen(cam, satAt(i), -900);
     const tw = 0.78 + 0.22 * Math.sin(fl * (0.31 + 0.047 * (i % 7)) + i * 1.7);
     const flare = Math.exp(-a / 7) * Math.min(a / 1.5, 1) + 0.8 * beatGlint(t), steady = 0.6 * Math.min(a / 3, 1) * tw;
     const I = flare + steady;

@@ -455,6 +455,26 @@ function acting(fl) {
   return { grid, dy, lean, yaw: yw, squash: 1, sx: STEP[0] * st, sz: STEP[1] * st };
 }
 export { acting };
+// revision 20b (Claire: keep the humans' cursor in frame, observing, as in S11): after it lets go of his
+// new cursor it only withdraws a little, then stays above him through bars 48-52 in slow glides and
+// pauses, its attention following his work, never crowding it. A world point relative to his feet
+// (so it rides the hill with him), keyed over the whole pivot: c = S18's frame (0-287), then S19's
+// frame + 288; S19 continues the same path, so it runs straight across the cut.
+const WATCH = [
+  [55, [1.4, 2.6, -0.8]], [100, [0.6, 2.9, -0.9]], [135, [-0.8, 2.8, -0.7]], [170, [-0.2, 3.4, -1.0]],
+  [215, [0.9, 3.3, -1.1]], [260, [-0.6, 3.5, -0.8]], [300, [-2.2, 3.6, -0.6]], [330, [-3.0, 3.7, -0.4]],
+];
+export function watchW(c, CX, gy, CZ) {
+  let o = WATCH[0][1];
+  if (c >= WATCH[WATCH.length - 1][0]) o = WATCH[WATCH.length - 1][1];
+  else for (let i = 0; i < WATCH.length - 1; i++) {
+    const [a, A] = WATCH[i], [b, B] = WATCH[i + 1];
+    if (c >= a && c < b) { const e = easeInOut((c - a) / (b - a)); o = [0, 1, 2].map((j) => lerp(A[j], B[j], e)); break; }
+  }
+  const bob = 0.03 * Math.sin(c * 0.09);
+  return [CX + o[0], gy + o[1] + bob, CZ + o[2]];
+}
+export const watchS = (depth) => clamp(16.5 / Math.max(depth, 0.1), 0.8, 1.25);
 const T_P3 = () => 151;
 
 // The valley at S18's local frame fl, for Clawd acting A. fl may run past the shot's end: S19
@@ -591,6 +611,13 @@ export default {
       g.save(); g.beginPath(); g.rect(-100, -100, 2200, 1400); g.rect(...clawdBox); g.clip('evenodd'); fn(); g.restore();
     };
     const head = toPx([CX, gyNow + 0.78 + A.dy, CZ]);          // his head, now
+    // revision 20b: the humans' cursor, after the release: a short withdrawal into its watching path
+    if (n >= N.let + 2) {
+      const hl = carried(N.let + 2, toPx, gyNow), w = toPx(watchW(n, CX, gyNow, CZ));
+      const e = easeInOut(clamp((n - N.let - 2) / 24));
+      const sw = lerp(hl.s, watchS(w[2]), e);
+      if (w[2] > 1) CUR.draw(g, lerp(hl.H.x, w[0], e), lerp(hl.H.y, w[1], e), { s: sw, rot: lerp(hl.H.rot, -0.06, e), fill: PAPER.slate, bs: sw * k / 1.45 });
+    }
     // ------------------------------------------------ bars 48-50: the humans' cursor, given freely; his first edits
     if (n >= N.come && n < N_ENTER + 2) {
       // revision 15: the new cursor, carried in by the humans' cursor, let go, fluttering down
@@ -635,7 +662,7 @@ export default {
         }
         CUR.draw(g, x, y, { s: s * bump, press, rot, flip, fill: his > 0.5 ? HIS.card : CREAM, edge: his > 0.5 ? HIS.edge : [226, 214, 196], glow: n < N.lit ? 0.35 : 1 + 0.25 * lit, bs: s * k / 1.45, lit: his > 0.5 ? 1 : lit, heat, litAt: [34, 80] });
         // the humans' cursor over it while it carries it; then it withdraws, keeping its own
-        if (C0.H.on && n < N.touch) CUR.draw(g, C0.H.x, C0.H.y, { s, press: C0.H.press, rot: C0.H.rot, fill: PAPER.slate, bs: s * k / 1.45 });
+        if (n < N.let + 2) CUR.draw(g, C0.H.x, C0.H.y, { s, press: C0.H.press, rot: C0.H.rot, fill: PAPER.slate, bs: s * k / 1.45 });
       }
     }
     // ------------------------------------------------ phrases 2-4: his eight cursors

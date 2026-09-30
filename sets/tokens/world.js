@@ -77,6 +77,7 @@ uniform vec2 uClawdW;            // world centre of the burst
 uniform vec4 uClawd;             // x0, y0 (device, top-left), cell (device), on
 uniform int uGlyph[5]; uniform int uEyes[5];
 uniform float uSkyG, uLightG;
+uniform vec4 uHot;               // layer (1-based), amount, half-width (world px): a lit card's warm light on a layer
 uniform float uRayTh[11]; uniform float uRayL[11]; uniform float uRayW[11];
 uniform float uTime;
 uniform vec4 uRip[8];            // beat ripples: age (frames), amp, speed (world px/frame), width (world px)
@@ -238,6 +239,11 @@ void main(){
     if (abs(dd) < uAtlRow*0.5){
       float d = texture(uAtlas, vec2(xs/uRes.x, (float(l + 1)*uAtlRow + uAtlRow*0.5 + dd)/uAtlH)).r*2.;
       col += d*tintAt(xs)*a*(1. + 1.6*ripL);
+      // S07's match: the new card's warm light, carried onto its layer for the dissolve
+      if (uHot.y > 0. && float(l + 1) == uHot.x){
+        float hx = abs(x - uSX);
+        col += vec3(1.1, 0.46, 0.22)*uHot.y*a*smoothstep(uHot.z, uHot.z*0.75, hx)*exp(-sq(dd/(2.2*max(1., zk))));
+      }
       // his column: a tiny warm cell in every layer
       float wx = abs(x - uSX);
       if (wx < 13.5 && abs(dd) < 1.3*max(1., zk)) col += vec3(1.25, 0.62, 0.42)*(0.18 + 0.4*uLP[l])*a*uLWarm*smoothstep(13.5, 11., wx);
@@ -928,6 +934,7 @@ export function createTokenWorld(canvas, { W, H, log = () => {} }) {
     gl.uniform4f(U.uClawd, cx0, cy0, cell, clawdOn);
     gl.uniform1iv(U.uGlyph, CB.body); gl.uniform1iv(U.uEyes, CB.eyes);
     gl.uniform1f(U.uSkyG, P.skyG ?? 1); gl.uniform1f(U.uLightG, P.lightG ?? 1);
+    { const h = P.hot || { layer: 0, amp: 0, hw: 1 }; gl.uniform4f(U.uHot, h.layer, h.amp, h.hw, 0); }
     gl.uniform1fv(U.uRayTh, rays.th); gl.uniform1fv(U.uRayL, rays.L); gl.uniform1fv(U.uRayW, rays.w);
     gl.uniform1f(U.uTime, P.f / 30);
     {

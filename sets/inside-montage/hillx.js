@@ -30,6 +30,7 @@
 //           mountains (1), salt (0..1, revision 8: a salt flat's crust, cracks and sky sheen instead of
 //           grass). strokeLift in the look keeps only the rising motes.
 //   per Clawd, from sets/hill: grid (a clawd-pose.js pose name or bits) and dy (lift in glyph units)
+//   linesOverClawd (revision 20): the lines of light are drawn over the Clawds (additive), not hidden by them
 //   decals (revision 10): { src: canvas (an atlas; only its alpha is used), key (re-uploaded when it
 //           changes), quads: [{ P: [4 world corners: bottom-left, bottom-right, top-right, top-left],
 //           uv: [u0, v0, u1, v1] (atlas px, v down), col: [r, g, b] (linear), a: number | [4 corners] }] }
@@ -480,7 +481,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
     gl.bindFramebuffer(gl.FRAMEBUFFER, FB.comp); gl.viewport(0, 0, W, H);
     gl.useProgram(P.lines); gl.bindVertexArray(lineVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf); gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, n * 13), gl.DYNAMIC_DRAW);
-    bind(P.lines, { uCamPos: B.pos, uCamFw: B.fw, uCamR: B.right, uCamU: B.up, uF: B.F, uPP: B.pp, uK: K, uRes: [W, H], uDepthK: st.lineDepth ?? 1 }, { uAux: T.aux, uClawd: T.kc });
+    bind(P.lines, { uCamPos: B.pos, uCamFw: B.fw, uCamR: B.right, uCamU: B.up, uF: B.F, uPP: B.pp, uK: K, uRes: [W, H], uDepthK: st.lineDepth ?? 1, uClawdK: st.linesOverClawd ? 0 : 1 }, { uAux: T.aux, uClawd: T.kc });
     gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, n);
     gl.disable(gl.BLEND); gl.bindVertexArray(vao);

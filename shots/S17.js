@@ -18,7 +18,7 @@ let St, W, tiles, S15F0, GY, END;
 const DIVE = REP.DIVE;                                 // the grey world we dive into (ahead of the lens)
 const AZ = 200 * Math.PI / 180, HB = [Math.sin(AZ), 0, Math.cos(AZ)];
 const SHIFT = [-DIVE[0] * PITCH, -DIVE[1] * PITCH];    // the dive tile sits where the real valley is
-const BLOCK = [TILE_C[0] - PITCH / 2, TILE_C[1] + PITCH / 2];   // S15's framing centre (its first 2 x 2 block)
+const BLOCK = [TILE_C[0] + PITCH / 2, TILE_C[1] - PITCH / 2];   // S15's framing centre (its first 2 x 2 block)
 const D0 = 3600, EL0 = 58;                             // S15's last view
 
 export default {

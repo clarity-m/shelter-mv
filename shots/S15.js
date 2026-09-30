@@ -21,12 +21,15 @@ import { projectPx } from '../sets/valley/valley.js';
 import { createPaperCursor, PAPER } from '../sets/valley/papercursor.js';
 
 const CMD = 'envs.replicate(4096)';
-const AZ = 200 * Math.PI / 180;                         // the lens's heading from its target: in front of him, the valley behind him
+// revision 20 (Claire: he looked backwards against how he spawns): he keeps his spawn facing (yaw 0,
+// down the valley, as in S13 and S14) and the lens looks at his face from the valley's side, a
+// little to his left (3/4), as S14 did; the dropped worlds land on the far side of him
+const AZ = 0.3;                                         // the lens's heading from its target
 const HB = [Math.sin(AZ), 0, Math.cos(AZ)];             // target -> lens, horizontally
 const FWD = [-HB[0], 0, -HB[2]], RIGHT = [FWD[2], 0, -FWD[0]];   // screen-far and screen-right on the ground (camBasis: right = up x fwd)
-const YAW = AZ - 0.3;                                   // he faces the lens, a little turned (3/4)
+const YAW = 0;                                          // as he spawns
 const TC = [TILE_C[0], 0, TILE_C[1]];
-const BLOCK = [TILE_C[0] - PITCH / 2, 0, TILE_C[1] + PITCH / 2];  // the 2 x 2 block's centre
+const BLOCK = [TILE_C[0] + PITCH / 2, 0, TILE_C[1] - PITCH / 2];  // the 2 x 2 block's centre
 const CARRY_H = 24, CARRY = 20, HOLD = 4, FALL = 5;     // carried height (m); carry, click-hold and fall (frames)
 // where each world is dragged in from, relative to its slot (m): the left, the far side, the far left
 const FROM = [[-230, 20], [60, 250], [-190, 190]].map(([r, f]) => [RIGHT[0] * r + FWD[0] * f, RIGHT[2] * r + FWD[2] * f]);

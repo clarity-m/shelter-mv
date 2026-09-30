@@ -67,6 +67,26 @@ function waveHit(t, d) {                                            // [flash 0.
   if (dt <= 0) return [0, 0];
   return [(1 - Math.exp(-dt / 1.5)) * Math.exp(-dt / 14), clamp(dt / 12)];
 }
+// (revision 20) the shelter full of life, woken by the wave: cloud-pruned garden pines (niwaki, a bonsai
+// at full size: a leaning trunk, flat rounded pads of foliage; Claire) in ones and twos along the far
+// ridge and at the city's base, each rising as the front reaches it. Tended, not wild, and nothing
+// like Clawd's broad round crown, so his tree stays the only one of its kind; the near hill keeps its
+// simple look. S31's first frame has none of them (hill.js extras pass, glsl.js EXTRAS_FS).
+// a tended garden's variety (Claire): the classic styles (0 formal upright, 1 informal upright, 2 slanting,
+// 3 windswept, 4 a broad low twin-trunk spreader), heights about 0.6-1.3x, two to five pads, their own
+// trunks, leans and teal shades
+export const YOUNG_TREES = [
+  { p: [-30.0, 58.0], h: 7.8, seed: 1, style: 0, pads: 5, thick: 1.0, lean: 1, shade: 0.2 },
+  { p: [-24.5, 57.2], h: 4.4, seed: 2, style: 3, pads: 3, thick: 0.9, lean: 1, shade: 0.75 },
+  { p: [2.2, 92.2], h: 6.0, seed: 6, style: 0, pads: 2, thick: 0.8, lean: 1, shade: 0.6 },
+  { p: [7.0, 93.0], h: 7.0, seed: 3, style: 4, pads: 4, thick: 1.35, lean: -1, shade: 0.45 },
+  { p: [9.2, 59.0], h: 6.8, seed: 4, style: 2, pads: 3, thick: 0.85, lean: 1, shade: 0.9 },
+  { p: [28.5, 87.0], h: 11.5, seed: 5, style: 1, pads: 4, thick: 1.1, lean: -1, shade: 0.3 },
+];
+function youngTrees(t) {
+  if (!(t > 0)) return null;
+  return YOUNG_TREES.map((q) => Object.assign({}, q, { grow: ease((t - waveAt(Math.hypot(q.p[0] - WAVE_C[0], q.p[1] - WAVE_C[1])) - 2) / 22) }));
+}
 export function waveState(t) {
   if (!(t > 0) || t > 140) return null;
   return { c: WAVE_C, r: waveR(t), k: ease(t / 5) * Math.exp(-t / 80) };
@@ -131,7 +151,7 @@ export function shelterState(o = {}) {
     sun: { az: 12, el: 3.2 },
     hill,
     tree: { x: S.tree.x, z: S.tree.z, grow: gTree },
-    human: showFig ? { x: S.human.x, z: S.human.z, yaw: 0.35, lean: o.lean || 0 } : null,
+    human: showFig ? { x: S.human.x, z: S.human.z, yaw: 0.35, lean: o.lean || 0, turn: o.turn || 0 } : null,
     clawd: { x: S.clawd.x, z: S.clawd.z, y: cy, u: CLAWD_U * 0.95, form: 'radiant', sit: 1, glow: o.clawdGlow ?? 1, rays: 0.75, light: 0.9,
       eyes: o.eyes || null },
     ...shelterPeople(time, o.presence || 0),
@@ -139,6 +159,7 @@ export function shelterState(o = {}) {
     towerWin: 0.9, towerEdge: 0.55, towerFog: 0.5, cityPulse: o.cityPulse || 0,
     ring: Object.assign({}, RING, { on: ease((build - 0.6) / 0.4) * (1 + 1.5 * waveHit(wt, RING_D)[0] + 0.45 * waveHit(wt, RING_D)[1]) }),
     wave: waveState(wt),
+    youngTrees: youngTrees(wt),
     pal: SHELTER,
     floorGrid: 0.0, grid: 0, fog: 0.017,
     ghost: 0.66, contour: 0.9, contourStep: 0.16, edge: 0.9,
@@ -146,7 +167,7 @@ export function shelterState(o = {}) {
     moteNear: 3.0, moteRise: 0.8, motes: 1,
     aura: 0.35, exposure: 1.0, vignette: 0.18,
   };
-  const own = ['build', 'crane', 'figure', 'cam', 'time', 'cityPulse', 'clawdGlow', 'lean', 'eyes', 'presence', 'waveT'];
+  const own = ['build', 'crane', 'figure', 'cam', 'time', 'cityPulse', 'clawdGlow', 'lean', 'eyes', 'presence', 'waveT', 'turn'];
   for (const [k, v] of Object.entries(o)) if (v !== undefined && !own.includes(k)) st[k] = v;
   return st;
 }
@@ -168,18 +189,26 @@ export function createShelter(canvas, opts = {}) {
 // Clawd blinks and twice glances up at her. Its first frame (fe 5771) is S31's opening view exactly
 // as before revision 1: presence 0, lean 0, eyes open and centred.
 export const S31_F0 = 5771;
-const GLANCES = [[5889, 5941], [6021, 6075]];           // glance up at her (fe ranges)
-const BLINKS = [5836, 5960, 6080, 6150, 6181];
+// (revision 20) one shared moment in bars 83-84: she turns her head to him on the 5937 phrase; he looks
+// up at her and his eyes go to the happy arch (^^) and hold about two beats; she leans back on 6002
+// and her head turns back up to the city. He glances up at her once before (bar 82) and once after.
+const GLANCES = [[5889, 5925], [5944, 5998], [6021, 6075]];   // glance up at her (fe ranges)
+const BLINKS = [5836, 6080, 6150, 6181];
+const ARCH = [5953, 5990];                                    // his ^^, held
 export function s31Anim(fe) {
   const sm = (a, b, x) => { const t = clampP((x - a) / (b - a)); return t * t * (3 - 2 * t); };
   let g = 0;
   for (const [a, b] of GLANCES) g = Math.max(g, sm(a, a + 5, fe) * (1 - sm(b - 5, b, fe)));
   let open = 1;
   for (const b of BLINKS) { const d = Math.abs(fe - b); if (d < 2.5) open = Math.min(open, d < 1 ? 0 : 0.35 * (d - 0.5)); }
+  // into the arch through a quick close, out of it by opening again
+  const arch = fe >= ARCH[0] && fe < ARCH[1];
+  if (!arch) { const d0 = ARCH[0] - fe, d1 = fe - ARCH[1]; if (d0 > 0 && d0 < 3) open = Math.min(open, d0 / 3); if (d1 >= 0 && d1 < 3) open = Math.min(open, d1 / 3); }
   return {
     presence: sm(S31_F0 + 6, S31_F0 + 80, fe),
     lean: sm(6002, 6044, fe),
-    eyes: { dx: -0.85 * g, dy: -0.6 * g, open },
+    turn: 0.95 * sm(5937, 5951, fe) * (1 - sm(6004, 6024, fe)),
+    eyes: { dx: -0.85 * g, dy: -0.6 * g, open, arch },
   };
 }
 export const S31_LAST = Object.assign({ time: 150 + 6189 / 30, crane: 1 }, s31Anim(6189));

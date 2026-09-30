@@ -15,6 +15,10 @@
 // drawn in lines of light, then her real self, over about a beat. The first frame has no figure, so
 // S30 lands on it exactly. The shelter renders off screen and is composited here in 2D, so her
 // forming can cross-fade two renders (without her, with her); outside those frames it is one render.
+// Revision 20: one shared moment in bars 83-84 (she turns her head to him, he looks up and his eyes go
+// to the happy arch and hold, she leans back: shelter.js s31Anim), and the shelter full of life, woken
+// by the wave: cloud-pruned garden pines (niwaki) on the far ridge and at the city's base, and small
+// flocks of birds crossing on the phrase starts (drawn here); the near hill keeps its simple look.
 import { createShelter, s31Anim, craneCam, SHELTER_SPOTS, S31_F0 } from '../sets/hill/shelter.js';
 import { hillH, HILL, FAR_RIDGE, camBasis, project } from '../sets/hill/scene.js';
 import { smoothstep, clamp } from '../lib/util.js';
@@ -124,6 +128,42 @@ function formFigure(p, t) {
   g2.restore();
 }
 
+// ---------------------------------------------------------------- birds (revision 20)
+// Small flocks cross the open sky on the phrase starts (sung onsets 5835, 5900, 6040): dark wings
+// flapping, loosely together, clear of the tree's crown, gone before the hold (so S32's seam, which
+// reads S31's last frame, has none).
+const FLOCKS = [
+  { f0: 5835, dur: 96, a: [2000, 205], b: [880, 150], n: 7, s: 1.0, seed: 1 },
+  { f0: 5900, dur: 110, a: [760, 105], b: [2010, 72], n: 5, s: 0.85, seed: 2 },
+  { f0: 6040, dur: 74, a: [2010, 262], b: [1060, 214], n: 6, s: 1.1, seed: 3 },
+];
+const hsh = (a, b) => { const x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return x - Math.floor(x); };
+function drawBirds(fe) {
+  for (const F of FLOCKS) {
+    const u = (fe - F.f0) / F.dur;
+    if (u <= 0 || u >= 1) continue;
+    const e = u * u * (3 - 2 * u) * 0.35 + u * 0.65;
+    const cx = F.a[0] + (F.b[0] - F.a[0]) * e, cy = F.a[1] + (F.b[1] - F.a[1]) * e + 6 * Math.sin(u * 5.0);
+    const dir = Math.sign(F.b[0] - F.a[0]);
+    g2.save(); g2.scale(K, K);
+    g2.strokeStyle = 'rgba(52, 36, 62, 0.82)'; g2.lineCap = 'round'; g2.lineJoin = 'round';
+    for (let i = 0; i < F.n; i++) {
+      // a loose chevron: the leader ahead, the rest trailing out to both sides
+      const rank = Math.ceil(i / 2), side = i % 2 ? 1 : -1;
+      const ox = -dir * (rank * 26 + 10 * hsh(i, F.seed)) , oy = side * rank * 13 + 8 * (hsh(i, F.seed + 5) - 0.5);
+      const x = cx + ox + 5 * Math.sin(fe * 0.07 + i), y = cy + oy + 3 * Math.sin(fe * 0.11 + 2 * i);
+      const span = (9 + 4 * hsh(i, F.seed + 9)) * F.s, flap = Math.sin(fe * 0.55 + 6.28 * hsh(i, F.seed + 3));
+      const tip = -span * 0.32 * flap;
+      g2.lineWidth = 1.7 * F.s;
+      g2.beginPath();
+      g2.moveTo(x - span * 0.5, y + tip); g2.quadraticCurveTo(x - span * 0.2, y - 1.5, x, y + 1.2);
+      g2.quadraticCurveTo(x + span * 0.2, y - 1.5, x + span * 0.5, y + tip);
+      g2.stroke();
+    }
+    g2.restore();
+  }
+}
+
 export default {
   async setup(ctx) {
     W = ctx.W; H = ctx.H; K = W / 1920;
@@ -138,9 +178,10 @@ export default {
   },
   render(ctx, fr) {
     const p = s31Params(ctx.T, fr.f, fr.f - fr.fl, fr.n), t = p.waveT;
-    if (t <= 0 || t >= FORM_END) { sh.render(p); g2.drawImage(glCv, 0, 0, W, H); return; }
+    if (t <= 0 || t >= FORM_END) { sh.render(p); g2.drawImage(glCv, 0, 0, W, H); drawBirds(S31_F0 + t); return; }
     sh.render(Object.assign({}, p, { figure: false })); gA.drawImage(glCv, 0, 0);
     sh.render(p); gB.drawImage(glCv, 0, 0);
     formFigure(p, t);
+    drawBirds(S31_F0 + t);
   },
 };

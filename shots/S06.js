@@ -8,24 +8,30 @@
 // Revision 19 (Claire: the pulses read on 2 and 4): the main cascade lands on beats 1 and 3 (a faint
 // one on 2 and 4), starting LEAD frames early so its brightest moment falls on the beat; the feeds'
 // data pulses swell on 1 and 3 too.
+// Revision 20: one bar (bar 13, frames 875-946), consistent with S16. The new card slides into bay A
+// on beat 1 and its LEDs and vents light on beat 3 (brightest on the beat); the bass stop on 13.4
+// hushes the pulses, and the last frames are still, for S07's match (MATCH.md: S06 -> S07).
 import { createPaper, smooth, clamp, easeOut, easeInOut, lerp } from '../sets/paper-kit/kit.js';
 import { rackScene, sledXf, RACK, beatWave } from '../sets/paper-kit/rack.js';
 const LEAD = 5;          // the cascade is fullest about five frames in
 
 let E, STOPS;
 const SLIDE = 8;
-function sledState(fl, stop) {
+function sledState(fl, stop, lightAt = stop + SLIDE - 1) {
   if (fl < stop) return { op: 0, z: 520, t: 0, a: 1 };
   const p = clamp((fl - stop) / SLIDE, 0, 1);
   const a = 1 - easeOut(p);
   const bump = fl > stop + SLIDE ? 0.012 * Math.exp(-(fl - stop - SLIDE) / 2.5) * Math.sin((fl - stop - SLIDE) * 1.7) : 0;
   const xf = sledXf(Math.max(a + bump, 0));
-  const t = clamp((fl - stop - SLIDE + 1) / 8, 0, 1);
+  const t = clamp((fl - lightAt) / 8, 0, 1);
   return Object.assign(xf, { op: 1, t, a });
 }
+// R20: the card slides in from the downbeat and seats; its pinholes light from 4 frames before beat 3
+// (the vents are fullest on the beat)
+export const CARD_IN = 0, CARD_LIGHT = 36 - 4;
 export function s06State(T, fr, stops) {
   const fl = fr.fl, u = fl / (fr.n - 1);
-  const A = sledState(fl, stops[0]), B = sledState(fl, stops[1]);
+  const A = sledState(fl, CARD_IN, CARD_LIGHT), B = { op: 0, z: 520, t: 0, a: 1 };     // (R20) one card; bay B waits
   // (revision 2) data pulses stream down the feeds into the rack, and an LED cascade runs along
   // the units on every beat; both pump with the kicks, hush in the bass stops, and calm to nothing
   // over the last frames, so the final frame (S07 dissolves out of it) is the same as before

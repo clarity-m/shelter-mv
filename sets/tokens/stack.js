@@ -40,12 +40,16 @@ export function stackState(T, W, f, opts) {
   // opts.fireAll: chop frames that fire a head in every layer, cascading up the stack onto one token
   // column (R19: the first arcs fire across the whole stack); other chops fire the pitch's layer and
   // the one above it.
+  // opts.fires: extra fire events [{ f, level, all }] (S07 fires on the beats and 8ths too)
   const fireAll = new Set(opts.fireAll || []);
-  for (const fc of T.events('chops')) {
+  const events = T.events('chops').map((fc) => ({ f: fc, level: chopLevel(fc), all: fireAll.has(fc) }))
+    .concat(opts.fires || []);
+  for (const ev of events) {
+    const fc = ev.f;
     const age0 = f - fc;
     if (age0 < 0 || age0 > 48 || fc < (opts.from ?? 0)) continue;
-    const l0 = Math.min(n, 1 + chopLevel(fc) + (opts.levelShift ?? 0));
-    const all = fireAll.has(fc);
+    const l0 = Math.min(n, 1 + ev.level + (opts.levelShift ?? 0));
+    const all = ev.all;
     const ls = all ? Array.from({ length: n }, (_, i) => i + 1) : (opts.pair === false || l0 >= n ? [l0] : [l0, l0 + 1]);
     const q = W.tokAtS(headAt(fc) - (opts.qOff ?? 2.5));
     ls.forEach((lq, j) => {

@@ -9,8 +9,14 @@
 // the plasma itself. Then the plasma pulses on the beats and breathes with the voice while the camera
 // pushes in and the layers part (the lines follow that zoom while they last). The fusion set renders
 // into a private WebGL canvas; the lines are drawn over it in 2D.
+// Revision 20 (Claire: the moment the burning lines light up the plasma is brilliant, keep a few
+// highlights spinning if it's physically accurate; the plasma looks static): as the lines burn off,
+// a dozen bright filaments stay behind and travel along the plasma's helical field lines (landing.js
+// HELIX), round the ring. That is what a tokamak's plasma does: it rotates toroidally, and its bright
+// edge filaments stay aligned with the twisted field. Nearer filaments are brighter; they pulse on the beats.
 import { createFusion } from '../sets/paper-fusion/fusion.js';
-import { coreEdges, proj, FOCUS, LD } from '../sets/paper-fusion/landing.js';
+import { coreEdges, proj, FOCUS, LD, HELIX } from '../sets/paper-fusion/landing.js';
+import { SC } from '../sets/inside-montage/reactor.js';
 import { smoothstep, clamp, hash } from '../lib/util.js';
 
 const KICK = 0;   // local frame of the bar-65 kick (the shot's first frame)
@@ -29,9 +35,6 @@ function drawLines(k, push, scale) {
   // intensity and colour per line: the flash on the kick, then each burns warm and goes
   const z = LD / (LD - push), s = scale;
   const X = (p) => (FOCUS[0] + (p[0] - FOCUS[0]) * z) * s, Y = (p) => (FOCUS[1] + (p[1] - FOCUS[1]) * z) * s;
-  lg.setTransform(1, 0, 0, 1, 0, 0);
-  lg.globalCompositeOperation = 'source-over';
-  lg.clearRect(0, 0, lc.width, lc.height);
   lg.globalCompositeOperation = 'lighter';
   lg.lineCap = 'round';
   const flash = 1 + 0.6 * Math.exp(-k / 2.5);
@@ -46,6 +49,46 @@ function drawLines(k, push, scale) {
     if (e.port) { lg.beginPath(); lg.arc(X(e.a), Y(e.a), 3.2 * s, 0, 2 * Math.PI); lg.fill(); n++; continue; }
     lg.lineWidth = (2.2 + 1.2 * b) * s;
     lg.beginPath(); lg.moveTo(X(e.a), Y(e.a)); lg.lineTo(X(e.b), Y(e.b)); lg.stroke(); n++;
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------- the plasma's filaments (revision 20)
+// a point on helix line j at continuous index i (landing.js helixEdges: SEG segments per toroidal turn)
+function helixPoint(j, i) {
+  const { R0, A, KAPPA } = SC, a0 = 2 * Math.PI * j / HELIX.N;
+  const phi = 2 * Math.PI * i / HELIX.SEG, a = a0 + phi / HELIX.Q, r = R0 + HELIX.S * A * Math.cos(a);
+  return [r * Math.cos(phi), r * Math.sin(phi), HELIX.S * KAPPA * A * Math.sin(a)];
+}
+const FIL = [];                                 // two filaments per field line, staggered round the ring
+for (let j = 0; j < HELIX.N; j++) for (let m = 0; m < 2; m++) {
+  const q = j * 2 + m;
+  FIL.push({ j, i0: HELIX.SEG * HELIX.Q * (m / 2 + 0.37 * hash(q, 13)), len: 13 + 6 * hash(q, 29), w: 0.8 + 0.4 * hash(q, 41) });
+}
+const FIL_V = 2.4;                              // segments per frame: about a toroidal turn every 50 frames
+function drawFilaments(k, f, T, push, scale) {
+  const z = LD / (LD - push), s = scale;
+  const X = (p) => (FOCUS[0] + (p[0] - FOCUS[0]) * z) * s, Y = (p) => (FOCUS[1] + (p[1] - FOCUS[1]) * z) * s;
+  const on = smoothstep(7, 16, k), beat = T.pulse('beats', f, 6);
+  const I0 = on * (1.0 + 0.45 * beat);
+  if (I0 <= 0.001) return 0;
+  lg.globalCompositeOperation = 'lighter'; lg.lineCap = 'round';
+  const Rmax = SC.R0 + SC.A, STEPS = 12;
+  let n = 0;
+  for (const fl of FIL) {
+    const head = fl.i0 + FIL_V * k * (1 + 0.1 * fl.w);
+    for (let t = 0; t < STEPS; t++) {
+      const ia = head - fl.len * (t + 1) / STEPS, ib = head - fl.len * t / STEPS;
+      const A = helixPoint(fl.j, ia), B = helixPoint(fl.j, ib), pa = proj(A), pb = proj(B);
+      const front = clamp(0.5 - 0.5 * (0.5 * (A[1] + B[1])) / Rmax);      // model y points away from the camera
+      const tail = 1 - t / STEPS;                                           // bright at the head, fading behind
+      const I = I0 * fl.w * tail * tail * (0.3 + 0.7 * front);
+      if (I < 0.02) continue;
+      const g = Math.round(236 - 70 * (1 - tail)), bl = Math.round(210 - 120 * (1 - tail));
+      lg.strokeStyle = `rgba(255,${g},${bl},${Math.min(1, 0.9 * I).toFixed(3)})`;
+      lg.lineWidth = (2.2 + 2.6 * tail) * s * (0.8 + 0.4 * front);
+      lg.beginPath(); lg.moveTo(X(pa), Y(pa)); lg.lineTo(X(pb), Y(pb)); lg.stroke(); n++;
+    }
   }
   return n;
 }
@@ -79,8 +122,12 @@ export default {
     g2.setTransform(1, 0, 0, 1, 0, 0);
     g2.globalCompositeOperation = 'source-over'; g2.filter = 'none';
     g2.drawImage(glCanvas, 0, 0, ctx.W, ctx.H);
-    // the drawing, landing on it and burning off over the first beat
-    if (k >= 0 && k < 24 && drawLines(k, push, s) > 0) {
+    // the drawing, landing on it and burning off over the first beat; then the plasma's filaments
+    lg.setTransform(1, 0, 0, 1, 0, 0); lg.globalCompositeOperation = 'source-over'; lg.clearRect(0, 0, lc.width, lc.height);
+    let drawn = 0;
+    if (k >= 0 && k < 24) drawn += drawLines(k, push, s);
+    if (k >= 0) drawn += drawFilaments(k, fr.f, T, push, s);
+    if (drawn > 0) {
       g2.globalCompositeOperation = 'lighter';
       g2.filter = `blur(${(7 * s).toFixed(2)}px)`; g2.globalAlpha = 0.9; g2.drawImage(lc, 0, 0);
       g2.filter = `blur(${(2.2 * s).toFixed(2)}px)`; g2.globalAlpha = 0.8; g2.drawImage(lc, 0, 0);

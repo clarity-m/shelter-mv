@@ -1,27 +1,31 @@
-// S11, pre-chorus 1a into 1b (bars 26-30, frames 1811-2170): the world becomes vector (rung 2), a
+// S11, pre-chorus 1a into 1b (bars 25.4-30, frames 1793-2170): the world becomes vector (rung 2), a
 // physics environment drawn like a diagram. It first appears at the pixel world's resolution and
 // sharpens in two steps (the ladder's 1 -> 2 transition). Help first, then independence.
-//  - bar 26: Clawd is climbing a 34-degree ramp; he slips and slides back to its foot.
-//  - bar 27: the paper cursor from S10 comes down, takes the ramp's handle and drags it: the ramp
-//    eases to 26 degrees (the old surface stays as a dashed ghost, the readout counts down). The
-//    cursor lets go and lifts away; he goes again.
+// Revision 20: the shot starts a beat earlier, on the vocal pickup (25.4). All timing below is in
+// the old local frames, fo = fl - PRE (fo 0 = bar 26), so every beat keeps its place in the music.
+//  - 25.4: Clawd is already climbing the 34-degree ramp; the humans' paper cursor from S10 comes down
+//    to watch.
+//  - bar 26: he slips and slides back to its foot. The cursor watches.
+//  - bar 27: it goes to the ramp's handle and drags it: the ramp eases to 26 degrees (the old surface
+//    stays as a dashed ghost, the readout counts down). It lets go and goes back to its place.
 //  - bar 28 (still no drums): he makes the eased plateau on the downbeat, quietly, and looks back at
 //    the ghost. On beat 2 a new episode: he is back at the foot and the ramp springs back up into
-//    its ghost, 34 degrees. The cursor starts down to help again, but he is already going; it
-//    stops, and withdraws.
+//    its ghost, 34 degrees. The cursor is the one thing that is not reset: it has not moved. As he
+//    sets off it starts to help, stops itself, and goes back to waiting.
 //  - bar 29 downbeat (the snare returns): he tops the steep ramp on his own. Arms up; the surface he
-//    climbed flashes. The camera rises to his level and follows him along the plateau.
-//    Revision 19: the cursor, which withdrew to one side to let him try, hovers there; on the next
-//    snare it does one small pleased loop (he glances up at it), stays through the first flick's
-//    snare, and glides off the top of the frame.
+//    climbed flashes. The cursor starts back along an arc, a little startled, then settles, pleased;
+//    he glances up at it. The camera rises to his level and follows him along the plateau.
 //  - bars 29-30: on the backbeat snares (T.events('snares')) the world changes around him, twice,
 //    each more saturated; the second is the ladder's hill, where he stops on the last snare before
-//    the drums cut out (S12's first frame has him in the same place, at the same size).
+//    the drums cut out (S12's first frame has him in the same place, at the same size). The cursor
+//    stays through the first change, watching him walk on, then lets go: it drifts slowly off the
+//    top of the frame as the hill arrives.
 import { drawRamp, drawFlick, B, RAMP, FX, FY, topOf } from '../sets/early-env/physics.js';
 import { drawClawd, walkPose, drawHUD, groupInt, line } from '../sets/early-env/vector.js';
 import { createPaperCursor } from '../sets/early-env/papercursor.js';
 import { clamp, lerp, easeInOut, easeOut, smoothstep } from '../lib/util.js';
 
+const PRE = 18;                               // revision 20: the vocal pickup beat before bar 26
 const D2R = Math.PI / 180, TH0 = 34 * D2R, TH1 = 26 * D2R;
 const U = 8;                                  // px per glyph unit: 144 x 80, the size he had in S10
 const DRAG = [90, 114];                       // bar 27: the cursor drags the handle, 34 -> 26
@@ -35,10 +39,7 @@ const S_EASED = RAMP + (FX - topOf(TH1)[0]);  // his stop on the eased plateau, 
 // in bar 26 (s ~ 300), digs in, and comes over the top on the snare
 const STEEP = [[GO, -40, 0], [181, 6, 11], [197, 250, 16], [204, 312, 7], [213, 468, 18], [MADE, 510, 9], [222, 530, 0]];
 const S_TOP = 530, X_TOP = T34[0] + S_TOP - RAMP;   // where he comes to rest on the plateau
-// the cursor's second descent, [local frame, tip y, px per frame]: it brakes as he sets off
-const CUR2 = [[RESET + 2, -180, 0], [GO + 4, 160, 24], [GO + 10, 238, 3], [GO + 14, 226, -1.5], [196, 222, 0]];
-const HOVER = [1130, 300];                    // where it then waits, beside and above the plateau (screen px)
-const LOOP = MADE + 18;                       // its pleased loop: a beat after he tops the ramp (the next snare)
+const WATCH = [1150, 280];                    // the cursor's place while it watches, above the plateau and to one side (screen px)
 const LIFT = FY - T34[1];                     // the camera rises this much: the plateau lands on FY
 const WALK = [228, 244], VW = 9;              // he walks off, 0 -> 9 px a frame (the flicks' pace)
 const WORLDS = [4, 5];                        // the pier, then the ladder's hill (physics.js)
@@ -79,6 +80,7 @@ function camAt(fl) {
 
 // distance along the ground path (negative: the flat before the ramp; past RAMP: the plateau)
 function sAt(fl) {
+  if (fl < 0) return 200 + 5.5 * fl;              // the pickup beat: already climbing, at the same pace
   if (fl < 40) return 200 + 110 * (1 - Math.pow(1 - fl / 40, 2));
   if (fl < 44) return 310 - 3 * (fl - 40);
   if (fl < 60) return 298 - 338 * Math.pow((fl - 44) / 16, 2);
@@ -126,40 +128,48 @@ function poseAt(fl, s, lean, cur) {
   }
   // the top, on the snare: arms up, a hop; then he walks on
   if (fl < WALK[0]) { const h = clamp((fl - MADE - 1) / 11); return { arms: [0.95, 0.95], lift: 2.0 * Math.sin(Math.PI * h), eyes: { kind: 'arch' } }; }
-  // as the cursor loops he glances up at it, then looks ahead again
-  const gl = smoothstep(LOOP + 3, LOOP + 7, fl) * (1 - smoothstep(LOOP + 20, LOOP + 25, fl));
+  // as the cursor starts back and settles he glances up at it, then looks ahead again
+  const gl = smoothstep(228, 233, fl) * (1 - smoothstep(248, 254, fl));
   return walkPose(walked(fl) / 66, { eyes: { dx: lerp(0.6, 0.8, gl), dy: lerp(0, -0.75, gl) } });
 }
-// the paper cursor, screen px
+// the humans' paper cursor, screen px, on the old clock (fo). Revision 20 (Claire): it stays in frame
+// for the whole slope scene. His episodes reset; it does not. Each move and pause says something:
+// it comes to watch; it waits through his fall; it helps once, then steps back to its place; it is
+// still there, unmoved, when his episode resets; it starts to help again and holds itself back; when
+// he makes it alone it starts back, a little startled, then settles, pleased; it stays a while,
+// watching him go on; then it lets go, slowly.
 function cursorAt(fl) {
-  // bar 27: down to the handle, drags it along the ramp's arc, lets go, lifts away
-  if (fl >= 62 && fl <= 150) {
-    const T = topOf(theta(fl));
-    const u = easeOut(clamp((fl - 62) / 26)), v = easeInOut(clamp((fl - 118) / 30));
-    const grab = smoothstep(84, 90, fl) * (1 - smoothstep(113, 118, fl));
-    const tip = fl < DRAG[0] ? T34 : T;
-    return {
-      x: tip[0] + 110 * (1 - u) + 90 * v + 4,
-      y: lerp(-180, tip[1] + 2, u) - 760 * v * v,
-      press: grab, rot: -0.05 - 0.14 * (1 - u) + 0.12 * v,
-    };
+  if (fl < -6 || fl > 346) return null;
+  const W = WATCH, T1 = topOf(TH1);
+  let x = W[0], y = W[1], rot = -0.07, press = 0;
+  if (fl < 16) {                                                     // it comes down to watch his first try
+    const u = easeOut(clamp((fl + 6) / 22));
+    x = W[0] + 70 * (1 - u); y = lerp(-260, W[1], u); rot = -0.07 - 0.12 * (1 - u);
+  } else if (fl >= 64 && fl < 118) {                                 // it takes the handle and eases the ramp
+    const T = topOf(theta(fl)), u = easeInOut(clamp((fl - 64) / 22));
+    x = lerp(W[0], T[0] + 4, u); y = lerp(W[1], T[1] + 2, u); rot = lerp(-0.07, -0.05, u);
+    press = smoothstep(84, 90, fl) * (1 - smoothstep(113, 118, fl));
+  } else if (fl >= 118 && fl < 174) {                                // back to its place, and it stays there
+    const u = easeInOut(clamp((fl - 118) / 22));
+    x = lerp(T1[0] + 4, W[0], u); y = lerp(T1[1] + 2, W[1], u); rot = lerp(-0.05, -0.07, u);
+  } else if (fl >= 174 && fl < 208) {                                // it starts to help, stops itself, waits
+    const go = easeOut(clamp((fl - 174) / 9)) * (1 - easeInOut(clamp((fl - 188) / 20)));
+    x = lerp(W[0], T34[0] + 4, 0.3 * go); y = lerp(W[1], T34[1] + 2, 0.3 * go); rot = -0.07 - 0.06 * go;
+  } else if (fl >= 208) {
+    // he is up (216): it starts back along an arc, a little startled, and settles, pleased; it stays
+    // with him through the first change of world; then it lets go, slowly, off the top of the frame
+    const a1 = easeOut(clamp((fl - 218) / 8)), a2 = easeInOut(clamp((fl - 228) / 18));
+    const phi = (72 * a1 - 38 * a2) * D2R, R = 62;
+    x = W[0] + R - R * Math.cos(phi); y = W[1] - R * Math.sin(phi);
+    rot = -0.1 * smoothstep(208, 214, fl) - 0.07 * (1 - smoothstep(208, 214, fl)) + 0.36 * a1 - 0.3 * a2;
+    const v = smoothstep(296, 346, fl);
+    x += 220 * v; y -= 760 * v; rot += 0.12 * v;
   }
-  // bar 28: it comes down to help again, but he is already going: as he sets off it brakes, bobs
-  // back, and withdraws to one side, where it hovers and watches him climb. Revision 19 (Claire): a
-  // beat after he tops the ramp (the bar-29 snare) it does one small pleased loop; it stays through
-  // the first flick's snare, then glides off the frame's top edge.
-  if (fl >= RESET + 2 && fl <= 304) {
-    const y = herm(CUR2, Math.min(fl, 196)), u = clamp((y + 180) / (T34[1] + 182));
-    const w = easeInOut(clamp((fl - 196) / 18));                     // backing off to its hover
-    let x = lerp(T34[0] + 110 * (1 - u) + 4, HOVER[0], w), yy = lerp(y, HOVER[1], w);
-    yy += 4 * Math.sin((fl - 196) * 0.19) * smoothstep(196, 212, fl);   // a gentle hover
-    const q = clamp((fl - LOOP) / 20), th = 2 * Math.PI * easeInOut(q);   // the pleased loop
-    x += 42 * Math.sin(th); yy -= 42 * (1 - Math.cos(th));
-    const v = smoothstep(274, 304, fl);                              // away, off the top edge, gently
-    x += 240 * v; yy -= 700 * v;
-    return { x, y: yy, press: 0, rot: -0.05 - 0.14 * (1 - u) * (1 - w) - 0.03 * w + 0.18 * Math.sin(th) + 0.12 * v };
-  }
-  return null;
+  // a gentle hover whenever it is only watching
+  const idle = smoothstep(14, 22, fl) * (1 - smoothstep(60, 66, fl)) + smoothstep(136, 146, fl) * (1 - smoothstep(170, 176, fl))
+    + smoothstep(204, 210, fl) * (1 - smoothstep(214, 218, fl)) + smoothstep(240, 250, fl) * (1 - smoothstep(296, 306, fl));
+  y += 4 * Math.sin(fl * 0.19) * idle;
+  return { x, y, press, rot };
 }
 // the vector world's spawn mark: four short pale strokes flying out from his middle
 function burst(g, x, y, age) {
@@ -219,7 +229,7 @@ export default {
     g = ctx.canvas.getContext('2d');
     k = ctx.W / 1920;
     P = createPaperCursor();
-    const f0 = ctx.shot.f0, f1 = ctx.shot.f1;
+    const f0 = ctx.shot.f0 + PRE, f1 = ctx.shot.f1;         // (the old clock's origin: bar 26)
     // the backbeat snares after the top, leaving his triumph a beat and a half: the worlds change on
     // the first two, and the next one stops him
     const beats = ctx.T.events('beats');
@@ -232,15 +242,15 @@ export default {
     mid = document.createElement('canvas'); mid.width = Math.round(ctx.W / 2); mid.height = Math.round(ctx.H / 2);
   },
   render(ctx, fr) {
-    const fl = fr.fl;
-    if (fl < 12) {
-      const c = fl < 6 ? lo : mid;
-      drawScene(c.getContext('2d'), k * c.width / ctx.W, fl, P);
+    const fo = fr.fl - PRE;                                   // the scene runs on the old clock
+    if (fr.fl < 12) {                                         // the shot's first frames sharpen in two steps
+      const c = fr.fl < 6 ? lo : mid;
+      drawScene(c.getContext('2d'), k * c.width / ctx.W, fo, P);
       g.setTransform(1, 0, 0, 1, 0, 0);
       g.imageSmoothingEnabled = false;
       g.drawImage(c, 0, 0, ctx.W, ctx.H);
       return;
     }
-    drawScene(g, k, fl, P);
+    drawScene(g, k, fo, P);
   },
 };

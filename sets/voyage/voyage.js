@@ -146,10 +146,10 @@ function pinhole(m, x, y, r, v, spike = 0, turn = 0) {
 }
 export const SUN = VIEWCAM[0].aim;                                    // view 0's Sun (the source, behind)
 export const SUN1 = VIEWCAM[1].aim;                                   // view 1's
-export const AB = [[250, 640, 44], [362, 858, 26]];                 // view 2: A and B (x, y, disc radius), ahead, in clear sky
+export const AB = [[250, 640, 12], [362, 858, 8]];                  // view 2: A and B (x, y, disc radius), ahead, in clear sky (R20: smaller)
 const ORBITS = [25, 38, 54, 80, 144, 236, 350, 468];                 // Mercury to Neptune, small
 function drawStars(m, rnd, b) {
-  if (b === 2) { const [[ax, ay, ar], [bx, by, br]] = AB; pinhole(m, ax, ay, ar, 1, 150, 0.15); pinhole(m, bx, by, br, 0.85, 95, 0.55); }
+  if (b === 2) { const [[ax, ay, ar], [bx, by, br]] = AB; pinhole(m, ax, ay, ar, 1); pinhole(m, bx, by, br, 0.85); }   // (R20) no fixed spikes: they wink
   if (b !== 0) return;                                              // views 1 and 2: the stars are drawn with aberration
   const R = mulberry32(711 + b);
   for (let i = 0; i < 150; i++) {
@@ -191,14 +191,16 @@ export function viewState(b, t) {
 
 // ---------------------------------------------------------------- glows and view 1's moving stars
 const smooth01 = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
-// a star's sparkle over the paper: four thin tapered spikes that turn slowly and flicker, plus a brief
-// glint every so often (all a pure function of the view's frame t)
+// (R20) A and B wink: small and steady between twinkles; at each wink (WINKS, the view's frames) the
+// four spikes flash out and the core swells for a few frames, then settle (a pure function of t)
+const WINKS = [[4, 15, 27], [10, 21, 32]];
+const winkAt = (t, seed) => WINKS[seed - 1].reduce((m, t0) => Math.max(m, Math.exp(-(((t - t0) / (t < t0 ? 0.8 : 1.7)) ** 2))), 0);
 function sparkle(g, k, x, y, r, t, seed) {
   g.save(); g.globalCompositeOperation = 'lighter'; g.lineCap = 'round';
-  const turn = 0.25 * seed + 0.012 * t, glint = Math.max(0, Math.sin((t + 7 * seed) * 0.35)) ** 12;
-  for (let j = 0; j < 4; j++) {
-    const a = turn + j * Math.PI / 4 * (j % 2 ? 1.02 : 1), fl = 0.65 + 0.35 * Math.sin(t * 0.9 + j * 2.1 + seed * 3.3);
-    const L = r * (j % 2 ? 1.6 : 2.6) * fl * (1 + 0.5 * glint);
+  const glint = winkAt(t, seed), turn = 0.15;
+  if (glint > 0.02) for (let j = 0; j < 4; j++) {
+    const a = turn + j * Math.PI / 4, fl = 0.85 + 0.15 * Math.sin(t * 1.3 + j * 2.1 + seed * 3.3);
+    const L = r * (j % 2 ? 3.2 : 6) * fl * glint;
     for (const sg of [1, -1]) {
       const ex = x + sg * Math.cos(a) * L, ey = y + sg * Math.sin(a) * L;
       const gr = g.createLinearGradient(x * k, y * k, ex * k, ey * k);
@@ -283,9 +285,11 @@ export function createVoyage(canvas, opts = {}) {
       const s = lerp(1, 1.06, u), at = (x, y) => [560 + s * (x - 560), 330 + s * (y - 330)];
       const [[ax, ay, ar], [bx, by, br]] = AB;
       drawAberration(g, kk, B, beta);
-      glowOver(g, kk, ...at(ax, ay), ar * 2.2 * s, 0.8); glowOver(g, kk, ...at(bx, by), br * 2.2 * s, 0.7);
+      // (R20) the glows breathe a little between winks and swell with each
+      glowOver(g, kk, ...at(ax, ay), ar * 2.2 * s, 0.8 * (0.85 + 0.08 * Math.sin(tt * 1.9) + 0.9 * winkAt(tt, 1)));
+      glowOver(g, kk, ...at(bx, by), br * 2.2 * s, 0.7 * (0.85 + 0.08 * Math.sin(tt * 2.3 + 1) + 0.9 * winkAt(tt, 2)));
       drawFleet(g, kk, B, { beams: 0 });          // (R19) coasting: no beams this far out
-      // (R19) A and B sparkle: slow-turning diffraction spikes that flicker, and a glint now and then
+      // (R19-20) A and B wink: brief twinkles, their spikes flashing out and settling
       sparkle(g, kk, ...at(ax, ay), ar * s, tt, 1);
       sparkle(g, kk, ...at(bx, by), br * s, tt, 2);
     }

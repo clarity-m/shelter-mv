@@ -62,6 +62,37 @@ them. Key everything to bars and timestamps instead.
 - Grid: 100 BPM, bar 2.4 s = 72 frames, bar b starts at 0.38 + 2.4(b-1) s.
 
 ## Status
+- 2026-09-30: CUT 19 (Revision 20, from Claire's `viewers-notes-2.txt` on cut 18; she thinks it may be the last or
+  second-to-last revision). `render/briefs/R20-common.md` has the plan, and `render/revise20_shots.py` the bars. The
+  film is `out/film.mp4` (= `out/film_cut19.mp4`); there are 32 shots.
+  - **Timing:**
+    - S02 runs a beat longer, so its click flash lands on the bar-5 kick.
+    - S06 is one bar, and S07 is back at bar 14: the new card becomes new layers (xin 6 from S06).
+    - S11 starts on the vocal pickup (S10 shift1 -18, S11 shift0 -18).
+  - **Scenes:**
+    - S01: the cursor draws the outline, then the rays fill.
+    - S11: the cursor stays through the resets and arcs back, pleased.
+    - S13: the cursor swoops in over S12's last beat (`sets/valley/swoop.js`).
+    - S15: Clawd faces the way he spawned.
+    - S18-S19: the humans' cursor stays in frame, observing, and the copy is unhurried.
+    - S20: the contact map is painted on the terraces.
+    - S21: plasma filaments ride the helical field lines.
+    - S23: the satellites are spaced evenly and the pulse runs left to right.
+    - S27: the blueprint draws over the Clawds.
+    - S29: the ribbon pulse passes behind the payload, and the sails light in three waves.
+    - S36: the binding-energy curve lies on the ice, and dipole field lines feed the aurora.
+    - The voyage: A and B are small and winking.
+  - **The final shelter (S31, the lead's ideation plus Claire's notes):**
+    - the shared moment: she turns her head, Clawd's ^^;
+    - the vocal-drop wave wakes six varied cloud-pruned garden pines (Claire's bonsai idea;
+      different from Clawd's unique broad tree);
+    - birds;
+    - the simple foreground is kept, with no meadow (Claire).
+    - The Stanford-torus land band was tried as an A/B still (`out/stills/ref_R20/`) and not
+      adopted.
+  - Verified: 6532 frames, 32/32 shots, A/V +0.0 ms, 0 single-frame spikes, 0 short bursts. Every
+    continuity cut is at most 3.7; the flagged jumps are the intended hits.
+  - Cut 18 is in git (efa56a9) and `out/film_cut18.mp4`.
 - 2026-09-30: CUT 18 (Revision 19, the aesthetic pass: Claire's `viewers-notes.txt` plus the lead's drop review).
   `render/briefs/R19-common.md` has the plan. The film is `out/film.mp4` (= `out/film_cut18.mp4`).
   - **The drops:**

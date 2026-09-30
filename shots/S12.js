@@ -7,6 +7,9 @@
 // 128 px tall, on the ground plane in perspective with the vanishing point at (960, 331.5).
 import { drawField, F } from '../sets/early-env/field.js';
 import { clamp, lerp, easeInOut, easeOut, smoothstep } from '../lib/util.js';
+// revision 20 (P): the humans' cursor swoops in over the last beat, into S13's first click (sets/valley/swoop.js)
+import { createPaperCursor, PAPER } from '../sets/valley/papercursor.js';
+import { swoopAt } from '../sets/valley/swoop.js';
 
 const END = 140;                              // the tilt settles here; the last frames hold
 const HC1 = 1.572, DZ0 = 13.9, DZ1 = 8.516, HY0 = 620, HY1 = 331.5;
@@ -37,14 +40,16 @@ function poseAt(fl) {
   return { head, lift, eyes, sy };
 }
 
-let g, k;
+let g, k, CUR;
 export default {
-  async setup(ctx) { g = ctx.canvas.getContext('2d'); k = ctx.W / 1920; },
+  async setup(ctx) { g = ctx.canvas.getContext('2d'); k = ctx.W / 1920; CUR = createPaperCursor(23); },
   render(ctx, fr) {
     const fl = fr.fl;
     g.setTransform(k, 0, 0, k, 0, 0);
     const { cam, u } = camAt(fl);
     const R = fl < 72 ? 0 : 1 + 72 * Math.pow(u, 1.5);
     drawField(g, { cam, R, tint: 0.9 * u, line: 1 - 0.75 * u, pose: poseAt(fl) });
+    const sw = swoopAt(fr.f);
+    if (sw) { g.setTransform(k, 0, 0, k, 0, 0); CUR.draw(g, sw.x, sw.y, { s: 2.0, rot: sw.rot, fill: PAPER.slate, bs: 2.0 * k / 1.45 }); }
   },
 };

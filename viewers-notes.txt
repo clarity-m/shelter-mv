@@ -27,3 +27,4 @@ S27: the clawds obscure the base of the blueprint somewhat
 S29: for greater impact, a bright laser, and larger sails. currently, the lasers fire, the sails accelerate, then slow down. either keep the acceleration throughout, or move with the sails. i'm not sure what the beams in the post-launch sails are, though. pls clarify. you've already mentioned the two stars overlapping sails. maybe make the stars sparkle? they're static right now
 
 S31: the human pops in there. add a transition. the lower part of the city looks somewhat sparse
+

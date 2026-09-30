@@ -1,24 +1,25 @@
-# tokens set: rung 0, the 1D token world (S03, S04, S05)
+# tokens set: rung 0, the 1D token world (S03, S04, S05, S07)
 
-**What.** Animated `01-pretrain` + `01b`: grey horizon of tokenizer output through a lens
-on Clawd. Invented corpus (`corpus.js`); only `"#d97757"` is warm. Clawd has ink eyes (#1c1413)
-and acts with them: glances at lit tokens, arcs, curve and counters; blinks.
-- **S03 (5-8, xin 9):** S02's light collapses into him; bars 5-6 read at a steady pace. From 7.1
-  the riser builds: the lens swells the tokens beside him (cap ~35 to ~50 px; his cells stay
-  3 px), the batch lanes race, the line brightens, the sky darkens and the camera creeps along the
-  line. When the riser cuts on 8.4, light converges on him from both edges, arriving on 9.1.
-- **S04 (9-10):** 9.1 is a white bloom flash out of him along the line. In it the line lifts into
-  6 layers (8 frames) and the camera pulls back and tilts up in one 16-frame move. Chops 611 and
-  620 fire heads up the whole stack onto one token column; later chops fire two layers. Arcs are
-  brighter and bloom where they land. The stop (646-655) holds.
-- **S05 (11-12, xin 6):** opens on S04's last frame; the layers fall into the line, and a
-  brighter loss curve sweeps down to him beside brighter odometers.
+**What.** Animated `01-pretrain` + `01b`: a grey horizon of tokens through a lens on Clawd; only
+`"#d97757"` is warm. Ink eyes (#1c1413) that glance.
+- **S03 (5.2-8, xin 9):** S02's light collapses into him. From 7.1 the riser builds: tokens beside
+  him swell (his cells stay 3 px), the batch lanes race, the line brightens, the sky darkens, the
+  camera creeps; light converges on him after the riser cuts (8.4). R20: the arrival is keyed to
+  the shot start (317), the build to global frames (unchanged from R19).
+- **S04 (9-10):** a white bloom flash on 9.1; the line lifts into 6 layers in one clean camera move.
+  Chops 611/620 fire up the whole stack. The stop (646-655) holds.
+- **S05 (11-12, xin 6):** opens on S04's last frame; the layers fall into the line; the loss
+  curve sweeps down to him.
+- **S07 (14, R20):** opens on S06's last frame (O's MATCH.md): six layer rows on the rack's rows
+  (121.2 px apart), the lit card's row warm, the empty bay's row dark until beat 1's eighth,
+  and his column under the vents (x 981.5), at zoom 1. A pull-back closes the rows into a stack
+  that grows a layer per beat to nine, with heads firing up the stack on every beat and chop.
+  The 14.4 stop freezes it to the cut on STEP 131 072 (the style frame).
 
-**Technique.** `world.js`: Canvas2D token band with IIR trails, layer atlas, light layer and HUD;
-WebGL2 sky, weight-matrix field, halo, ripples (outward, and inward for the gather),
-reflections, glow, 11 rays, bloom, flash and grain, then Clawd and his eyes. `hook.js` holds the
-shared cameras, lens, flash, stack and lane scroll, keeping S03-S05 continuous.
+**Technique.** `world.js`: Canvas2D tokens, trails, layers, light, HUD; WebGL2 sky,
+field, halo, ripples, reflections, glow, bloom, flash, grain, Clawd.
+`hook.js` shares cameras, lens, flash, stack and lanes.
 
-**Page ms/frame (1080p, shared GPU).** S03 198, S04 287, S05 208.
+**Page ms/frame (1080p, shared GPU).** S03 269, S04 306, S05 194, S07 403.
 
-**Known issues.** Fast odometer digits are grey drums. S03 needs a re-render after S02 changes.
+**Known issues.** Re-render S03 once S02 is final (its xin reads S02's live last frame).

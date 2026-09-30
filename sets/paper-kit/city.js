@@ -64,12 +64,23 @@ export function setOnline(snares, until = 1e9) {
 // `sats` layer, z -900). In bar 68 they light one by one, the rate doubling each beat (1, 2, 4, 8);
 // on the bar-69 kick the rest close in from both ends and the ring's own line lights: the first ring
 // of a swarm. `setSats(first, kick)` is called by the shot (local frames) before the scene is built.
-export const RING = { cx: 960, cy: 700, R: 1250, r: 560, n: 96, a0: 0.1, a1: Math.PI - 0.1 };
+// R20 (Claire: keep the satellites apart): 48, evenly spaced along the arch (about 60 px apart)
+export const RING = { cx: 960, cy: 700, R: 1250, r: 560, n: 48, a0: 0.1, a1: Math.PI - 0.1 };
 export const ringAt = (t) => { const a = RING.a0 + (RING.a1 - RING.a0) * t; return [RING.cx - RING.R * Math.cos(a), RING.cy - RING.r * Math.sin(a)]; };
+// the arch by arc length: arcT(u) turns a fraction of its length (0 at the left end) into ringAt's t
+const ARC = (() => { const N = 2000, cum = [0]; let p0 = ringAt(0); for (let k = 1; k <= N; k++) { const p = ringAt(k / N); cum.push(cum[k - 1] + Math.hypot(p[0] - p0[0], p[1] - p0[1])); p0 = p; } return { N, cum, L: cum[N] }; })();
+export function arcT(u) {
+  const target = Math.min(Math.max(u, 0), 1) * ARC.L;
+  let lo = 0, hi = ARC.N;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (ARC.cum[m] < target) lo = m; else hi = m; }
+  return (lo + (target - ARC.cum[lo]) / Math.max(ARC.cum[hi] - ARC.cum[lo], 1e-9)) / ARC.N;
+}
+export const satT = (i) => arcT(i / (RING.n - 1));                  // satellite i's t on the arch
+export const satAt = (i) => ringAt(satT(i));
 export const SATS = { at: [], line: (t) => 1e9 };
 export function setSats(beat0, kick) {
   // the first fifteen: 1, 2, 4 and 8 in the four beats of bar 68, spread over the arch
-  const order = [48, 30, 66, 14, 40, 57, 82, 22, 36, 52, 61, 8, 74, 88, 44];
+  const order = [24, 15, 33, 7, 20, 28, 41, 11, 18, 26, 30, 4, 37, 44, 22];
   const at = new Array(RING.n).fill(null);
   let n = 0;
   for (let b = 0; b < 4; b++) { const c = 1 << b; for (let q = 0; q < c; q++) at[order[n++]] = beat0 + 18 * b + (18 / c) * q; }
@@ -130,8 +141,8 @@ export function cityScene(o = {}) {
   // R19 (Claire: highlight the satellites): larger and brighter, and the ring's line bolder
   if (SATS.at.length) add({ name: 'sats', z: -900, col: PAPER.deep, alb: 0.4, ao: 0, timed: 0.012, ew: 4.6, ef: 0.2, draw: (m) => {
     for (let i = 0; i < RING.n; i++) {
-      const t = i / (RING.n - 1), [x, y] = ringAt(t), [x2, y2] = ringAt(Math.min(1, t + 0.002)), ang = Math.atan2(y2 - y, x2 - x);
-      const s = 2.3 * (0.8 + 0.35 * ((i * 7) % 5) / 4), rot = (pts) => pts.map(([px, py]) => [x + (px * Math.cos(ang) - py * Math.sin(ang)) * s, y + (px * Math.sin(ang) + py * Math.cos(ang)) * s]);
+      const t = satT(i), [x, y] = ringAt(t), [x2, y2] = ringAt(Math.min(1, t + 0.002)), ang = Math.atan2(y2 - y, x2 - x);
+      const s = 1.9 * (0.8 + 0.35 * ((i * 7) % 5) / 4), rot = (pts) => pts.map(([px, py]) => [x + (px * Math.cos(ang) - py * Math.sin(ang)) * s, y + (px * Math.sin(ang) + py * Math.cos(ang)) * s]);
       // (no card: unlit, a satellite is invisible against the night; it appears as it lights)
       const pan = [rot(S2.rect(-10.5, -2.4, 7, 4.8)), rot(S2.rect(3.5, -2.4, 7, 4.8))];
       pan.forEach((p) => m.timed(p, code(SATS.at[i]), 1.0));

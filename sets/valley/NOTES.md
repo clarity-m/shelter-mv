@@ -23,3 +23,5 @@
 **Cuts:** S12-S13 3.7, S13-S14 22.4, S17-S18 0.4, S18-S19 2.0; S19-S20 54.2 (hard).
 
 **Tools:** `_P13`-`_P19` (listed frames); `_PW` (the worlds).
+
+**S15, S17 (E2):** the grid is `wallshot.js` `replicaTiles`. R20: S15's lens is on S14's side; he keeps his spawn facing.

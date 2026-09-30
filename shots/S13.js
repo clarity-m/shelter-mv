@@ -15,6 +15,7 @@ import { GRIDS } from '../sets/hill/clawd-pose.js';
 import { createPaperCursor, PAPER } from '../sets/valley/papercursor.js';
 import { projectPx, camBasis } from '../sets/valley/valley.js';
 import { makeSweep } from '../sets/valley/sweep.js';
+import { swoopAt } from '../sets/valley/swoop.js';
 
 let St, CUR, CL;
 const G = {}; for (const k of Object.keys(GRIDS)) G[k] = solidGrid(GRIDS[k]);
@@ -113,6 +114,9 @@ export default {
       return { x: lerp(A2[0], B2[0], e), y: lerp(A2[1], B2[1], e) - (prev ? 60 * Math.sin(Math.PI * e) : 0), c, tx: B2[0], ty: B2[1] };
     };
     const cur = cursorAt(fe);
+    // revision 20: it swoops in (from S12's last beat) and lands on the first click, 33.1
+    const swp = swoopAt(fr.f);
+    if (swp && !swp.done) { cur.x = swp.x; cur.y = swp.y; cur.rot = swp.rot; }
     // after train() it withdraws, up and away, so S14 opens on him alone
     const away = easeInOut(clamp((fe - 276) / 11));
     cur.x += 520 * away; cur.y -= 760 * away;
@@ -167,10 +171,10 @@ export default {
       CUR.panel(g, 0, 0, c.code, { open, typed: clamp((fe - t0) / Math.max(3, Math.min(typeLen(c), c.at - t0 - 1))), caret: fe < c.at, flash: Math.exp(-Math.pow((fe - c.at) / 4, 2)) * (fe >= c.at - 2 ? 1 : 0) });
       g.restore();
     }
-    if (fe >= 1 && away < 1) {
+    if (fe >= 0 && away < 1) {
       const press = CL.reduce((acc, cc) => Math.max(acc, at(cc) >= 0 && at(cc) < 8 ? Math.exp(-at(cc) / 3) : 0), 0);
       // (revision 15: the humans' cursor is always drawn whole, on top of the world)
-      CUR.draw(g, cur.x, cur.y, { s: 2.0, press, rot: -0.06, fill: PAPER.slate, bs: 2.0 * kc / 1.45 });
+      CUR.draw(g, cur.x, cur.y, { s: 2.0, press, rot: cur.rot === undefined ? -0.06 : cur.rot, fill: PAPER.slate, bs: 2.0 * kc / 1.45 });
     }
     g.restore();
     // HUD: nothing to count until the sky is there; train() starts episode 1

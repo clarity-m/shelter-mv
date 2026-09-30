@@ -48,7 +48,7 @@ export function defaultState() {
   };
 }
 
-const INT_UNIFORMS = new Set(['uNTow', 'uFam', 'uMode', 'uGridOn', 'uNKite', 'uNPer']);
+const INT_UNIFORMS = new Set(['uNTow', 'uFam', 'uMode', 'uGridOn', 'uNKite', 'uNPer', 'uNTre']);
 
 export function createHill(canvas, options = {}) {
   const W = canvas.width, H = canvas.height, K = W / 1920;
@@ -277,9 +277,10 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       // lean 1: torso back 17 deg, head up 21 deg, a settle of 7 deg toward her right (Clawd)
       const th = 0.3 * (h.lean || 0), ph = 0.36 * (h.lean || 0) + (h.look || 0), ps = 0.12 * (h.lean || 0);
       Object.assign(U, { uHumanOn: 1, uHPos: [h.x, y, h.z], uHF: HF, uHR: HR, uHB: [...bw, HUMAN_BOUND.r + 0.1],
-        uHLean: [Math.cos(th), Math.sin(th), Math.cos(ph), Math.sin(ph)], uHTilt: [Math.cos(ps), Math.sin(ps)] });
+        uHLean: [Math.cos(th), Math.sin(th), Math.cos(ph), Math.sin(ph)], uHTilt: [Math.cos(ps), Math.sin(ps)],
+        uHYaw: [Math.cos(h.turn || 0), Math.sin(h.turn || 0)] });
       maxH = Math.max(maxH, y + 1);
-    } else Object.assign(U, { uHumanOn: 0, uHPos: [0, -50, 0], uHF: [0, 0, 1], uHR: [1, 0, 0], uHB: [0, -50, 0, 0.1], uHLean: [1, 0, 1, 0], uHTilt: [1, 0] });
+    } else Object.assign(U, { uHumanOn: 0, uHPos: [0, -50, 0], uHF: [0, 0, 1], uHR: [1, 0, 0], uHB: [0, -50, 0, 0.1], uHLean: [1, 0, 1, 0], uHTilt: [1, 0], uHYaw: [1, 0] });
     // tree
     if (st.tree && st.tree.grow > 0) {
       const t = st.tree, y = t.y !== undefined ? t.y : hillH(st.hill, t.x, t.z);
@@ -306,6 +307,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
     Object.assign(U, { uNTow: tw.length, uTowA: tA, uTowB: tB, uTowWin: st.towerWin ?? 0.6, uTowEdge: st.towerEdge ?? 0, uCityPulse: st.cityPulse || 0 });
     // (revision 19) the vocal drop's wave of warm light (shelter.js shelterState: centre x, z, radius, strength)
     U.uWave = st.wave ? [st.wave.c[0], st.wave.c[1], st.wave.r, st.wave.k] : [0, 0, 0, 0];
+    U.uRingLand = st.ringLand ? [st.ringLand.k ?? 1, st.ringLand.w ?? 70, st.ringLand.wave ?? 0, st.ringLand.waveK ?? 0] : [0, 0, 0, 0];
     // ring
     if (st.ring && st.ring.on > 0) {
       const n = v3.norm(st.ring.n);
@@ -388,7 +390,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       uRes: [W, H], uK: K, uGeo: [x0, y0 - lift, Upx, depth], uForm: form, uSit: c.sit || 0, uGlow: c.glow ?? 1,
       uRays: c.rays ?? 1, uAlpha: c.alpha ?? 1, uEyeLight: c.eyeLight ?? 0.5,
       uGridOn: grid ? 1 : 0, uGB: grid || new Int32Array(24),
-      uEye: [c.eyes?.dx || 0, c.eyes?.dy || 0, c.eyes?.open ?? 1, 0],
+      uEye: [c.eyes?.dx || 0, c.eyes?.dy || 0, c.eyes?.open ?? 1, c.eyes?.arch ? 1 : 0],
     }, { uAux: T.aux });
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(Math.max(0, bx0), Math.max(0, H - by1), Math.max(1, bx1 - bx0), Math.max(1, by1 - by0));
@@ -400,8 +402,8 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
   //   kites:  [{ p: [x,y,z], angle, tail, end: [x,y,z], alpha, glow }]
   //   people: [{ p: [x,z] or [x,y,z] feet, alpha, arm, scale, flip, walk: [phase, amp], glow }]
   function extrasPass(st, B, U) {
-    const kites = (st.kites || []).slice(0, 4), people = (st.people || []).slice(0, 8);
-    if (!kites.length && !people.length) return;
+    const kites = (st.kites || []).slice(0, 4), people = (st.people || []).slice(0, 8), trees = (st.youngTrees || []).slice(0, 12);
+    if (!kites.length && !people.length && !trees.length) return;
     const KA = new Float32Array(16), KB = new Float32Array(16), KC = new Float32Array(16);
     let nk = 0;
     for (const k of kites) {
@@ -421,12 +423,22 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       PB.set([q.alpha ?? 1, q.arm || 0, q.scale || 1, q.flip ? 1 : 0], np * 4);
       PC.set([q.walk ? q.walk[0] : 0, q.walk ? q.walk[1] : 0, q.glow || 0, 0], np * 4); np++;
     }
+    // (revision 20) cloud-pruned pines (niwaki): { p: [x, z], h: height m, grow 0..1, seed, lean, style, pads, thick, shade }
+    const RA = new Float32Array(48), RB = new Float32Array(48), RC = new Float32Array(48);
+    let nt = 0;
+    for (const t of trees) {
+      if (!(t.grow > 0)) continue;
+      const f = [t.p[0], hillH(st.hill, t.p[0], t.p[1]), t.p[1]], a = project(B, f);
+      if (a[2] <= 0.5) continue;
+      RA.set([a[0], a[1], B.F / a[2], v3.len(v3.sub(f, B.pos))], nt * 4); RB.set([t.grow, t.h, t.seed || 0, t.lean || 1], nt * 4);
+      RC.set([t.style ?? 1, t.pads || 4, t.thick || 1, t.shade ?? 0.5], nt * 4); nt++;
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, FB.paint);
     gl.viewport(0, 0, W, H);
     gl.useProgram(P.extras);
     gl.bindVertexArray(vao);
     gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-    bind(P.extras, { uRes: [W, H], uK: K, uNKite: nk, uNPer: np, uKA: KA, uKB: KB, uKC: KC, uPA: PA, uPB: PB, uPC: PC,
+    bind(P.extras, { uRes: [W, H], uK: K, uNKite: nk, uNPer: np, uKA: KA, uKB: KB, uKC: KC, uPA: PA, uPB: PB, uPC: PC, uNTre: nt, uRA: RA, uRB: RB, uRC: RC,
       uWarm: st.extrasWarm || [1.0, 0.7, 0.44], uCool: st.extrasCool || [0.05, 0.045, 0.09] }, { uAux: T.aux });
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disable(gl.BLEND);

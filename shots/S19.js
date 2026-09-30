@@ -11,7 +11,7 @@
 //   appear beside him, each already holding its own orange cursor, and his own re-forms from his light.
 //   The copies are the humans' act, made because they trust him; he never copies himself. They glance
 //   at each other and share one happy beat; the five hold, still, by the tree to the hard cut into S20.
-import S18, { valleyParams, acting, stage, eyes } from './S18.js';
+import S18, { valleyParams, acting, stage, eyes, watchW, watchS } from './S18.js';
 import { hillHeight } from '../sets/valley/raise.js';
 import { projectPx as projectPxB } from '../sets/valley/valley.js';
 import { TH_V, YAW } from '../sets/valley/breakdown.js';
@@ -22,7 +22,9 @@ import { GRIDS } from '../sets/hill/clawd-pose.js';
 
 const G = {}; for (const k of Object.keys(GRIDS)) G[k] = solidGrid(GRIDS[k]);
 const LOOK = { up: eyes(NEUTRAL, 0, -1), upLeft: eyes(NEUTRAL, -1, -1), upRight: eyes(NEUTRAL, 1, -1) };
-const IN = 62, SEL = 73, ENTER = 90, JOY = 100;              // the cursor comes in; selects him (52.1); runs the copy (52.2); the one shared beat
+// revision 20b: the humans' cursor is already here, watching (S18's watchW path); it glides to him from
+// late 51 (58), selects him on 52.1 (73), types, and clicks at 52.2.5 (100); then it drifts up to watch
+const IN = 58, SEL = 73, ENTER = 100, JOY = 110;
 const CODE = 'clawd.copy(4)';
 // the four copies: metres from him across the view (+ right) and toward the lens (-); each one's delay
 const RV = [Math.cos(TH_V), -Math.sin(TH_V)], FV = [Math.sin(TH_V), Math.cos(TH_V)];
@@ -65,7 +67,7 @@ export default {
     if (s >= SEL && s < SEL + 3) grid = G.surprised;     // clicked: selected
     if (s >= ENTER) grid = NEUTRAL;                      // copied: he looks out, still
     if (s >= JOY && s < JOY + 12) grid = G.happy;        // the one shared beat of joy
-    if (s >= 124 && s < 127) grid = G.blink;
+    if (s >= 130 && s < 133) grid = G.blink;
     A.grid = grid;
     const { P, CX, CZ, gy } = valleyParams(ctx, T, fr.t, fr.f, A);
     // --- the four copies, beside him on the hill
@@ -78,7 +80,7 @@ export default {
       const side = dx < 0 ? 1 : -1;                      // +1: he is to its screen right
       let pose = t < 3 ? 'hopSquash' : 'neutral';
       if (s >= JOY && s < JOY + 12) pose = 'happy';                 // the one shared beat, with him
-      if (dl === 2 && s >= 132 && s < 135) pose = 'blink';
+      if (dl === 2 && s >= 136 && s < 139) pose = 'blink';
       const y = St.V.heightAt(x, z) + (P.hill ? hillHeight(P.hill, x, z) : 0), squash = t < 3 ? 0.94 : 1;
       crowd.push({ x, z, y, yaw: YAW + 0.16 * side, grid: pose === 'neutral' ? NEUTRAL : G[pose], depth: 4, scale: sc, squash });
       cards.push({ p: [x + 0.8 * Math.sign(dx) * RV[0], y + 1.3, z + 0.8 * Math.sign(dx) * RV[1] - 0.3], a: ss(1, 5, t) });   // (held on its outer side)
@@ -124,18 +126,20 @@ export default {
       g.restore();
     }
     // --- the humans' cursor: in from the upper right, clicks him, types the copy, runs it, leaves
-    if (s >= IN) {
+    {
       const tip = [head[0] + 0.5 * cw, head[1] - 0.46 * cw];      // his top right corner
-      const d = easeOut(clamp((s - IN) / (SEL - 2 - IN)));
-      const away = Math.pow(clamp((s - ENTER - 4) / 14), 2);
-      const x = lerp(tip[0] + 420, tip[0], d) + 160 * away, y = lerp(-220, tip[1], d) - 760 * away;
+      const w = toPx(watchW(288 + s, CX, gy, CZ)), perch = toPx([CX + 0.9, gy + 3.2, CZ - 0.8]);
+      const d = easeInOut(clamp((s - IN) / (SEL - 2 - IN))), back = easeInOut(clamp((s - ENTER - 4) / 26));
+      let x = lerp(w[0], tip[0], d), y = lerp(w[1], tip[1], d);
+      x = lerp(x, perch[0], back); y = lerp(y, perch[1], back);
+      const cs = lerp(lerp(watchS(w[2]), 1.2, d), watchS(perch[2]), back), away = 0;
       const press = Math.max(Math.exp(-Math.pow((s - SEL) / 2.2, 2)), Math.exp(-Math.pow((s - ENTER) / 2.2, 2)));
       // its label (S10's paper panel): typed after the selection, run on the second click
       const open = easeOut(clamp((s - SEL - 1) / 4)) * (1 - easeInOut(clamp((s - ENTER - 2) / 6)));
       // (revision 19, lead) the humans' panel at 1.5x, like S02's and S15's, readable at phone size
       if (open > 0.001) { g.save(); g.translate(x + 64, y + 34); g.scale(1.5, 1.5);
         CUR.panel(g, 0, 0, CODE, { open, typed: clamp((s - SEL - 3) / 10), caret: s < ENTER, flash: Math.exp(-Math.pow((s - ENTER) / 4, 2)) * (s >= ENTER - 2 ? 1 : 0) }); g.restore(); }
-      if (away < 1) CUR.draw(g, x, y, { s: 1.2, press, rot: -0.06, fill: PAPER.slate, bs: 1.2 * k / 1.45 });
+      if (away < 1) CUR.draw(g, x, y, { s: cs, press, rot: -0.06, fill: PAPER.slate, bs: cs * k / 1.45 });
     }
     g.restore();
   },

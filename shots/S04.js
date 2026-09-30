@@ -17,7 +17,7 @@ import { clamp, easeOut, lerp } from '../lib/util.js';
 let Wd;
 const EYES = [{ at: 0 }, { at: 25, dc: -1 }, { at: 46 }, { at: 96, dc: -1 }, { at: 113 }];
 const BLINKS = [124];
-const END3 = phasesS03(287);             // S03's last state, which S04 leaves in its first half-second
+const END3 = phasesS03(586);             // S03's last state, which S04 leaves in its first half-second
 
 export default {
   async setup(ctx) { Wd = createTokenWorld(ctx.canvas, { W: ctx.W, H: ctx.H, log: ctx.log }); },

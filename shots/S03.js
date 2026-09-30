@@ -7,6 +7,9 @@
 // sequences brighten, the sky darkens for contrast, and the camera creeps along the line. Bar 8's
 // drum-out swells; on 8.4 the riser cuts, and in that gap the light gathers along the line into him.
 // Colour stays his alone: the build is light, contrast and motion.
+// R20: the shot starts at 5.2 (frame 317; S02 took its first beat). The arrival out of the wash is
+// keyed to the shot's first frame; everything locked to the music (the creep, the build, the
+// glances) is keyed to global frames, so the build to 9.1 is unchanged.
 import { createTokenWorld, HZ, SX } from '../sets/tokens/world.js';
 import { headAt, speedAt, stepAt, chopLevel } from '../sets/tokens/train.js';
 import { drawHUD } from '../sets/tokens/hud.js';
@@ -17,29 +20,30 @@ import { smoothstep, clamp, easeOut } from '../lib/util.js';
 let Wd;
 const OFFS = [-8, -3.5, 4, 9, 15];      // chop pitch level -> text offset (chars) of the token it lights
 const GATHER = 571;                      // the riser cuts: light runs in along the line, arriving on 9.1
+// glances in global frames, each just after a chop lights a token on that side
 const EYES = [
-  { at: 0 }, { at: 26, dc: 1 }, { at: 44 }, { at: 57, dc: -1 }, { at: 78 }, { at: 98, dc: 1 }, { at: 120 },
-  { at: 170, dc: 1 }, { at: 190 }, { at: 208, dc: 1 }, { at: 262 },
+  { at: 0 }, { at: 356, dc: -1 }, { at: 377 }, { at: 397, dc: 1 }, { at: 419 },
+  { at: 469, dc: 1 }, { at: 489 }, { at: 507, dc: 1 }, { at: 561 },
 ];
-const BLINKS = [138, 232];
+const BLINKS = [437, 531];
 
 export default {
   async setup(ctx) { Wd = createTokenWorld(ctx.canvas, { W: ctx.W, H: ctx.H, log: ctx.log }); },
   render(ctx, fr) {
-    const T = ctx.T, f = fr.f, fl = fr.fl;
-    const cam = camS03(fl);
-    const { build, swell, inhale } = phasesS03(fl);
+    const T = ctx.T, f = fr.f, fl = fr.fl, f0 = fr.f - fr.fl;
+    const cam = camS03(f, f0);
+    const { build, swell, inhale } = phasesS03(f);
     // the light we came through collapses into him during the first beat
     const wr = 2600 * Math.pow(1 - smoothstep(0, 17, fl), 1.6) + 40;
     const wash = { amp: 1 - smoothstep(11, 19, fl), r: wr };
     const settle = Math.exp(-Math.max(0, fl - 10) / 14);
     const kick = T.pulse('kicks', f, 5);
-    const db = downbeat(T, f, fr.f - fl + 60);
+    const db = downbeat(T, f, 360);          // the arcs ignite on the downbeats of bars 6-8
     const glow = {
       amp: 1 + 2.2 * settle + 0.2 * kick + 0.25 * db.flare + 0.3 * build + 0.45 * inhale,
       r: 1 + 0.6 * settle - 0.15 * inhale,
       burst: 0.55 + 0.9 * settle + 0.12 * kick + 0.4 * build + 0.4 * inhale,
-      rot: 0.03 * fl / 30,
+      rot: 0.001 * (f - 299),
     };
     // chop notes light tokens
     const head = headAt(f);
@@ -61,14 +65,14 @@ export default {
     });
     if (f >= GATHER) ripples.unshift({ age: f - GATHER, amp: 1.25, speed: -1500 / (F04 - GATHER), width: 70 });
     Wd.render({
-      f, cam, head, speed: speedAt(f), mag: magS03(fl), expo: 1 + 0.9 * build, tau: fl * 0.02, laneOff: laneOffAt(f), laneV: laneVAt(f),
+      f, cam, head, speed: speedAt(f), mag: magS03(f), expo: 1 + 0.9 * build, tau: (f - 299) * 0.02, laneOff: laneOffAt(f), laneV: laneVAt(f),
       lit, tokG: 1.45 + 0.35 * build, skyG: 1 - 0.12 * build - 0.1 * inhale, lightG: 1 + 0.3 * build,
       arcsA: 0.3 + 0.7 * smoothstep(10, 130, fl) + 0.5 * swell, arcBoost: db.boost * 0.8, comet: db.comet,
       glow, wash, bloom: 1 + 0.35 * build + 0.2 * inhale,
       lineG: 1 + 0.15 * kick + 0.5 * build + 0.3 * swell, laneA: 1 + 1.1 * build,
       haloG: breath(T, f, 'mix', 6) * (1 + 0.35 * build),
       ripples: ripples.slice(0, 8),
-      eyes: eyesAt(fl, EYES, BLINKS),
+      eyes: eyesAt(f, EYES, BLINKS),
       drawLight: (g, api) => {
         // each lit token reaches back to him with one bright arc (drawn on, then fading)
         for (const { idx, age } of fired) {

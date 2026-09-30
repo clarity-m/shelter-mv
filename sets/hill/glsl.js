@@ -16,7 +16,7 @@ function primExpr(q, p = 'p') {
 // 5 neck, 6-8 head and hair, 9-14 legs, 15-20 arms and hands.
 const HEAD = new Set([6, 7, 8]), UPPER = new Set([1, 2, 3, 4, 5, 15, 16, 17, 18, 19, 20]);
 const pvar = (i) => (HEAD.has(i) ? 'pH' : UPPER.has(i) ? 'pU' : 'p');
-const LEAN = '  vec3 pU = humanRot(p, vec2(-0.02, 0.16), uHLean.xy);\n  pU = humanRotYZ(pU, vec2(0.16, 0.0), uHTilt);\n  vec3 pH = humanRot(pU, vec2(0.1, 0.66), uHLean.zw);\n';
+const LEAN = '  vec3 pU = humanRot(p, vec2(-0.02, 0.16), uHLean.xy);\n  pU = humanRotYZ(pU, vec2(0.16, 0.0), uHTilt);\n  vec3 pH = humanRot(pU, vec2(0.1, 0.66), uHLean.zw);\n  pH = humanRotXZ(pH, vec2(0.1, 0.0), uHYaw);\n';
 function sdfCode(prims, name) {
   let s = `float ${name}(vec3 p, out int mat, out int part) {\n  float d = 1e9, di; mat = 0; part = 0;\n${LEAN}`;
   prims.forEach((q, i) => { s += `  di = ${primExpr(q, pvar(i))};\n  if (di < d) { mat = ${q.mat}; part = ${q.part}; }\n  d = smin(d, di, ${fx(q.k || 0.001)});\n`; });
@@ -36,6 +36,8 @@ uniform vec3 uSun;
 uniform vec4 uHillA[4]; uniform vec4 uHillS[4];
 uniform float uMaxH;
 uniform float uHumanOn; uniform vec3 uHPos, uHF, uHR; uniform vec4 uHB; uniform vec4 uHLean; uniform vec2 uHTilt;
+uniform vec2 uHYaw;   // (revision 20) her head's turn about the neck: cos, sin
+uniform vec4 uRingLand;   // (revision 20, A/B still) the habitat's land band: strength, half-width, wave arc, wave strength
 uniform float uTreeOn; uniform vec3 uTPos; uniform vec4 uTB; uniform vec4 uTrA[4]; uniform vec4 uTrB[4]; uniform vec4 uCan[11]; uniform vec4 uCanG[11]; uniform float uCanK, uLeafAmp;
 uniform vec4 uCGlow; uniform float uAuraK, uAuraS;
 uniform int uNTow; uniform vec4 uTowA[64]; uniform vec4 uTowB[64]; uniform float uTowWin, uTowEdge, uCityPulse, uTime;
@@ -86,6 +88,7 @@ float floorMix(vec2 q) { return smoothstep(0.075, 0.045, hillS(q)); }
 vec3 toHuman(vec3 p) { vec3 d = p - uHPos; return vec3(dot(d, uHF), d.y, dot(d, uHR)); }
 vec3 humanRot(vec3 p, vec2 pv, vec2 cs) { vec2 d = p.xy - pv; return vec3(vec2(cs.x * d.x + cs.y * d.y, -cs.y * d.x + cs.x * d.y) + pv, p.z); }
 vec3 humanRotYZ(vec3 p, vec2 pv, vec2 cs) { vec2 d = p.yz - pv; return vec3(p.x, vec2(cs.x * d.x + cs.y * d.y, -cs.y * d.x + cs.x * d.y) + pv); }
+vec3 humanRotXZ(vec3 p, vec2 pv, vec2 cs) { vec2 d = p.xz - pv; vec2 r = vec2(cs.x * d.x + cs.y * d.y, -cs.y * d.x + cs.x * d.y) + pv; return vec3(r.x, p.y, r.y); }
 float PIXANG() { return (1920.0 / uRes.x) / uF; }
 vec3 camRay(vec2 px) { return normalize(uCamFw + uCamR * (px.x - uPP.x) / uF + uCamU * (uPP.y - px.y) / uF); }
 `;
@@ -322,13 +325,64 @@ vec3 aura(vec3 rd, float tmax) {
   return vec3(1.0, 0.78, 0.58) * uAuraK * uCGlow.w * (exp(-d2 / (s * s)) + 0.4 * exp(-d2 / (6.0 * s * s))) * behind;
 }
 vec3 horizonFog(vec3 rd) { return skyBase(normalize(vec3(rd.x, 0.015, rd.z))); }
+// (revision 20, an A/B still only) the habitat's land in place of the abstract ring: a wide band of
+// fields, a river with glints and settlement lights on the ring's plane, rising from both horizons and
+// arcing overhead, hazed by distance; the vocal drop's wave runs along it (uRingLand: strength, band
+// half-width m, wave front arc position m, wave strength). Off (x = 0) everywhere else.
+vec4 ringLand(vec3 rd) {
+  vec3 n = uRingN.xyz; float den = dot(rd, n);
+  if (abs(den) < 1e-5) return vec4(0.0);
+  float t = dot(uRingC.xyz - uCamPos, n) / den;
+  if (t <= 0.0) return vec4(0.0);
+  vec3 q = uCamPos + rd * t - uRingC.xyz;
+  float r = length(q) - uRingC.w, HW = uRingLand.y;
+  float pw = PIXANG() * t / max(abs(den), 0.06);
+  float cov = smoothstep(HW + pw, HW - pw, abs(r)) * smoothstep(-0.03, 0.02, rd.y);
+  if (cov <= 0.0) return vec4(0.0);
+  vec3 e2 = cross(n, uRingE1);
+  float ang = atan(dot(q, e2), dot(q, uRingE1));
+  float s = (ang + 1.5708) * uRingC.w;                       // arc length from the crown (m)
+  // fields: a patchwork of long plots across the band, each strip across it cut to its own lengths
+  float row = floor(r / 15.0), segL = 14.0 + 22.0 * hash13(vec3(row, 1.1, 2.2));
+  vec2 cell = vec2(floor(s / segL + hash13(vec3(row, 3.3, 4.4))), row);
+  float h1 = hash13(vec3(cell, 3.7)), h2 = hash13(vec3(cell, 9.1));
+  vec3 fc = h1 < 0.3 ? vec3(0.30, 0.52, 0.28) : h1 < 0.55 ? vec3(0.62, 0.62, 0.30) : h1 < 0.8 ? vec3(0.22, 0.46, 0.40) : vec3(0.45, 0.58, 0.32);
+  fc *= 0.85 + 0.3 * h2;
+  vec2 fr = fract(vec2(s / segL + hash13(vec3(row, 3.3, 4.4)), r / 15.0));
+  float hedge = smoothstep(0.0, 0.06, min(min(fr.x, 1.0 - fr.x), min(fr.y, 1.0 - fr.y)));
+  fc *= 0.8 + 0.2 * hedge;
+  // a river meandering along the band, silver with glints
+  float rv = 22.0 * sin(s / 140.0) + 9.0 * sin(s / 53.0 + 1.3);
+  float wv = smoothstep(4.0 + pw, 4.0 - pw, abs(r - rv));
+  float glint = step(0.93, hash13(vec3(floor(s / 3.0), floor(r / 2.0), 5.3))) * wv;
+  fc = mix(fc, vec3(0.55, 0.66, 0.85), wv) + vec3(1.0, 0.95, 0.85) * glint * 1.2;
+  // settlements: warm lights in clusters
+  float hs = hash13(vec3(cell, 12.5));
+  vec3 lc = vec3(0.0);
+  if (hs < 0.16) {
+    for (int k = 0; k < 5; k++) {
+      vec2 lp = vec2((cell.x - hash13(vec3(row, 3.3, 4.4)) + 0.2 + 0.6 * hash13(vec3(cell, float(k) + 20.0))) * segL, (cell.y + 0.2 + 0.6 * hash13(vec3(cell, float(k) + 40.0))) * 15.0);
+      float dl = length(vec2(s, r) - lp);
+      lc += vec3(1.0, 0.78, 0.5) * exp(-dl * dl / (2.0 * pow(max(1.0, pw), 2.0))) * 1.6;
+    }
+  }
+  // the walls: a thin bright rim at both edges (the old ring's light)
+  float rim = exp(-pow((abs(r) - HW) / (pw * 1.4 + 0.5), 2.0));
+  // haze by distance, lighter toward the crown
+  vec3 sky = skyBase(rd);
+  vec3 c = mix(fc * 0.9, sky, 0.38 + 0.2 * smoothstep(0.1, 0.6, rd.y)) + lc + P_RING * rim * 0.6;
+  // the wave runs along the land from both feet up to the crown
+  float dw = abs(abs(s) - uRingLand.z);
+  c += vec3(1.0, 0.75, 0.48) * uRingLand.w * (exp(-dw * dw / 180.0) + 0.25 * step(abs(s), uRingLand.z) * exp(-(uRingLand.z - abs(s)) / 80.0));
+  return vec4(c, cov);
+}
 vec3 skyColor(vec3 rd) {
   vec3 c = skyBase(rd) + sunHalo(rd);
   float el, mer; float g = domeLines(rd, el, mer);
   float glowMask = 1.0 - 0.8 * exp(-(1.0 - dot(rd, uSun)) * 30.0);
   c = mix(c, c * 1.18 + A_GRID * 0.03, g * uGridA * glowMask);
-  float rc; vec3 ring = ringLight(rd, rc);
-  c = mix(c, c * 0.93 + P_RING * 0.05, rc * uRing * 0.6) + ring;
+  if (uRingLand.x > 0.0) { vec4 L = ringLand(rd); c = mix(c, L.rgb, L.a * uRingLand.x); }
+  else { float rc; vec3 ring = ringLight(rd, rc); c = mix(c, c * 0.93 + P_RING * 0.05, rc * uRing * 0.6) + ring; }
   c = mix(c, P_DISC, sunDisc(rd));
   return c;
 }
@@ -941,6 +995,16 @@ vec3 clawd(vec2 p, float rb, float ra, float rl, float re, float k, float kl) {
   float eo = uEye.z, rr = min(re, 1.0 * eo);
   float eye = eo < 0.05 ? 1e9 : min(sdRoundBox(p, vec2(5.5 + uEye.x, 3.0 + sy + uEye.y), vec2(0.5, 1.0 * eo), rr),
                                     sdRoundBox(p, vec2(12.5 + uEye.x, 3.0 + sy + uEye.y), vec2(0.5, 1.0 * eo), rr));
+  if (uEye.w > 0.5) {
+    // (revision 20) the happy arch eyes, ^^: a three-cell bar on the eye row and a cell under each end
+    eye = 1e9;
+    for (int e = 0; e < 2; e++) {
+      float cx = (e == 0 ? 5.5 : 12.5) + uEye.x, cy = 3.0 + sy + uEye.y;
+      eye = min(eye, sdRoundBox(p, vec2(cx, cy - 0.4), vec2(1.5, 0.6), rr));
+      eye = min(eye, sdRoundBox(p, vec2(cx - 1.0, cy + 0.9), vec2(0.5, 0.8), rr));
+      eye = min(eye, sdRoundBox(p, vec2(cx + 1.0, cy + 0.9), vec2(0.5, 0.8), rr));
+    }
+  }
   return vec3(max(d, -eye), eye, d);
 }
 // The same three distances from a sprite grid (clawd-pose.js): 22 x 8 cells of 1 x 2 units, the
@@ -1079,6 +1143,8 @@ uniform int uNKite, uNPer;
 uniform vec4 uKA[4], uKB[4], uKC[4];
 uniform vec4 uPA[8], uPB[8], uPC[8];
 uniform vec3 uWarm, uCool;
+uniform int uNTre; uniform vec4 uRA[12], uRB[12], uRC[12];   // (revision 20) cloud-pruned pines: A base x, y (design px), px per m, depth m;
+//   B grow, height m, seed, lean (-1, 1); C style, pads, trunk thickness, shade
 out vec4 o;
 // kites  A: x, y (design px), px per m, angle; B: string end x, y, alpha, tail phase; C: depth m, glow
 // people A: feet x, y, px per m, depth m; B: alpha, arm up, scale, flip; C: walk phase, walk amp, glow
@@ -1142,6 +1208,76 @@ void main() {
     vec3 paper = uWarm * (2.3 + C.y) * (1.0 - 0.4 * exp(-spar * spar * 2.4 / (pxm * pxm * 1.5)));
     acc = over(acc, paper, covk * vis * B.z);
     add += uWarm * exp(-max(dk, 0.0) / 0.5) * 0.35 * B.z * vis;
+  }
+  for (int i = 0; i < 12; i++) {
+    if (i >= uNTre) break;
+    vec4 A = uRA[i], B = uRB[i], C = uRC[i];
+    if (B.x <= 0.0) continue;
+    // a cloud-pruned garden pine (niwaki; revision 20, Claire): a sculpted trunk and flat rounded pads of
+    // foliage, each tree in its own classic style (C.x: 0 formal upright, 1 informal upright, 2 slanting,
+    // 3 windswept, 4 a broad low twin-trunk spreader), with its own number of pads (C.y), trunk (C.z),
+    // shade (C.w) and lean (B.w); it rises and its pads fill out, bottom up, as the wave passes
+    float s = A.z, pxm = 1.0 / (s * uK), g = B.x, hT = B.y * (0.3 + 0.7 * g), sd = B.z, ln = B.w;
+    int style = int(C.x + 0.5); float np = C.y, th = C.z;
+    vec2 q = (px - A.xy) / s; q.y = -q.y;                               // metres, y up from the base
+    if (abs(q.x) > 1.0 * hT + 4.0 * pxm || q.y < -0.3 || q.y > 1.2 * hT) continue;
+    float vis = smoothstep(A.w - 3.0, A.w - 1.0, tPix);
+    vec2 k1, k2, k3;
+    if (style == 0) { k1 = vec2(0.02, 0.33); k2 = vec2(-0.01, 0.6); k3 = vec2(0.01, 0.93); }
+    else if (style == 1) { k1 = vec2(0.13, 0.33); k2 = vec2(0.05, 0.6); k3 = vec2(0.2, 0.86); }
+    else if (style == 2) { k1 = vec2(0.16, 0.3); k2 = vec2(0.34, 0.54); k3 = vec2(0.52, 0.76); }
+    else if (style == 3) { k1 = vec2(0.1, 0.3); k2 = vec2(0.22, 0.52); k3 = vec2(0.38, 0.72); }
+    else { k1 = vec2(0.07, 0.22); k2 = vec2(0.02, 0.4); k3 = vec2(0.12, 0.56); }
+    vec2 t0 = vec2(0.0), t1 = vec2(ln * k1.x, k1.y) * hT, t2 = vec2(ln * k2.x, k2.y) * hT, t3 = vec2(ln * k3.x, k3.y) * hT;
+    float w0 = 0.05 * th * hT;
+    float dT = min(sdSeg(q, t0, t1) - w0, min(sdSeg(q, t1, t2) - 0.76 * w0, sdSeg(q, t2, t3) - 0.56 * w0));
+    vec2 u1 = vec2(-ln * 0.17, 0.3) * hT, u2 = vec2(-ln * 0.32, 0.46) * hT;   // the twin's stem (style 4)
+    if (style == 4) dT = min(dT, min(sdSeg(q, t1 * 0.45, u1) - 0.6 * w0, sdSeg(q, u1, u2) - 0.45 * w0));
+    float dP = 1e9;
+    for (int k = 0; k < 5; k++) {
+      float fk = float(k);
+      if (fk >= np) break;
+      float fr = np > 1.0 ? fk / (np - 1.0) : 1.0;                        // 0 the lowest pad .. 1 the crown
+      float hk = fract(sin(sd * 13.1 + fk * 7.7) * 4375.85), alt = mod(fk, 2.0) < 0.5 ? -1.0 : 1.0;
+      float y, off, a, b = 0.075, side;
+      if (style == 0) { y = mix(0.36, 0.95, fr); side = fr > 0.99 ? 0.0 : alt; off = 0.17 * (1.0 - 0.5 * fr); a = 0.32 - 0.16 * fr; }
+      else if (style == 1) { y = mix(0.42, 0.93, fr); side = fr > 0.99 ? ln * 0.4 : -ln * alt; off = 0.2; a = 0.29 - 0.1 * fr; }
+      else if (style == 2) { y = mix(0.34, 0.82, fr); side = mod(fk, 2.0) < 0.5 ? ln : -ln * 0.35; off = 0.17; a = 0.26 - 0.06 * fr; }
+      else if (style == 3) { y = mix(0.34, 0.78, fr); side = ln; off = 0.22 + 0.22 * fr; a = 0.3 - 0.05 * fr; b = 0.056; }
+      else { y = mix(0.3, 0.64, fr); side = alt * ln; off = 0.3 - 0.1 * fr; a = 0.42 - 0.12 * fr; b = 0.07; }
+      y = (y + 0.03 * (hk - 0.5)) * hT;
+      float tx = y <= t1.y ? mix(t0.x, t1.x, y / max(t1.y, 1e-4)) : y <= t2.y ? mix(t1.x, t2.x, (y - t1.y) / max(t2.y - t1.y, 1e-4))
+                : mix(t2.x, t3.x, clamp((y - t2.y) / max(t3.y - t2.y, 1e-4), 0.0, 1.0));
+      if (style == 4 && side * ln < 0.0) tx = mix(u1.x, u2.x, clamp((y - u1.y) / max(u2.y - u1.y, 1e-4), 0.0, 1.0));
+      float grow = smoothstep(0.12 * fk, 0.12 * fk + 0.45, g);
+      a *= hT * (0.85 + 0.3 * hk) * grow; b *= hT * (0.9 + 0.2 * hk) * (0.4 + 0.6 * grow);
+      if (a <= 0.0) continue;
+      vec2 c = vec2(tx + side * off * hT, y);
+      if (style == 3) c.x += ln * 0.35 * a;                               // the windswept pads stream downwind
+      float dPad = 1e9;
+      for (int m = -1; m <= 1; m++) {
+        vec2 cm = c + vec2(float(m) * 0.52 * a, (m == 0 ? 0.28 : 0.05) * b);
+        vec2 rr = vec2(m == 0 ? 0.62 * a : 0.5 * a, m == 0 ? b * 1.1 : b * 0.85);
+        vec2 e = (q - cm) / rr;
+        dPad = min(dPad, (length(e) - 1.0) * min(rr.x, rr.y));
+      }
+      dP = min(dP, max(dPad, (y - 0.55 * b) - q.y));
+      dT = min(dT, sdSeg(q, vec2(tx, y - 0.2 * b), c) - 0.02 * th * hT);
+    }
+    float d = min(dT, dP);
+    float cov = clamp(0.5 - d / pxm, 0.0, 1.0);
+    if (cov <= 0.0) continue;
+    // its own dusky teal (bluer to greener), lit along the pads' tops and darker beneath; a dark bark;
+    // the low sun's warm rim
+    vec3 leaf = mix(vec3(0.024, 0.078, 0.094), vec3(0.045, 0.1, 0.066), C.w);
+    vec3 c;
+    if (dP < dT) {
+      float top = clamp(1.0 + dP / (0.05 * hT + pxm), 0.0, 1.0);
+      c = leaf * (0.8 + 0.5 * top) + uWarm * 0.12 * top;
+    } else c = vec3(0.075, 0.052, 0.058);
+    c += uWarm * 0.16 * clamp(1.0 + d / (pxm * 2.5), 0.0, 1.0) * step(0.0, q.x - ln * 0.1 * hT);
+    c = mix(c, vec3(0.42, 0.3, 0.36), clamp((A.w - 15.0) / 110.0, 0.0, 0.5));
+    acc = over(acc, c, cov * vis * min(1.0, g * 1.6));
   }
   o = vec4(acc.rgb + add * (1.0 - acc.a), acc.a);
 }`;

@@ -321,6 +321,82 @@ void main(){
   oB = texture(uB, uv);
 }`;
 
+// ---------------------------------------------------------------- revision 20 (S01): the outline, then the fill
+// Opt-in with st.kerf = { draw (the drawing's progress: k + s, ray j drawn to s = draw - drawK[j]), drawK[11],
+// geom (Float32Array 44: per ray u0a, u0b, sa, sb, where its sides come free and the tip's span of s), line
+// (the kerf's light), width (its half-width, screen px), fill[11] (each ray's fill front along it, fraction of
+// its length), fillI, pen [x, y] (card px, the spark's frame), penI, penR (screen px) }. One pass after the
+// scene, before the cursor, adds to the warm scalar W:
+//  - the kerf: the starburst's outline where the pen has passed, a thin cut showing the lamp behind it;
+//  - the fill: each closed ray glowing through its paper, the light running out from the hub;
+//  - the pen: the fresh cut glowing at the cursor's tip.
+// Kerf and fill fade as each flap opens (the hole's own edge and light take over). Without st.kerf no program
+// or pass changes (S02, S33). st.rotC (opt-in) sets Clawd's frame, which is otherwise the spin's rot - pi.
+const KERF_FS = HDR + NOISE + PAPER + `
+uniform sampler2D uL, uB; uniform vec2 uRes, uCC, uTC; uniform float uSc, uMC, uMT, uRot, uCell;
+uniform vec4 uRay[11]; uniform vec4 uRayB[11];   // as the scene's: axis, length, r1 | r2, open, angle, rank
+uniform vec4 uKerfG[11];                         // u0a, u0b, sa, sb
+uniform float uDrawK[11], uFill[11];
+uniform vec4 uKerf;                              // draw, line, width (screen px), fill's light
+uniform vec4 uPen;                               // x, y (card px), glow, radius (screen px)
+uniform float uLight; uniform vec4 uLamp;
+layout(location = 0) out vec4 oL;
+layout(location = 1) out vec4 oB;
+float sdBox(vec2 p, vec2 b){ vec2 d = abs(p) - b; return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0); }
+float sdUnevenCapsule(vec2 p, float r1, float r2, float h){
+  p.x = abs(p.x);
+  float b = (r1 - r2)/h, a = sqrt(1.0 - b*b), k = dot(p, vec2(-b, a));
+  if (k < 0.0) return length(p) - r1;
+  if (k > a*h) return length(p - vec2(0.0, h)) - r2;
+  return dot(p, vec2(a, b)) - r1;
+}
+float capSD(vec2 w, int j){
+  vec2 dir = uRay[j].xy; vec2 pp = vec2(-dir.y, dir.x);
+  return sdUnevenCapsule(vec2(dot(w, pp), dot(w, dir)), uRay[j].w, uRayB[j].x, uRay[j].z);
+}
+float lampAt(vec2 wt){ float r = length(wt); return uLamp.x*exp(-r/uLamp.y) + uLamp.z*exp(-r/uLamp.w); }
+void main(){
+  vec2 uv = gl_FragCoord.xy/uRes;
+  vec4 L = texture(uL, uv);
+  vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y)/uSc;
+  vec2 w = rot2(-uRot)*(p - uCC)/uMC;                              // card px, the spark's frame
+  vec2 wt = (p - uTC)/uMT;
+  float lamp = uLight*lampAt(wt), sq = sdBox(w, vec2(uCell));
+  float dU = 1e5, best = 99.0; int own = 0, rOwn = -1;
+  for (int j = 0; j < 11; j++){
+    float c = capSD(w, j);
+    if (c < dU){ dU = c; own = j; }
+    if (c < 0.0 && uRayB[j].w < best){ best = uRayB[j].w; rOwn = j; }
+  }
+  float Wk = 0.0;
+  // the kerf: the union's outline (outside the lit square), where the pen has passed
+  float line = exp(-pow(dU*uMC/uKerf.z, 2.0))*smoothstep(-0.5, 1.5, sq*uMC);
+  if (line > 0.002){
+    vec2 dir = uRay[own].xy; vec2 pp = vec2(-dir.y, dir.x);
+    float Lj = uRay[own].z, xa = dot(w, dir), ya = dot(w, pp), u = xa/Lj;
+    vec4 g = uKerfG[own];
+    float s;
+    if (u >= 1.0) s = g.z + (g.w - g.z)*clamp(atan(ya, xa - Lj)/PI + 0.5, 0.0, 1.0);       // round the tip
+    else if (ya < 0.0) s = g.z*clamp((u - g.x)/(1.0 - g.x), 0.0, 1.0);                    // out, ccw side
+    else s = g.w + (1.0 - g.w)*clamp((1.0 - u)/(1.0 - g.y), 0.0, 1.0);                     // back, cw side
+    float drawn = clamp((uKerf.x - uDrawK[own] - s)*1.6*Lj/3.0 + 0.5, 0.0, 1.0);          // a 3 px soft head
+    Wk += uKerf.y*(0.35 + lamp)*line*drawn*(1.0 - uRayB[own].y);   // the lamp through the cut (a floor far out)
+  }
+  // the fill: the closed flap glowing through its paper, from the hub out to its front; as the flap swings
+  // back the paper still glows (the folding flap near the tip), while the opened part gives way to the hole
+  if (rOwn >= 0 && sq > 0.0){
+    float u = dot(w, uRay[rOwn].xy)/uRay[rOwn].z, fr = uFill[rOwn], o = uRayB[rOwn].y;
+    float front = 1.0 - smoothstep(fr - 0.12, fr, u);
+    float flap = 1.0 - smoothstep(0.0, 0.02, 1.0 - (1.0 - o)*0.88 - u);
+    Wk += uKerf.w*lamp*front*mix(1.0 - o, 1.0, flap)*(0.55 + 0.45*paperT(w*1.3, 7.0));
+  }
+  // the pen: the fresh cut glowing at the cursor's tip
+  float dp = length(w - uPen.xy)*uMC;
+  Wk += uPen.z*exp(-dp*dp/(uPen.w*uPen.w))*(0.6 + 0.4*lamp);
+  oL = vec4(L.x + Wk, L.yzw);
+  oB = texture(uB, uv);
+}`;
+
 export function createCard(canvas, log = () => {}) {
   const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
   if (!gl) throw new Error('no webgl2');
@@ -345,8 +421,8 @@ export function createCard(canvas, log = () => {}) {
     RAYB.set([r1 * G.tip, 0, Math.atan2(Math.sin(a), Math.cos(a)), j], j * 4);
   });
   const glyphBits = GLYPH.map((row) => [...row].reduce((m, ch, c) => (ch === '#' ? m | (1 << c) : m), 0));
-  // the cursor's programs and target, made on first use (revision 5); the burst's (revision 19)
-  let pSceneCur = null, pCur = null, tScene3 = null, pBurst = null, tScene4 = null;
+  // the cursor's programs and target, made on first use (revision 5); the burst's (revision 19); the kerf's (20)
+  let pSceneCur = null, pCur = null, tScene3 = null, pBurst = null, tScene4 = null, pKerf = null, tScene5 = null;
   const ARROW_F = new Float32Array(ARROW.flat());
   const slate = [0x15, 0x19, 0x2B].map((v) => Math.pow(v / 255, 2.2));
 
@@ -373,7 +449,7 @@ export function createCard(canvas, log = () => {}) {
     const common = {
       uSc: sc, uCC: st.cc || [960, 540], uMC: st.mc || 1, uTC: st.tc || st.cc || [960, 540], uMT: st.mt || 1,
       uCell: G.cell, uRay: RAY, uRayB: rb, uCells: { f1: new Float32Array(cells) }, uGlyph: { iv: glyphBits },
-      uRot: rot, uRotC: rot - Math.PI, uGlint: [...(st.glint || [0, 0, 8]), 0],
+      uRot: rot, uRotC: st.rotC ?? (rot - Math.PI), uGlint: [...(st.glint || [0, 0, 8]), 0],
       uLight: st.light, uLamp: st.lamp || [1.9, 95, 1.05, 380], uHaze: st.haze ?? 0.05, uFront: st.front ?? 0.35,
       uWob: 0.9, uFlapT: st.flapT ?? 0.11, uEdge: st.edge ?? 0.55, uRim: st.rim ?? 1.25, uCardOn: st.cardOn ?? 1,
     };
@@ -402,6 +478,13 @@ export function createCard(canvas, log = () => {}) {
       K.setU(pRot, { uRes: [W, H], uCtr: [c[0] * sc, c[1] * sc], uSpan: st.rotSpan });
       K.tex(pRot, { uL: tScene.texs[0], uB: tScene.texs[1] }); K.draw(pRot, tScene2); sc2 = tScene2;
     }
+    if (st.kerf) {                                 // (revision 20) the outline drawn, the rays filling; under the cursor
+      if (!pKerf) { pKerf = K.program(KERF_FS, 'card-kerf'); tScene5 = K.target(W, H, 2); }
+      const k = st.kerf;
+      K.setU(pKerf, Object.assign({}, common, { uRes: [W, H], uKerfG: k.geom, uDrawK: { f1: k.drawK }, uFill: { f1: new Float32Array(k.fill) },
+        uKerf: [k.draw, k.line, k.width, k.fillI], uPen: [k.pen[0], k.pen[1], k.penI, k.penR] }));
+      K.tex(pKerf, { uL: sc2.texs[0], uB: sc2.texs[1] }); K.draw(pKerf, tScene5); sc2 = tScene5;
+    }
     if (cur) {                                     // the cursor, over the card (not blurred with it)
       const c = st.cc || [960, 540];
       K.setU(pCur, { uRes: [W, H], uSc: sc, uCur: cur, uHub: c, uHaze: st.haze ?? 0.05,
@@ -413,7 +496,7 @@ export function createCard(canvas, log = () => {}) {
     if (st.burst) {                                // (revision 19) the click's burst, over the card and the cursor
       if (!pBurst) { pBurst = K.program(BURST_FS, 'card-burst'); tScene4 = K.target(W, H, 2); }
       const b = st.burst, c = st.cc || [960, 540];
-      K.setU(pBurst, { uRes: [W, H], uSc: sc, uCC: c, uMC: st.mc || 1, uTC: st.tc || c, uMT: st.mt || 1, uRotC: rot - Math.PI,
+      K.setU(pBurst, { uRes: [W, H], uSc: sc, uCC: c, uMC: st.mc || 1, uTC: st.tc || c, uMT: st.mt || 1, uRotC: st.rotC ?? (rot - Math.PI),
         uCardOn: st.cardOn ?? 1, uBurst: [b.c[0], b.c[1], b.r, b.soft], uBurstI: [b.glow, b.rim, b.core, b.coreR], uBurstK: b.fall || 0 });
       K.tex(pBurst, { uL: sc2.texs[0], uB: sc2.texs[1] }); K.draw(pBurst, tScene4); sc2 = tScene4;
     }
