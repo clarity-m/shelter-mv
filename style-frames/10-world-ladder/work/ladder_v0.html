@@ -1,0 +1,564 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Shelter MV 10: world ladder</title>
+<style>html,body{margin:0;padding:0;background:#000;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="out" width="1920" height="1080"></canvas>
+<pre id="log" style="display:none"></pre><pre id="png" style="display:none"></pre>
+<script>
+'use strict';
+// ============================================================================
+// Shelter MV, style frame 10: one shot, five rungs of world fidelity.
+// One scene (camera, hill, tree, a seated figure, Clawd, clouds, the dome grid)
+// is described once in 3D. Every rung ray-casts the same geometry through the
+// same lens, and only the "lens" changes: pixel, vector, low-poly, paint, light.
+//   ladder.html?rung=1..5      (dbg=geo shows the raw G-buffer lighting)
+// ============================================================================
+const T0 = performance.now();
+const Q = new URLSearchParams(location.search);
+const RUNG = +(Q.get('rung') || 3);
+const DBG = Q.get('dbg') || '';
+const W = 1920, H = 1080;
+const LOG = [];
+const log = s => { LOG.push(s); document.getElementById('log').textContent = LOG.join('\n'); };
+
+// ---------------------------------------------------------------- utilities
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const lerp = (a, b, t) => a + (b - a) * t;
+const v3 = {
+  add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  mul: (a, s) => [a[0] * s, a[1] * s, a[2] * s],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  len: a => Math.hypot(a[0], a[1], a[2]),
+  norm: a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+};
+const fx = x => { const s = (+x).toFixed(5); return s.indexOf('.') < 0 ? s + '.0' : s; };
+const g3 = a => `vec3(${fx(a[0])},${fx(a[1])},${fx(a[2])})`;
+
+// ================================================================ THE SCENE
+// Units are metres. x right, y up, z away from the camera. The camera looks
+// straight down +z with a shifted lens: the horizon sits at y = 730 px, so
+// verticals stay vertical (anime background convention).
+const F = 1400, CY = 780, CAMH = 0.7;
+const CAM = [0, CAMH, 0];
+const project = p => [960 + F * p[0] / p[2], CY - F * (p[1] - CAMH) / p[2]];
+const rayDir = (px, py) => v3.norm([(px - 960) / F, (CY - py) / F, 1]);
+
+// The hill: a broad mound with a crest on the right and a shoulder on the left.
+const HILL = [ // amplitude, cx, cz, sx, sz
+  [1.618, 1.621, 12.597, 1.657, 4.959],
+  [0.935, -5.269, 10.239, 4.032, 1.825],
+  [1.138, 0.370, 7.926, 6.181, 3.047],
+];
+function hillH(x, z) {
+  let h = 0;
+  for (const [a, cx, cz, sx, sz] of HILL) { const dx = (x - cx) / sx, dz = (z - cz) / sz; h += a * Math.exp(-(dx * dx + dz * dz)); }
+  return h;
+}
+
+// Sun: low, just behind the crest to Clawd's right.
+const SUN_PX = [Q.has('sx') ? +Q.get('sx') : 1266, Q.has('sy') ? +Q.get('sy') : 612];
+const SUN = rayDir(SUN_PX[0], SUN_PX[1]);
+
+// Clawd on the crest. Glyph cell u wide, 2u tall; screen width ~144 px at rungs 1-2.
+const CLAWD = { x: 1.51, z: 9.6 };
+CLAWD.y = hillH(CLAWD.x, CLAWD.z);
+CLAWD.u = 144 * CLAWD.z / F / 18;        // metres per glyph column
+CLAWD.yaw = 0.22;                        // turned a little toward the figure (radians)
+CLAWD.depth = 4 * CLAWD.u;
+
+// The figure: seated, hugging her knees, watching Clawd.
+const HUMAN = { x: -1.37, z: 5.2 };
+HUMAN.y = hillH(HUMAN.x, HUMAN.z);
+HUMAN.look = Math.atan2(CLAWD.x - HUMAN.x, CLAWD.z - HUMAN.z);
+HUMAN.yaw = HUMAN.look + 0.30;          // body turned a little more side-on; the head turns back to him
+
+// The tree on the left shoulder.
+const TREE = { x: -4.1, z: 9.2 };
+TREE.y = hillH(TREE.x, TREE.z);
+
+// Environment boundary: a dome with a latitude/longitude grid.
+const DOME = { c: [0, 0, 10], R: 220 };
+
+// ---------------------------------------------------------------- primitives
+// Human, local frame: f forward, u up, s toward her right hand. Seat origin on the ground.
+const MAT = { SKY: 0, FLOOR: 1, HILL: 2, TRUNK: 3, LEAF: 4, SKIN: 5, HAIR: 6, SWEATER: 7, PANTS: 8, SHOE: 9, CLAWD: 10, CLOUD: 11 };
+const HUMAN_PRIMS = (() => {
+  const P = [];
+  const add = (o) => P.push(o);
+  // pelvis and torso (two offset round cones give the sweater an oval section)
+  add({ t: 'ell', c: [-0.03, 0.13, 0], rad: [0.13, 0.11, 0.165], mat: MAT.PANTS, part: 1, k: 0.02 });
+  for (const s of [-1, 1]) add({ t: 'rc', a: [-0.03, 0.18, 0.06 * s], b: [0.07, 0.49, 0.075 * s], r: 0.118, r2: 0.112, mat: MAT.SWEATER, part: 2, k: 0.06 });
+  for (const s of [-1, 1]) add({ t: 'sph', c: [0.07, 0.505, 0.15 * s], r: 0.075, mat: MAT.SWEATER, part: 2, k: 0.07 });
+  add({ t: 'cap', a: [0.08, 0.54, 0], b: [0.105, 0.655, 0], r: 0.046, mat: MAT.SKIN, part: 3, k: 0.03 });
+  // head and bob
+  const turn = (c) => { const a = -0.30, f = c[0] - 0.1, z = c[2]; return [0.1 + f * Math.cos(a) - z * Math.sin(a), c[1], f * Math.sin(a) + z * Math.cos(a)]; };
+  add({ t: 'ell', c: turn([0.125, 0.755, 0]), rad: [0.098, 0.116, 0.086], mat: MAT.SKIN, part: 3, k: 0.02 });
+  add({ t: 'ell', c: turn([0.102, 0.772, 0]), rad: [0.106, 0.124, 0.1], mat: MAT.HAIR, part: 4, k: 0.01 });
+  add({ t: 'ell', c: turn([0.08, 0.69, 0]), rad: [0.088, 0.06, 0.106], mat: MAT.HAIR, part: 4, k: 0.04 });
+  // legs: thighs up to the knees, shins down to the feet
+  for (const s of [-1, 1]) {
+    const hip = [0.0, 0.12, 0.085 * s], knee = [0.35, 0.44, 0.08 * s], ankle = [0.41, 0.075, 0.075 * s];
+    add({ t: 'rc', a: hip, b: knee, r: 0.078, r2: 0.058, mat: MAT.PANTS, part: 5 + (s > 0 ? 1 : 0), k: 0.03 });
+    add({ t: 'rc', a: knee, b: ankle, r: 0.056, r2: 0.04, mat: MAT.PANTS, part: 5 + (s > 0 ? 1 : 0), k: 0.02 });
+    add({ t: 'rc', a: [0.39, 0.05, 0.075 * s], b: [0.53, 0.035, 0.085 * s], r: 0.045, r2: 0.036, mat: MAT.SHOE, part: 7, k: 0.02 });
+  }
+  // arms hugging the shins, hands clasped in front
+  for (const s of [-1, 1]) {
+    const sh = [0.07, 0.5, 0.165 * s], el = [0.25, 0.33, 0.205 * s], wr = [0.45, 0.37, 0.045 * s];
+    add({ t: 'rc', a: sh, b: el, r: 0.058, r2: 0.05, mat: MAT.SWEATER, part: 8 + (s > 0 ? 1 : 0), k: 0.03 });
+    add({ t: 'rc', a: el, b: wr, r: 0.049, r2: 0.037, mat: MAT.SWEATER, part: 8 + (s > 0 ? 1 : 0), k: 0.02 });
+    add({ t: 'ell', c: [0.475, 0.37, 0.018 * s], rad: [0.05, 0.036, 0.04], mat: MAT.SKIN, part: 10, k: 0.02 });
+  }
+  return P;
+})();
+
+const TREE_PRIMS = (() => {
+  const P = [];
+  const add = (o) => P.push(o);
+  // trunk leaning a little toward the figure, forking into three limbs
+  add({ t: 'rc', a: [0, -0.3, 0], b: [0.12, 1.0, 0.0], r: 0.16, r2: 0.105, mat: MAT.TRUNK, part: 11, k: 0.05 });
+  add({ t: 'rc', a: [0.12, 1.0, 0.0], b: [-0.42, 1.85, 0.05], r: 0.085, r2: 0.05, mat: MAT.TRUNK, part: 11, k: 0.06 });
+  add({ t: 'rc', a: [0.12, 1.0, 0.0], b: [0.78, 1.78, -0.05], r: 0.08, r2: 0.045, mat: MAT.TRUNK, part: 11, k: 0.06 });
+  add({ t: 'rc', a: [0.12, 1.0, 0.0], b: [0.2, 2.15, 0.0], r: 0.08, r2: 0.05, mat: MAT.TRUNK, part: 11, k: 0.06 });
+  const canopy = [
+    // left clump
+    [-0.6, 2.2, 0.1, 0.6], [-1.05, 2.0, 0.0, 0.4], [-0.35, 2.52, 0.0, 0.48],
+    // top clump
+    [0.2, 2.76, 0.0, 0.6], [-0.15, 2.95, 0.1, 0.44], [0.56, 2.9, -0.05, 0.44],
+    // right clump, reaching toward the figure
+    [0.98, 2.1, -0.05, 0.54], [1.4, 1.96, 0.0, 0.37], [0.72, 2.36, 0.0, 0.44],
+    // back fill
+    [0.2, 2.3, 0.45, 0.58],
+  ];
+  for (const [x, y, z, r] of canopy) add({ t: 'sph', c: [x, y, z], r, mat: MAT.LEAF, part: 12, k: 0.2 });
+  return P;
+})();
+
+// Clouds: world-space ellipsoids far out under the dome.
+function cloudAt(az, el, dist) {
+  const a = az * Math.PI / 180, e = el * Math.PI / 180;
+  return [dist * Math.sin(a) * Math.cos(e), CAMH + dist * Math.sin(e), dist * Math.cos(a) * Math.cos(e)];
+}
+const CLOUDS = (() => {
+  const C = [];
+  const blob = (az, el, dist, parts) => {
+    const c0 = cloudAt(az, el, dist);
+    for (const [dx, dy, dz, rx, ry, rz] of parts) C.push({ c: [c0[0] + dx, c0[1] + dy, c0[2] + dz], rad: [rx, ry, rz] });
+  };
+  // A: a soft cumulus upper left, behind the canopy's right edge
+  blob(-12, 23, 150, [[0, 0, 0, 12, 6, 8], [-11, -1.5, 2, 8, 4.5, 6], [10, -2, -1, 9, 4.2, 6], [-3, 4.5, 1, 7.5, 5, 6], [5, 3.5, 0, 6, 4.5, 5], [19, -3.2, 0, 6, 2.6, 4.5]]);
+  // B: a long thin band to the right, above the glow, lit from below
+  blob(26, 15.5, 175, [[0, 0, 0, 26, 2.4, 10], [27, -1.0, 4, 18, 2.0, 8], [-24, 1.0, -3, 14, 1.8, 7], [47, -1.8, 8, 13, 1.6, 6]]);
+  // C: a small cloud high on the right
+  blob(22, 29, 160, [[0, 0, 0, 7, 3.6, 5], [6, -0.8, 1, 5, 2.8, 4], [-5.5, -1.0, 0, 4.5, 2.6, 4]]);
+  return C;
+})();
+
+// ---------------------------------------------------------------- GLSL codegen
+function sdfCode(prims, name) {
+  let s = `float ${name}(vec3 p, out int mat, out int part) {\n  float d = 1e9, di; mat = 0; part = 0;\n`;
+  for (const q of prims) {
+    let e;
+    if (q.t === 'sph') e = `length(p - ${g3(q.c)}) - ${fx(q.r)}`;
+    else if (q.t === 'ell') e = `sdEll(p - ${g3(q.c)}, ${g3(q.rad)})`;
+    else if (q.t === 'cap') e = `sdCap(p, ${g3(q.a)}, ${g3(q.b)}, ${fx(q.r)})`;
+    else if (q.t === 'rc') e = `sdRC(p, ${g3(q.a)}, ${g3(q.b)}, ${fx(q.r)}, ${fx(q.r2)})`;
+    s += `  di = ${e};\n  if (di < d) { mat = ${q.mat}; part = ${q.part}; }\n  d = smin(d, di, ${fx(q.k || 0.001)});\n`;
+  }
+  return s + '  return d;\n}\n';
+}
+function sdfCodeD(prims, name) {   // distance only (shadows, AO)
+  let s = `float ${name}(vec3 p) {\n  float d = 1e9;\n`;
+  for (const q of prims) {
+    let e;
+    if (q.t === 'sph') e = `length(p - ${g3(q.c)}) - ${fx(q.r)}`;
+    else if (q.t === 'ell') e = `sdEll(p - ${g3(q.c)}, ${g3(q.rad)})`;
+    else if (q.t === 'cap') e = `sdCap(p, ${g3(q.a)}, ${g3(q.b)}, ${fx(q.r)})`;
+    else if (q.t === 'rc') e = `sdRC(p, ${g3(q.a)}, ${g3(q.b)}, ${fx(q.r)}, ${fx(q.r2)})`;
+    s += `  d = smin(d, ${e}, ${fx(q.k || 0.001)});\n`;
+  }
+  return s + '  return d;\n}\n';
+}
+function boundOf(prims) {
+  let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+  const grow = (c, r) => { for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], c[i] - r); hi[i] = Math.max(hi[i], c[i] + r); } };
+  for (const q of prims) {
+    if (q.t === 'sph') grow(q.c, q.r);
+    else if (q.t === 'ell') grow(q.c, Math.max(...q.rad));
+    else { grow(q.a, Math.max(q.r, q.r2 || 0)); grow(q.b, Math.max(q.r, q.r2 || 0)); }
+  }
+  const c = v3.mul(v3.add(lo, hi), 0.5);
+  return { c, r: v3.len(v3.sub(hi, lo)) * 0.5 + 0.05 };
+}
+const HB = boundOf(HUMAN_PRIMS), TB = boundOf(TREE_PRIMS);
+
+function hillCode() {
+  return HILL.map(([a, cx, cz, sx, sz]) =>
+    `  { vec2 d = (q - vec2(${fx(cx)},${fx(cz)})) * vec2(${fx(1 / sx)},${fx(1 / sz)}); h += ${fx(a)} * exp(-dot(d, d)); }`).join('\n');
+}
+
+// ================================================================ WEBGL
+const glc = document.createElement('canvas');
+glc.width = W; glc.height = H;
+const gl = glc.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true, premultipliedAlpha: false });
+if (!gl) throw new Error('no webgl2');
+const EXT_CBF = gl.getExtension('EXT_color_buffer_float');
+gl.getExtension('OES_texture_float_linear');
+
+const VS = `#version 300 es
+in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+function compile(fsSrc, label) {
+  const mk = (type, src) => {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      const lines = src.split('\n').map((l, i) => (i + 1) + ': ' + l).join('\n');
+      log('SHADER ERROR ' + label + ': ' + gl.getShaderInfoLog(s));
+      console.log(lines);
+      throw new Error('shader ' + label);
+    }
+    return s;
+  };
+  const p = gl.createProgram();
+  gl.attachShader(p, mk(gl.VERTEX_SHADER, VS)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fsSrc));
+  gl.bindAttribLocation(p, 0, 'aP'); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { log('LINK ERROR ' + label + ': ' + gl.getProgramInfoLog(p)); throw new Error('link'); }
+  return p;
+}
+function tex(w, h, fmt, data) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  const F32 = fmt === 'f32', F16 = fmt === 'f16';
+  const ifmt = F32 ? gl.RGBA32F : F16 ? gl.RGBA16F : gl.RGBA8;
+  const type = F32 ? gl.FLOAT : F16 ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
+  gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, gl.RGBA, type, data || null);
+  const filt = F32 ? gl.NEAREST : gl.LINEAR;
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filt); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filt);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+function fbo(texs) {
+  const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  texs.forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0));
+  gl.drawBuffers(texs.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
+  const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  if (st !== gl.FRAMEBUFFER_COMPLETE) log('FBO incomplete ' + st);
+  return f;
+}
+function run(prog, target, w, h, uniforms, textures) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  let unit = 0;
+  for (const [name, t] of Object.entries(textures || {})) {
+    gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.uniform1i(gl.getUniformLocation(prog, name), unit); unit++;
+  }
+  for (const [name, v] of Object.entries(uniforms || {})) {
+    const loc = gl.getUniformLocation(prog, name);
+    if (loc === null) continue;
+    if (typeof v === 'number') gl.uniform1f(loc, v);
+    else if (v.length === 2) gl.uniform2fv(loc, v);
+    else if (v.length === 3) gl.uniform3fv(loc, v);
+    else if (v.length === 4) gl.uniform4fv(loc, v);
+  }
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+// ---------------------------------------------------------------- geometry pass
+// Writes a G-buffer: G0 = (material + part/64, ray t, sun visibility, AO)
+//                    G1 = (normal, facet id)      G2 = (world position, extra)
+function geoShader(opt) {
+  return `#version 300 es
+precision highp float; precision highp int;
+uniform vec2 uRes; uniform vec2 uJit;
+layout(location=0) out vec4 G0; layout(location=1) out vec4 G1; layout(location=2) out vec4 G2;
+#define LOWPOLY ${opt.lowpoly ? 1 : 0}
+#define CLAWD3D ${opt.clawd3d ? 1 : 0}
+#define LEAFNOISE ${opt.leafNoise ? 1 : 0}
+const float F = ${fx(F)}, CY = ${fx(CY)};
+const vec3 CAM = ${g3(CAM)};
+const vec3 SUN = ${g3(SUN)};
+
+float smin(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
+float sdEll(vec3 q, vec3 r) { float k0 = length(q / r), k1 = length(q / (r * r)); return k0 * (k0 - 1.0) / k1; }
+float sdCap(vec3 p, vec3 a, vec3 b, float r) { vec3 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h) - r; }
+float dot2(vec3 v) { return dot(v, v); }
+float sdRC(vec3 p, vec3 a, vec3 b, float r1, float r2) {
+  vec3 ba = b - a; float l2 = dot(ba, ba); float rr = r1 - r2; float a2 = l2 - rr * rr; float il2 = 1.0 / l2;
+  vec3 pa = p - a; float y = dot(pa, ba); float z = y - l2;
+  float x2 = dot2(pa * l2 - ba * y); float y2 = y * y * l2; float z2 = z * z * l2;
+  float k = sign(rr) * rr * rr * x2;
+  if (sign(z) * a2 * z2 > k) return sqrt(x2 + z2) * il2 - r2;
+  if (sign(y) * a2 * y2 < k) return sqrt(x2 + y2) * il2 - r1;
+  return (sqrt(x2 * a2 * il2) + y * rr) * il2 - r1;
+}
+float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0); }
+float hash13(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
+float vnoise(vec3 p) {
+  vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(hash13(i), hash13(i + vec3(1,0,0)), f.x), mix(hash13(i + vec3(0,1,0)), hash13(i + vec3(1,1,0)), f.x), f.y),
+             mix(mix(hash13(i + vec3(0,0,1)), hash13(i + vec3(1,0,1)), f.x), mix(hash13(i + vec3(0,1,1)), hash13(i + vec3(1,1,1)), f.x), f.y), f.z);
+}
+
+// ---- terrain
+float hillS(vec2 q) { float h = 0.0;
+${hillCode()}
+  return h; }
+#if LOWPOLY
+const float CS = 0.66;
+vec2 latPos(ivec2 v) { return vec2(float(v.x) * CS + float(v.y) * CS * 0.5, float(v.y) * CS * 0.8660254); }
+float latH(ivec2 v) {
+  vec2 q = latPos(v);
+  vec2 j = (hash22(vec2(v) + 17.0) - 0.5) * CS * 0.45;
+  float h = hillS(q + j);
+  return h + (hash12(vec2(v) * 1.7 + 3.1) - 0.5) * 0.06 * smoothstep(0.02, 0.4, h);
+}
+float hillT(vec2 q, out vec3 n) {
+  float b = q.y / (CS * 0.8660254);
+  float a = q.x / CS - b * 0.5;
+  ivec2 c = ivec2(floor(a), floor(b));
+  float fa = a - floor(a), fb = b - floor(b);
+  ivec2 v0, v1, v2; vec3 w;
+  if (fa + fb < 1.0) { v0 = c; v1 = c + ivec2(1, 0); v2 = c + ivec2(0, 1); w = vec3(1.0 - fa - fb, fa, fb); }
+  else { v0 = c + ivec2(1, 1); v1 = c + ivec2(0, 1); v2 = c + ivec2(1, 0); w = vec3(fa + fb - 1.0, 1.0 - fa, 1.0 - fb); }
+  float h0 = latH(v0), h1 = latH(v1), h2 = latH(v2);
+  vec2 q0 = latPos(v0), q1 = latPos(v1), q2 = latPos(v2);
+  vec3 P0 = vec3(q0.x, h0, q0.y), P1 = vec3(q1.x, h1, q1.y), P2 = vec3(q2.x, h2, q2.y);
+  n = normalize(cross(P1 - P0, P2 - P0)); if (n.y < 0.0) n = -n;
+  return dot(w, vec3(h0, h1, h2));
+}
+float hillD(vec2 q) { vec3 n; return hillT(q, n); }
+#else
+float hillD(vec2 q) { return hillS(q); }
+#endif
+
+// ---- objects
+${sdfCode(HUMAN_PRIMS, 'sdHumanL')}
+${sdfCodeD(HUMAN_PRIMS, 'sdHumanLD')}
+${sdfCode(TREE_PRIMS, 'sdTreeL')}
+${sdfCodeD(TREE_PRIMS, 'sdTreeLD')}
+const vec3 HPOS = ${g3([HUMAN.x, HUMAN.y, HUMAN.z])};
+const vec3 HF = ${g3([Math.sin(HUMAN.yaw), 0, Math.cos(HUMAN.yaw)])};
+const vec3 HR = ${g3([Math.cos(HUMAN.yaw), 0, -Math.sin(HUMAN.yaw)])};
+vec3 toHuman(vec3 p) { vec3 d = p - HPOS; return vec3(dot(d, HF), d.y, dot(d, HR)); }
+const vec3 HBC = ${g3(HB.c)}; const float HBR = ${fx(HB.r)};
+const vec3 TPOS = ${g3([TREE.x, TREE.y, TREE.z])};
+const vec3 TBC = ${g3(TB.c)}; const float TBR = ${fx(TB.r)};
+// Clawd: the 18x5 glyph extruded. Local frame: x right, y up, z depth; origin at ground centre.
+const vec3 CPOS = ${g3([CLAWD.x, CLAWD.y, CLAWD.z])};
+const float CU = ${fx(CLAWD.u)}, CDEP = ${fx(CLAWD.depth)};
+const vec2 CYAW = vec2(${fx(Math.cos(CLAWD.yaw))}, ${fx(Math.sin(CLAWD.yaw))});
+vec3 toClawd(vec3 p) { vec3 d = p - CPOS; return vec3(CYAW.x * d.x - CYAW.y * d.z, d.y, CYAW.y * d.x + CYAW.x * d.z); }
+vec3 fromClawdN(vec3 n) { return vec3(CYAW.x * n.x + CYAW.y * n.z, n.y, -CYAW.y * n.x + CYAW.x * n.z); }
+float boxXY(vec3 p, float x0, float x1, float y0, float y1) {
+  return sdBox(p - vec3((x0 + x1) * 0.5 * CU, (y0 + y1) * 0.5 * CU, 0.0), vec3((x1 - x0) * 0.5 * CU, (y1 - y0) * 0.5 * CU, CDEP * 0.5));
+}
+float sdClawdL(vec3 p) {
+  float d = boxXY(p, -6.0, 6.0, 2.0, 10.0);           // rows 0-3 body
+  d = min(d, boxXY(p, -8.0, 8.0, 4.0, 6.0));          // row 2 arms
+  d = min(d, boxXY(p, -5.0, -4.0, 0.0, 2.0));         // legs
+  d = min(d, boxXY(p, -3.0, -2.0, 0.0, 2.0));
+  d = min(d, boxXY(p, 2.0, 3.0, 0.0, 2.0));
+  d = min(d, boxXY(p, 4.0, 5.0, 0.0, 2.0));
+  float e = min(sdBox(p - vec3(-3.5 * CU, 7.0 * CU, 0.0), vec3(0.5 * CU, CU, CDEP)),
+                sdBox(p - vec3(3.5 * CU, 7.0 * CU, 0.0), vec3(0.5 * CU, CU, CDEP)));
+  return max(d, -e);                                   // eyes punched through
+}
+
+float leaf(vec3 q) {
+#if LEAFNOISE
+  return (vnoise(q * 3.4) - 0.5) * 0.12 + (vnoise(q * 8.1) - 0.5) * 0.05;
+#else
+  return 0.0;
+#endif
+}
+
+// full scene distance (terrain + objects) with ids
+float mapIds(vec3 p, out int mat, out int part) {
+  float d = (p.y - hillD(p.xz)) * 0.72; mat = ${MAT.HILL}; part = 20;
+  float bh = length(p - HPOS - (HBC.x * HF + vec3(0.0, HBC.y, 0.0) + HBC.z * HR)) - HBR;
+  if (bh < d) { int m, pt; float dh = sdHumanL(toHuman(p), m, pt); if (dh < d) { d = dh; mat = m; part = pt; } }
+  float bt = length(p - TPOS - TBC) - TBR;
+  if (bt < d) { int m, pt; vec3 q = p - TPOS; float dt = sdTreeL(q, m, pt); if (m == ${MAT.LEAF}) dt += leaf(q); if (dt < d) { d = dt * 0.8; mat = m; part = pt; } }
+#if CLAWD3D
+  float bc = length(p - CPOS - vec3(0.0, 5.0 * CU, 0.0)) - 10.0 * CU;
+  if (bc < d) { float dc = sdClawdL(toClawd(p)); if (dc < d) { d = dc; mat = ${MAT.CLAWD}; part = 30; } }
+#endif
+  return d;
+}
+float mapD(vec3 p) {
+  float d = (p.y - hillD(p.xz)) * 0.72;
+  float bh = length(p - HPOS - (HBC.x * HF + vec3(0.0, HBC.y, 0.0) + HBC.z * HR)) - HBR;
+  d = min(d, bh < d ? sdHumanLD(toHuman(p)) : bh + 0.01);
+  float bt = length(p - TPOS - TBC) - TBR;
+  if (bt < d) { vec3 q = p - TPOS; d = min(d, sdTreeLD(q) * 0.85); } else d = min(d, bt + 0.01);
+#if CLAWD3D
+  float bc = length(p - CPOS - vec3(0.0, 5.0 * CU, 0.0)) - 10.0 * CU;
+  d = min(d, bc < d ? sdClawdL(toClawd(p)) : bc + 0.01);
+#endif
+  return d;
+}
+vec3 calcNormal(vec3 p) {
+  const vec2 e = vec2(0.0015, -0.0015);
+  return normalize(e.xyy * mapD(p + e.xyy) + e.yyx * mapD(p + e.yyx) + e.yxy * mapD(p + e.yxy) + e.xxx * mapD(p + e.xxx));
+}
+float softShadow(vec3 ro, vec3 rd) {
+  float res = 1.0, t = 0.02;
+  for (int i = 0; i < 110; i++) {
+    vec3 p = ro + rd * t;
+    if (p.y > 4.2 || t > 40.0) break;
+    float h = mapD(p);
+    res = min(res, 10.0 * h / t);
+    t += clamp(h, 0.012, 0.35);
+    if (res < 0.002) break;
+  }
+  return clamp(res, 0.0, 1.0);
+}
+float calcAO(vec3 p, vec3 n) {
+  float occ = 0.0, sca = 1.0;
+  for (int i = 0; i < 5; i++) { float h = 0.015 + 0.1 * float(i) / 4.0; float d = mapD(p + h * n); occ += (h - d) * sca; sca *= 0.9; }
+  float big = 0.0; sca = 1.0;
+  for (int i = 0; i < 4; i++) { float h = 0.25 + 0.55 * float(i); float d = mapD(p + h * n); big += (h - d) * sca / h; sca *= 0.8; }
+  return clamp(1.0 - 2.2 * occ, 0.0, 1.0) * clamp(1.0 - 0.28 * big, 0.0, 1.0);
+}
+
+// ---- clouds (analytic ellipsoids)
+float iEll(vec3 ro, vec3 rd, vec3 c, vec3 r, out vec3 n) {
+  vec3 oc = (ro - c) / r, rr = rd / r;
+  float a = dot(rr, rr), b = dot(oc, rr), cc = dot(oc, oc) - 1.0;
+  float h = b * b - a * cc; if (h < 0.0) return -1.0;
+  float t = (-b - sqrt(h)) / a;
+  n = normalize((oc + rr * t) / r);
+  return t;
+}
+${(() => {
+  let s = 'float clouds(vec3 ro, vec3 rd, out vec3 nOut, out float idOut) {\n  float tb = 1e9; vec3 n; float t; nOut = vec3(0.0); idOut = 0.0;\n';
+  CLOUDS.forEach((c, i) => { s += `  t = iEll(ro, rd, ${g3(c.c)}, ${g3(c.rad)}, n); if (t > 0.0 && t < tb) { tb = t; nOut = n; idOut = ${fx(i + 1)}; }\n`; });
+  return s + '  return tb;\n}';
+})()}
+
+void main() {
+  vec2 fc = gl_FragCoord.xy + uJit;
+  vec2 px = vec2(fc.x, uRes.y - fc.y) * (${W}.0 / uRes.x);
+  vec3 rd = normalize(vec3((px.x - 960.0) / F, (CY - px.y) / F, 1.0));
+  vec3 ro = CAM;
+  // march terrain + objects inside the hill's region
+  float t = 0.05; int mat = ${MAT.SKY}, part = 0; bool hit = false;
+  for (int i = 0; i < 260; i++) {
+    vec3 p = ro + rd * t;
+    if (p.y > 4.5 && rd.y > 0.0) break;
+    if (t > 45.0) break;
+    int m, pt; float d = mapIds(p, m, pt);
+    if (d < 0.0006 * t) { hit = true; mat = m; part = pt; break; }
+    t += d;
+  }
+  vec3 pos, nor; float facet = 0.0;
+  if (!hit && rd.y < 0.0) { t = -ro.y / rd.y; hit = true; mat = ${MAT.FLOOR}; part = 21; }
+  if (hit) {
+    pos = ro + rd * t;
+    if (mat == ${MAT.FLOOR}) nor = vec3(0.0, 1.0, 0.0);
+    else if (mat == ${MAT.HILL}) {
+#if LOWPOLY
+      hillT(pos.xz, nor);
+#else
+      nor = calcNormal(pos);
+#endif
+    } else nor = calcNormal(pos);
+    float sh = (mat == ${MAT.FLOOR} && t > 44.0) ? 1.0 : softShadow(pos + nor * 0.01, SUN);
+    float ao = (mat == ${MAT.FLOOR} && t > 44.0) ? 1.0 : calcAO(pos, nor);
+    G0 = vec4(float(mat) + float(part) / 64.0, t, sh, ao);
+    G1 = vec4(nor, facet);
+    G2 = vec4(pos, 0.0);
+  } else {
+    vec3 cn; float cid;
+    float tc = clouds(ro, rd, cn, cid);
+    if (tc < 1e8) { G0 = vec4(float(${MAT.CLOUD}) + cid / 64.0, tc, 1.0, 1.0); G1 = vec4(cn, cid); G2 = vec4(ro + rd * tc, 0.0); }
+    else { G0 = vec4(0.0, 1e4, 1.0, 1.0); G1 = vec4(rd, 0.0); G2 = vec4(rd * 1e4, 0.0); }
+  }
+}`;
+}
+
+// ---------------------------------------------------------------- debug shade
+const DEBUG_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uG0, uG1, uG2; uniform vec2 uRes;
+out vec4 o;
+const vec3 SUN = ${g3(SUN)};
+void main() {
+  ivec2 ij = ivec2(gl_FragCoord.xy);
+  vec4 g0 = texelFetch(uG0, ij, 0), g1 = texelFetch(uG1, ij, 0);
+  int mat = int(floor(g0.x));
+  vec3 c;
+  vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  if (mat == 0) { float e = (730.0 - px.y) / 1080.0; c = mix(vec3(0.95, 0.8, 0.65), vec3(0.35, 0.4, 0.6), clamp(e * 2.0, 0.0, 1.0)); }
+  else {
+    vec3 alb = vec3(0.5);
+    if (mat == 1) alb = vec3(0.35); if (mat == 2) alb = vec3(0.35, 0.5, 0.3); if (mat == 3) alb = vec3(0.35, 0.25, 0.2);
+    if (mat == 4) alb = vec3(0.25, 0.45, 0.25); if (mat == 5) alb = vec3(0.9, 0.7, 0.6); if (mat == 6) alb = vec3(0.15, 0.1, 0.1);
+    if (mat == 7) alb = vec3(0.85, 0.82, 0.75); if (mat == 8) alb = vec3(0.2, 0.22, 0.35); if (mat == 9) alb = vec3(0.1);
+    if (mat == 10) alb = vec3(0.85, 0.47, 0.34); if (mat == 11) alb = vec3(0.9, 0.85, 0.9);
+    float dif = max(dot(g1.xyz, SUN), 0.0) * g0.z;
+    float sky = 0.5 + 0.5 * g1.y;
+    c = alb * (vec3(1.0, 0.75, 0.5) * dif * 1.6 + vec3(0.35, 0.38, 0.5) * sky * g0.w);
+  }
+  o = vec4(pow(c, vec3(1.0 / 2.2)), 1.0);
+}`;
+
+// ================================================================ RENDER
+const out = document.getElementById('out');
+const octx = out.getContext('2d');
+function finish() {
+  log('total ' + (performance.now() - T0).toFixed(0) + ' ms');
+  if (Q.get('dump') === '1') document.getElementById('png').textContent = out.toDataURL('image/png');
+}
+function geometryPass(w, h, opt) {
+  const G = [tex(w, h, 'f32'), tex(w, h, 'f32'), tex(w, h, 'f32')];
+  const fb = fbo(G);
+  const t0 = performance.now();
+  const prog = compile(geoShader(opt), 'geo');
+  run(prog, fb, w, h, { uRes: [w, h], uJit: [0.5 - 0.5, 0.0] });
+  gl.finish();
+  log('geometry ' + w + 'x' + h + ' ' + (performance.now() - t0).toFixed(0) + ' ms');
+  return { G, fb, w, h };
+}
+
+if (DBG === 'geo' || true) {
+  const lp = RUNG === 3;
+  const gb = geometryPass(W, H, { lowpoly: lp, clawd3d: RUNG === 3 || RUNG === 4, leafNoise: RUNG === 4 });
+  const prog = compile(DEBUG_FS, 'dbg');
+  run(prog, null, W, H, { uRes: [W, H] }, { uG0: gb.G[0], uG1: gb.G[1], uG2: gb.G[2] });
+  gl.finish();
+  octx.drawImage(glc, 0, 0);
+  // composition overlay: projected anchors
+  const mark = (p, col) => { const s = project(p); octx.strokeStyle = col; octx.lineWidth = 2; octx.beginPath(); octx.arc(s[0], s[1], 6, 0, 7); octx.stroke(); };
+  mark([CLAWD.x, CLAWD.y, CLAWD.z], '#f0f'); mark([HUMAN.x, HUMAN.y, HUMAN.z], '#0ff'); mark([TREE.x, TREE.y, TREE.z], '#ff0');
+  octx.fillStyle = '#fff'; octx.beginPath(); octx.arc(SUN_PX[0], SUN_PX[1], 5, 0, 7); octx.fill();
+  octx.strokeStyle = 'rgba(255,255,255,0.4)'; octx.beginPath(); octx.moveTo(0, CY); octx.lineTo(W, CY); octx.stroke();
+  for (const x of [640, 1280]) { octx.beginPath(); octx.moveTo(x, 0); octx.lineTo(x, H); octx.stroke(); }
+  for (const y of [360, 720]) { octx.beginPath(); octx.moveTo(0, y); octx.lineTo(W, y); octx.stroke(); }
+  const cs = project([CLAWD.x, CLAWD.y, CLAWD.z]);
+  octx.strokeStyle = '#f0f'; octx.strokeRect(cs[0] - 72, cs[1] - 80, 144, 80);
+  log('clawd screen ' + cs.map(v => v.toFixed(0)) + ' human ' + project([HUMAN.x, HUMAN.y, HUMAN.z]).map(v => v.toFixed(0)) + ' tree ' + project([TREE.x, TREE.y, TREE.z]).map(v => v.toFixed(0)));
+  log('hill y: clawd ' + CLAWD.y.toFixed(2) + ' human ' + HUMAN.y.toFixed(2) + ' tree ' + TREE.y.toFixed(2) + ' yaw ' + (HUMAN.yaw * 180 / Math.PI).toFixed(0));
+  finish();
+}
+</script>
+</body></html>

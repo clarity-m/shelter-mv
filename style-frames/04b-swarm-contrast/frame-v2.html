@@ -1,0 +1,622 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Shelter MV style frame 04b v2: the swarm as a cage</title>
+<style>
+html,body{margin:0;padding:0;background:#000;overflow:hidden;width:1920px;height:1080px}
+canvas{display:block;position:absolute;left:0;top:0}
+#dbg{display:none}
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<pre id="dbg"></pre>
+<script>
+'use strict';
+// =====================================================================
+// Shelter MV, style frame 04b v2: "the swarm" as a cage of light.
+// The end of the last pull-back. Alpha Centauri B sits inside a 3D cage
+// of crossing orbital bands: tiny crisp collectors, one point per instance.
+// Near arcs pass in front of the star (brighter, larger, silhouetted
+// against the disk); far arcs pass behind it (dim, deep red). The swarm
+// keeps 11 lanes open; the light that escapes through them lights the
+// dust around the cage in broad soft shafts, and those shafts are the
+// spark. The humans' sim, the world the camera has just left, is held
+// inside the cage as a small bubble of painted sky beside the star.
+// Alpha Centauri A hangs upper left.
+// Deterministic: collectors are hash-generated on the GPU from their
+// vertex ID; everything else uses a seeded PRNG.
+// Pipeline (WebGL2, HDR half-float):
+//   space + lit dust -> stars -> far collectors -> star -> sim bubble ->
+//   near collectors (occluding) -> Alpha Cen A -> bloom -> tonemap, grain -> HUD
+// =====================================================================
+const DBG = [];
+function log(s){ DBG.push(String(s)); const el = document.getElementById('dbg'); if (el) el.textContent = DBG.join('\n'); }
+window.addEventListener('error', e => log('JSERR ' + e.message + ' @' + e.lineno + ':' + e.colno));
+const T0 = performance.now();
+const QS = new URLSearchParams(location.search);
+const VIEW = QS.get('view') || 'final';
+
+const W = 1920, H = 1080;
+const P = {
+  C: [1060, 470], RS: 205,            // Alpha Cen B (px) and the swarm unit (px); the cage has radius ~1
+  A: [352, 206],                      // Alpha Cen A (px)
+  rStar: 0.17,                        // photosphere radius (swarm units)
+  pearl: [-0.42, 0.36, 0.40, 0.21],   // the sim world: centre (x, y, z toward camera) and radius (swarm units)
+  gain: 1.0,                          // collector brightness
+  occ: 0.92,                          // how much a near collector hides what is behind it
+  nVeil: 40000,                       // sparse collectors between the bands: the shell itself
+  beam: 1.0, dust: 1.0,
+  exposure: 1.0, bloom: 0.45,
+};
+for (const k of ['gain', 'occ', 'nVeil', 'beam', 'dust', 'exposure', 'bloom']) if (QS.has(k)) P[k] = +QS.get(k);
+const CX = P.C[0], CY = P.C[1], RS = P.RS;
+
+// ---------------------------------------------------------------- random
+function mulberry32(a){ return function(){ a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function smoothstep(a, b, x){ const t = Math.min(Math.max((x-a)/(b-a), 0), 1); return t*t*(3-2*t); }
+function makeNoise1D(r, n){ // periodic value noise with n cells
+  const v = new Float32Array(n); for (let i = 0; i < n; i++) v[i] = r();
+  return function(x){ const i0 = Math.floor(x), f = x - i0; const a = v[((i0 % n) + n) % n], b = v[(((i0+1) % n) + n) % n]; const t = f*f*(3-2*f); return a + (b-a)*t; };
+}
+
+// ---------------------------------------------------------------- lanes: 11 openings the swarm keeps clear
+// Each lane is a cone from the star; most run close to the sky plane, so their light shows as shafts.
+const LANES = [];
+{
+  const r = mulberry32(9127);
+  const N = 11, rot = -Math.PI/2 + 0.12;
+  for (let k = 0; k < N; k++){
+    const ph = rot + k*2*Math.PI/N + (r() - 0.5)*0.34;
+    const de = (r() - 0.5)*0.55;                    // elevation out of the sky plane
+    const al = 0.050 + 0.055*Math.pow(r(), 1.3);    // cone half-angle (rad)
+    LANES.push({ d: [Math.cos(ph)*Math.cos(de), Math.sin(ph)*Math.cos(de), Math.sin(de)], al, I: 0.30 + 1.0*Math.pow(r(), 1.5) });
+  }
+}
+// hand-balanced strengths: an uneven burst, long shafts spread around rather than paired
+[0.85, 0.55, 1.05, 0.45, 1.25, 0.35, 0.75, 0.50, 0.60, 1.15, 0.40].forEach((I, k) => { LANES[k].I = I; });
+const laneArr = new Float32Array(48), laneParr = new Float32Array(48);
+LANES.forEach((l, k) => { laneArr.set([l.d[0], l.d[1], l.d[2], 0], k*4); laneParr.set([l.al, l.I, 0, 0], k*4); });
+
+// ---------------------------------------------------------------- the cage: orbital bands at different tilts
+// pa: position angle of the band's major axis in the image (deg); b: minor/major axis ratio (0 edge-on,
+// 1 face-on); s: which half faces us (+1: the half toward (-sin pa, cos pa)); r: orbit radius; dr: half-width.
+// Two bands are nearly edge-on, so their near arcs cross the star's disk.
+const BANDS = [
+  { pa: -16, b: 0.07, s:  1, r: 1.00, dr: 0.016, n: 100000, t: 0.45 },
+  { pa:  38, b: 0.12, s: -1, r: 1.05, dr: 0.009, n: 70000 },
+  { pa:  71, b: 0.30, s:  1, r: 0.95, dr: 0.010, n: 60000 },
+  { pa:  -3, b: 0.48, s:  1, r: 1.09, dr: 0.014, n: 85000 },
+  { pa:  47, b: 0.62, s:  1, r: 0.93, dr: 0.010, n: 65000 },
+  { pa: -56, b: 0.55, s: -1, r: 1.02, dr: 0.012, n: 70000 },
+  { pa:  18, b: 0.35, s: -1, r: 1.14, dr: 0.015, n: 85000 },
+  { pa: 104, b: 0.05, s: -1, r: 0.98, dr: 0.014, n: 70000, t: 0.45 },
+];
+for (const b of BANDS) if (QS.has('nscale')) b.n = Math.round(b.n*(+QS.get('nscale')));
+const NQ = 1024, NBIN = 2048, NBD = BANDS.length;
+const invU = new Float32Array(NQ*NBD), invL = new Float32Array(NQ*NBD), widL = new Float32Array(NQ*NBD);
+function invCdf(pdf){
+  const n = pdf.length, c = new Float64Array(n+1);
+  for (let i = 0; i < n; i++) c[i+1] = c[i] + Math.max(pdf[i], 0);
+  const tot = c[n]; for (let i = 0; i <= n; i++) c[i] /= tot;
+  const out = new Float32Array(NQ); let j = 0;
+  for (let i = 0; i < NQ; i++){
+    const q = i/(NQ-1);
+    while (j < n-1 && c[j+1] < q) j++;
+    const f = (q - c[j])/Math.max(c[j+1] - c[j], 1e-12);
+    out[i] = (j + Math.min(Math.max(f, 0), 1))/n;
+  }
+  return out;
+}
+{
+  const r = mulberry32(31337);
+  BANDS.forEach((b, bi) => {
+    // across the band: a few crisp ringlets
+    const K = 2 + Math.floor(r()*3), rl = [];
+    for (let i = 0; i < K; i++) rl.push([r()*1.3 - 0.65, 0.05 + 0.13*r(), 0.4 + 0.6*r()]);
+    const pu = new Float64Array(NBIN);
+    for (let i = 0; i < NBIN; i++){
+      const u = (i + 0.5)/NBIN*2 - 1;
+      let v = 0.05*Math.exp(-u*u*2.0);
+      for (const [c, w, a] of rl){ const d = (u - c)/w; v += a*Math.exp(-d*d); }
+      pu[i] = v*Math.exp(-Math.pow(Math.abs(u)/0.95, 8));
+    }
+    invU.set(invCdf(pu), bi*NQ);
+    // along the band: knots joined by thinner threads
+    const n1 = makeNoise1D(r, 16), n2 = makeNoise1D(r, 96);
+    const KN = 6 + Math.floor(r()*6), kn = [];
+    for (let i = 0; i < KN; i++) kn.push([r(), 0.006 + 0.035*Math.pow(r(), 1.5), 0.5 + 2.5*Math.pow(r(), 2)]);
+    const knot = t => { let v = 0; for (const [c, w, a] of kn){ let d = t - c; d -= Math.round(d); d /= w; v += a*Math.exp(-d*d); } return v; };
+    const pl = new Float64Array(NBIN);
+    for (let i = 0; i < NBIN; i++){ const t = i/NBIN; pl[i] = 0.25 + 0.55*n1(t*16)*n2(t*96) + knot(t); }
+    invL.set(invCdf(pl), bi*NQ);
+    for (let i = 0; i < NQ; i++) widL[bi*NQ + i] = 0.70 + 0.30*Math.min(knot(i/NQ), 2.0);
+    const pa = b.pa*Math.PI/180, sb = Math.sqrt(1 - b.b*b.b);
+    b.a = [Math.cos(pa), Math.sin(pa), 0];
+    b.c = [-b.b*Math.sin(pa), b.b*Math.cos(pa), b.s*sb];
+    b.nrm = [b.a[1]*b.c[2] - b.a[2]*b.c[1], b.a[2]*b.c[0] - b.a[0]*b.c[2], b.a[0]*b.c[1] - b.a[1]*b.c[0]];
+    b.seed = Math.imul(0x9E3779B1, bi + 1) >>> 0;
+    b.w = 0.006 + 0.012*r();
+  });
+}
+const NPTS = BANDS.reduce((s, b) => s + b.n, 0) + P.nVeil;
+
+// ---------------------------------------------------------------- background stars
+const starList = [];
+{
+  const r = mulberry32(8080);
+  const cols = [[0.70, 0.80, 1.00], [0.86, 0.91, 1.00], [1.00, 0.97, 0.93], [1.00, 0.90, 0.78], [1.00, 0.82, 0.66]];
+  const col = t => { const f = Math.min(t, 0.9999)*(cols.length-1), i = Math.floor(f), g = f - i; return [0, 1, 2].map(c => cols[i][c]*(1-g) + cols[i+1][c]*g); };
+  const push = (x, y, b, c, s) => starList.push(x, y, c[0]*b, c[1]*b, c[2]*b, s);
+  const nearBright = (x, y) => Math.hypot(x - P.A[0], y - P.A[1]) < 60 || Math.hypot(x - CX, y - CY) < RS*1.2;
+  for (let i = 0; i < 6000; i++){
+    const x = r()*W, y = r()*H;
+    const b = 0.006 + 0.030*Math.pow(r(), 3) + 0.30*Math.pow(r(), 14);
+    push(x, y, b, col(r()), 1);
+  }
+  for (let i = 0; i < 36; i++){
+    const x = 20 + r()*(W-40), y = 20 + r()*(H-40);
+    if (nearBright(x, y)) continue;
+    const b = 0.20 + 0.9*Math.pow(r(), 2.2), c = col(r());
+    if (b > 0.7){ push(x, y, b, c, 1); push(x+1, y, b*0.25, c, 1); push(x-1, y, b*0.25, c, 1); push(x, y+1, b*0.25, c, 1); push(x, y-1, b*0.25, c, 1); }
+    else push(x, y, b*0.55, c, 2);
+  }
+}
+const NSTAR = starList.length/6;
+log('prep ms ' + Math.round(performance.now() - T0) + ', collectors ' + NPTS + ', stars ' + NSTAR);
+
+// ================================================================ WebGL
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
+if (!gl) log('NO WEBGL2');
+const extCBF = gl.getExtension('EXT_color_buffer_float');
+const dri = gl.getExtension('WEBGL_debug_renderer_info');
+log('renderer: ' + (dri ? gl.getParameter(dri.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) + ' | float targets: ' + !!extCBF);
+
+function compile(type, src, name){
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    const info = gl.getShaderInfoLog(s); log('COMPILE ERROR ' + name + ':\n' + info);
+    const lines = src.split('\n'); const re = /0:(\d+)/g; let m, seen = 0;
+    while ((m = re.exec(info)) && seen < 4){ const ln = +m[1]; seen++; for (let i = Math.max(1, ln-2); i <= Math.min(lines.length, ln+1); i++) log('  ' + i + ': ' + lines[i-1]); }
+  }
+  return s;
+}
+function program(vs, fs, name){
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs, name + '.vs'));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs, name + '.fs'));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) log('LINK ERROR ' + name + ': ' + gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS) || 0;
+  for (let i = 0; i < n; i++){ const inf = gl.getActiveUniform(p, i); u[inf.name.replace(/\[0\]$/, '')] = gl.getUniformLocation(p, inf.name); }
+  p.u = u; return p;
+}
+function setU(p, vals){
+  gl.useProgram(p);
+  for (const k in vals){
+    const loc = p.u[k]; if (loc === undefined || loc === null) continue;
+    const v = vals[k];
+    if (typeof v === 'number') gl.uniform1f(loc, v);
+    else if (v.i !== undefined) gl.uniform1i(loc, v.i);
+    else if (v.ui !== undefined) gl.uniform1ui(loc, v.ui);
+    else if (v.v4 !== undefined) gl.uniform4fv(loc, v.v4);
+    else if (v.length === 2) gl.uniform2f(loc, v[0], v[1]);
+    else if (v.length === 3) gl.uniform3f(loc, v[0], v[1], v[2]);
+    else if (v.length === 4) gl.uniform4f(loc, v[0], v[1], v[2], v[3]);
+  }
+}
+function bindTex(p, name, unit, t){ gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); if (p.u[name]) gl.uniform1i(p.u[name], unit); }
+function target(w, h){
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  if (extCBF) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (st !== gl.FRAMEBUFFER_COMPLETE) log('FB incomplete ' + st);
+  return { tex, fb, w, h };
+}
+function tableTex(w, h, data){   // exact float lookup tables, read with texelFetch
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, w, h, 0, gl.RED, gl.FLOAT, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+const vaoEmpty = gl.createVertexArray();
+function drawTo(tgt){ gl.bindFramebuffer(gl.FRAMEBUFFER, tgt ? tgt.fb : null); gl.viewport(0, 0, tgt ? tgt.w : W, tgt ? tgt.h : H); }
+function fullscreen(p, tgt){ drawTo(tgt); gl.useProgram(p); gl.bindVertexArray(vaoEmpty); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+
+// ---------------------------------------------------------------- GLSL
+const HDR = '#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n';
+const VS_FULL = HDR + 'void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }\n';
+const NOISE = `
+float h12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y)*p3.z); }
+vec2 h22(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz)*p3.zy); }
+float gn(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*f*(f*(f*6.0-15.0)+10.0);
+  float a = dot(h22(i)*2.0-1.0, f);
+  float b = dot(h22(i+vec2(1.0,0.0))*2.0-1.0, f-vec2(1.0,0.0));
+  float c = dot(h22(i+vec2(0.0,1.0))*2.0-1.0, f-vec2(0.0,1.0));
+  float d = dot(h22(i+vec2(1.0,1.0))*2.0-1.0, f-vec2(1.0,1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm(vec2 p, int oct){
+  float s = 0.0, a = 0.5;
+  mat2 R = mat2(0.8, -0.6, 0.6, 0.8);
+  for (int i = 0; i < 9; i++){ if (i >= oct) break; s += a*gn(p); p = R*p*2.03 + vec2(13.7, 7.3); a *= 0.5; }
+  return s;
+}
+`;
+const LANES_GLSL = 'uniform vec4 uLane[12]; uniform vec4 uLaneP[12]; uniform int uNL;\n';
+
+// ---- deep space, and the dust around the cage lit by the light escaping through the lanes
+const FS_BG = HDR + NOISE + LANES_GLSL + `
+uniform vec2 uC; uniform float uRs; uniform vec2 uA; uniform float uBeam; uniform float uDust;
+out vec4 o;
+float dustField(vec2 px, float r){
+  vec2 q = px/170.0;
+  vec2 w = vec2(fbm(q*0.7 + vec2(1.7, 9.2), 4), fbm(q*0.7 + vec2(8.3, 2.8), 4));
+  float f = fbm(q*1.2 + 1.2*w + vec2(3.1, 7.7), 6);
+  float rid = 1.0 - abs(fbm(q*2.1 + 0.8*w + vec2(6.4, 0.9), 5))*2.2;     // ridged filaments
+  float d = smoothstep(-0.15, 0.45, f)*(0.35 + 0.65*smoothstep(0.2, 0.9, rid));
+  return d*smoothstep(0.90, 1.20, r)*exp(-pow(r/3.2, 2.0));   // the swarm has swept its own interior clean
+}
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y);
+  vec2 s = (px - uC)/uRs; float r = length(s);
+  vec3 col = vec3(0.0008, 0.0010, 0.0024)*(0.6 + 0.4*(1.0 - px.y/1080.0));
+  float dust = dustField(px, r)*uDust;
+  vec3 bsum = vec3(0.0);
+  for (int k = 0; k < 12; k++){ if (k >= uNL) break;
+    vec3 d3 = uLane[k].xyz; float al = uLaneP[k].x, I = uLaneP[k].y;
+    float cd = max(length(d3.xy), 0.2); vec2 e = d3.xy/cd;
+    float along = dot(s, e); if (along <= 0.0) continue;
+    float perp = abs(s.x*e.y - s.y*e.x);
+    float psi = atan(perp, along);
+    float alS = atan(tan(al)/cd);
+    float wedge = 1.0 - smoothstep(alS*0.35, alS*1.30, psi);
+    float x = along - cd*0.97;
+    float start = smoothstep(-0.10, 0.12, x);
+    float L = 0.16 + 0.46*I*I;                                      // how far this lane's light carries
+    float fall = exp(-pow(max(x, 0.0)/L, 1.6))*(1.0 + 1.6*exp(-max(x, 0.0)/0.07));   // hot at the opening
+    float streak = 0.62 + 0.76*(0.5 + 0.5*gn(vec2(along*1.3 + float(k)*7.1, psi/alS*2.6)));
+    vec3 bc = mix(vec3(1.0, 0.72, 0.42), vec3(1.0, 0.44, 0.18), smoothstep(0.0, 0.8, x));
+    bsum += bc*I*wedge*start*fall*streak/(0.6 + 0.4*along);
+  }
+  col += bsum*(0.20 + 1.7*dust)*0.62*uBeam;
+  col += vec3(1.0, 0.40, 0.20)*dust*0.018/(0.5 + 0.5*r*r);     // unlit haze, barely there: the shafts light it
+  float dA = length(px - uA);
+  col += vec3(0.62, 0.72, 1.0)*0.006/(1.0 + pow(dA/150.0, 2.0));
+  o = vec4(col, 1.0);
+}
+`;
+
+// ---- background stars: crisp points
+const VS_STAR = HDR + `
+layout(location=0) in vec2 aPos; layout(location=1) in vec3 aCol; layout(location=2) in float aSize;
+out vec4 vCol;
+void main(){
+  vec2 p = aSize > 1.5 ? floor(aPos + 0.5) : floor(aPos) + 0.5;
+  gl_Position = vec4(p.x/1920.0*2.0 - 1.0, 1.0 - p.y/1080.0*2.0, 0.0, 1.0);
+  gl_PointSize = aSize;
+  vCol = vec4(aCol, 0.0);
+}
+`;
+const FS_POINT = HDR + 'in vec4 vCol; out vec4 o; void main(){ o = vCol; }\n';
+
+// ---- collectors: generated from gl_VertexID; near ones brighter, larger and occluding
+const VS_PTS = HDR + LANES_GLSL + `
+uniform vec2 uC; uniform float uRs;
+uniform vec3 uBa; uniform vec3 uBc; uniform vec3 uBn;
+uniform float uR; uniform float uDR; uniform float uBW; uniform float uBT;
+uniform int uRow; uniform uint uSeed; uniform int uSide; uniform int uMode;
+uniform float uGain; uniform float uRStar; uniform float uOcc; uniform vec4 uPearl;
+uniform sampler2D uInvU; uniform sampler2D uInvL; uniform sampler2D uWidL;
+out vec4 vCol;
+uint pcg(uint v){ uint st = v*747796405u + 2891336453u; uint w = ((st >> ((st >> 28u) + 4u)) ^ st)*277803737u; return (w >> 22u) ^ w; }
+float U01(inout uint s){ s = pcg(s); return float(s >> 8u)*(1.0/16777216.0); }
+float lut(sampler2D t, float q){
+  float x = q*1023.0; int i = min(int(x), 1022); float f = x - float(i);
+  return mix(texelFetch(t, ivec2(i, uRow), 0).r, texelFetch(t, ivec2(i + 1, uRow), 0).r, f);
+}
+void main(){
+  uint s = pcg(uint(gl_VertexID) ^ uSeed);
+  float q1 = U01(s), q2 = U01(s), q3 = U01(s), q4 = U01(s), q5 = U01(s), q6 = U01(s), q7 = U01(s), q8 = U01(s), q9 = U01(s), q10 = U01(s);
+  vec3 P;
+  if (uMode == 1){                                   // the veil: sparse dim collectors filling the shell
+    float z0 = 2.0*q1 - 1.0, a0 = 6.2831853*q2, s0 = sqrt(1.0 - z0*z0);
+    P = (0.96 + 0.14*q6)*vec3(s0*cos(a0), s0*sin(a0), z0);
+  } else {
+    float u = lut(uInvU, q1)*2.0 - 1.0;
+    float lam = lut(uInvL, q2)*6.2831853 + (q6 - 0.5)*0.003;
+    float gr = sqrt(-2.0*log(max(q3, 1e-7)));
+    float g1 = gr*cos(6.2831853*q4), g2 = gr*sin(6.2831853*q4);
+    float halo = q5 > 0.96 ? 1.0 : 0.0;             // a few drift in a soft halo around the ringlets
+    float wl = lut(uWidL, fract(lam/6.2831853));
+    float rr = uR + mix(u, g1*1.5, halo)*uDR*wl;
+    float hh = g2*uDR*uBT + uBW*sin(2.0*lam + float(uRow)*1.7);
+    P = rr*(cos(lam)*uBa + sin(lam)*uBc) + hh*uBn;
+  }
+  float r3 = length(P); vec3 Pn = P/r3;
+  // the lanes are kept open
+  float open = 0.0;
+  for (int k = 0; k < 12; k++){ if (k >= uNL) break;
+    float al = uLaneP[k].x;
+    open = max(open, smoothstep(cos(al*1.25), cos(al*0.85), dot(Pn, uLane[k].xyz)));
+  }
+  bool keep = q9 >= open && (uSide == 0 ? P.z <= 0.0 : P.z > 0.0);
+  if (P.z <= 0.0 && length(P.xy) < uRStar) keep = false;              // behind the photosphere
+  vec2 dp = P.xy - uPearl.xy; float h2 = uPearl.w*uPearl.w - dot(dp, dp);
+  if (h2 > 0.0 && P.z < uPearl.z + sqrt(h2)) keep = false;              // behind the sim world
+  // depth cues: near collectors brighter, larger, warmer; far ones dim and deep red
+  float dz = clamp(0.5 + 0.5*Pn.z, 0.0, 1.0);
+  float gb = sqrt(-2.0*log(max(q7, 1e-7)))*cos(6.2831853*q8);
+  bool overDisk = uSide == 1 && uMode == 0 && length(P.xy) < uRStar*1.06;          // silhouetted against the photosphere
+  bool big = overDisk || (uSide == 1 && uMode == 0 && gb > 0.35 && q10 < smoothstep(0.55, 0.95, dz));
+  float b = exp(0.8*gb - 0.32)*uGain*(uMode == 1 ? 0.18 : 1.0);
+  vec3 E = b*mix(vec3(1.0, 0.30, 0.14)*0.06, vec3(1.0, 0.60, 0.33)*0.42, pow(dz, 1.3));
+  E += b*vec3(1.0, 0.85, 0.65)*0.6*open;              // the collectors lining a lane catch its light
+  if (P.z > 0.0) E *= mix(0.06, 1.0, smoothstep(uRStar*0.9, uRStar*2.2, length(P.xy)));   // backlit: we see their dark backs against the star
+  float a = uSide == 1 ? (overDisk ? 0.97 : (big ? uOcc : 0.6*uOcc)*(uMode == 1 ? 0.5 : 1.0)) : 0.0;
+  vec2 px = uC + P.xy*uRs;
+  px = big ? floor(px + 0.5) : floor(px) + 0.5;
+  gl_Position = keep ? vec4(px.x/1920.0*2.0 - 1.0, 1.0 - px.y/1080.0*2.0, 0.0, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+  gl_PointSize = big ? 2.0 : 1.0;
+  vCol = vec4(E, a);
+}
+`;
+
+// ---- Alpha Cen B: a white disk with an orange falloff (occludes the far collectors)
+const FS_STARB = HDR + `
+uniform vec2 uC; uniform float uRs; uniform float uRStar; out vec4 o;
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y);
+  float r = length(px - uC)/uRs;
+  float disk = clamp((uRStar - r)*uRs + 0.5, 0.0, 1.0);
+  float mu = sqrt(max(1.0 - r*r/(uRStar*uRStar), 0.0));
+  vec3 dc = vec3(1.0, 0.93, 0.82)*7.0*(0.55 + 0.45*mu);
+  float x = max(r - uRStar, 0.0);
+  vec3 glow = vec3(1.0, 0.62, 0.30)*1.6*exp(-x/0.035) + vec3(1.0, 0.42, 0.16)*0.45*exp(-x/0.12) + vec3(0.9, 0.25, 0.09)*0.08/(1.0 + pow(r/0.5, 2.0));
+  o = vec4(dc*disk + glow*(1.0 - disk), disk);
+}
+`;
+
+// ---- the sim: the humans' world, a bubble of painted golden-hour sky held inside the cage
+const FS_PEARL = HDR + NOISE + `
+uniform vec2 uC; uniform float uRs; uniform vec4 uPearl;
+out vec4 o;
+float puffs(vec2 p){   // pearl-local units (radius 1, y down): a small cumulus bank low in its sky
+  vec3 pf[7] = vec3[7](vec3(-0.52, 0.16, 0.17), vec3(-0.34, 0.10, 0.20), vec3(-0.14, 0.15, 0.15), vec3(0.50, 0.14, 0.12),
+                       vec3(-0.42, -0.04, 0.13), vec3(-0.26, -0.08, 0.12), vec3(0.62, 0.10, 0.10));
+  float d = 1e5;
+  for (int i = 0; i < 7; i++){
+    float di = length(p - pf[i].xy) - pf[i].z;
+    float h = clamp(0.5 + 0.5*(di - d)/0.08, 0.0, 1.0);
+    d = mix(di, d, h) - 0.08*h*(1.0 - h);
+  }
+  return max(d, p.y - 0.24);   // flat bases, just above the horizon
+}
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y);
+  vec2 pc = uC + uPearl.xy*uRs; float pr = uPearl.w*uRs;
+  vec2 d = (px - pc)/pr; float rr = length(d);
+  if (rr > 1.6){ o = vec4(0.0); return; }
+  float cov = clamp((1.0 - rr)*pr + 0.5, 0.0, 1.0);
+  float yN = d.y*0.5 + 0.5;
+  const float HZ = 0.30;                                   // horizon height (pearl-local y)
+  vec3 sky = mix(vec3(0.60, 0.64, 1.00)*0.34, vec3(1.00, 0.64, 0.72)*0.46, smoothstep(0.05, 0.50, yN));
+  sky = mix(sky, vec3(1.00, 0.80, 0.50)*0.90, smoothstep(0.45, 0.64, yN));
+  vec2 sun = vec2(0.22, HZ - 0.07);
+  sky += vec3(1.0, 0.72, 0.40)*0.9*exp(-dot(d - sun, d - sun)/0.05);
+  float cd = puffs(d);
+  if (cd < 0.05){
+    float gx = puffs(d + vec2(0.02, 0.0)) - cd, gy = puffs(d + vec2(0.0, 0.02)) - cd;
+    vec2 g = normalize(vec2(gx, gy) + 1e-6);
+    float lam = dot(g, normalize(vec2(0.7, -0.7)))*0.5 + 0.5;
+    vec3 cc = mix(vec3(0.80, 0.56, 0.78)*0.40, vec3(1.0, 0.86, 0.66)*0.85, smoothstep(0.35, 0.75, lam));
+    sky = mix(sky, cc, clamp(-cd*pr + 0.5, 0.0, 1.0));
+  }
+  sky += vec3(1.0, 0.96, 0.86)*3.0*smoothstep(0.075, 0.045, length(d - sun));   // the sim's own low sun
+  // the sea below the horizon, with the sun's glitter path
+  if (d.y > HZ){
+    float depth = (d.y - HZ)/(1.0 - HZ);
+    vec3 sea = mix(vec3(0.62, 0.44, 0.66)*0.40, vec3(0.20, 0.20, 0.42)*0.30, smoothstep(0.0, 0.8, depth));
+    float path = exp(-pow((d.x - sun.x)/(0.05 + 0.25*depth), 2.0))*(0.6 + 0.4*gn(vec2(d.x*30.0, d.y*90.0)));
+    sea += vec3(1.0, 0.80, 0.52)*path*0.9*(1.0 - 0.5*depth);
+    sky = mix(sky, sea, smoothstep(HZ, HZ + 0.012, d.y));
+  }
+  // membrane: soap-film rim, a warm crescent and a glint facing Alpha Cen B
+  float mu = sqrt(max(1.0 - rr*rr, 0.0));
+  float fres = pow(1.0 - mu, 2.5);
+  vec2 toB = normalize(-uPearl.xy);
+  float facing = max(dot(d/max(rr, 1e-3), toB), 0.0);
+  float th = 0.5 + 0.5*gn(d*2.2 + vec2(1.3, 4.1));
+  vec3 irid = 0.5 + 0.5*cos(6.28318*(th*1.3 + vec3(0.02, 0.36, 0.68)));
+  vec3 col = sky*(1.0 - 0.45*fres) + mix(vec3(1.0, 0.94, 0.90), irid, 0.5)*fres*0.9 + vec3(1.0, 0.66, 0.40)*pow(fres, 1.5)*facing*2.6;
+  vec2 hp = toB*0.52; col += vec3(1.0, 0.92, 0.82)*2.2*exp(-dot(d - hp, d - hp)/0.006);
+  col += vec3(1.0, 0.9, 0.84)*0.9*exp(-pow((rr - 1.0)*pr/0.8, 2.0));
+  float halo = rr > 1.0 ? exp(-(rr - 1.0)*pr/4.0)*0.25 : 0.0;
+  o = vec4(col*cov + vec3(1.0, 0.8, 0.7)*halo*(1.0 - cov), cov);
+}
+`;
+
+// ---- Alpha Centauri A: crisp yellow-white core and tight halo
+const FS_ACEN = HDR + `
+uniform vec2 uA; out vec4 o;
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y); float d = length(px - uA);
+  vec3 c = vec3(1.0, 0.94, 0.76)*(30.0*(1.0 - smoothstep(1.4, 2.9, d)) + 2.6*exp(-d*d/26.0) + 0.36*exp(-d*d/200.0)) + vec3(1.0, 0.90, 0.68)*0.05*exp(-d/34.0);
+  o = vec4(c, 0.0);
+}
+`;
+
+// ---- bloom
+const FS_DOWN = HDR + `
+uniform sampler2D uSrc; uniform vec2 uTS; uniform vec2 uSrcTexel; uniform float uPre; out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy/uTS;
+  vec3 c = texture(uSrc, uv + uSrcTexel*vec2(-1.0, -1.0)).rgb + texture(uSrc, uv + uSrcTexel*vec2(1.0, -1.0)).rgb
+         + texture(uSrc, uv + uSrcTexel*vec2(-1.0, 1.0)).rgb + texture(uSrc, uv + uSrcTexel*vec2(1.0, 1.0)).rgb;
+  c = min(c*0.25, vec3(40.0));
+  if (uPre > 0.5){   // soft-knee threshold: highlights bloom fully, the rest only a little
+    float br = max(c.r, max(c.g, c.b)), thr = 0.75, knee = 0.45;
+    float sft = clamp(br - thr + knee, 0.0, 2.0*knee); sft = sft*sft/(4.0*knee + 1e-4);
+    float k = max(sft, br - thr)/max(br, 1e-4);
+    c *= 0.04 + 0.96*k;
+  }
+  o = vec4(c, 1.0);
+}
+`;
+const FS_UP = HDR + `
+uniform sampler2D uLow; uniform sampler2D uCur; uniform vec2 uTS; uniform vec2 uLowTexel; uniform float uCurW; out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy/uTS; vec2 t = uLowTexel;
+  vec3 s = texture(uLow, uv + t*vec2(-1.0, -1.0)).rgb + 2.0*texture(uLow, uv + t*vec2(0.0, -1.0)).rgb + texture(uLow, uv + t*vec2(1.0, -1.0)).rgb
+         + 2.0*texture(uLow, uv + t*vec2(-1.0, 0.0)).rgb + 4.0*texture(uLow, uv).rgb + 2.0*texture(uLow, uv + t*vec2(1.0, 0.0)).rgb
+         + texture(uLow, uv + t*vec2(-1.0, 1.0)).rgb + 2.0*texture(uLow, uv + t*vec2(0.0, 1.0)).rgb + texture(uLow, uv + t*vec2(1.0, 1.0)).rgb;
+  o = vec4(texture(uCur, uv).rgb*uCurW + s/16.0, 1.0);
+}
+`;
+
+// ---- final: hue-preserving tonemap (highlights roll to warm white), grade, vignette, grain
+const FS_FINAL = HDR + NOISE + `
+uniform sampler2D uHDR; uniform sampler2D uBloom; uniform float uBloomStr; uniform float uExp; uniform int uRaw;
+out vec4 o;
+float acesS(float x){ return clamp((x*(2.51*x + 0.03))/(x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
+vec3 tonemap(vec3 x){
+  float m = max(max(x.r, x.g), x.b);
+  float fm = acesS(m);
+  vec3 c = x*(fm/max(m, 1e-6));
+  return mix(c, vec3(fm)*vec3(1.0, 0.97, 0.92), smoothstep(1.2, 9.0, m));
+}
+void main(){
+  vec2 uv = gl_FragCoord.xy/vec2(1920.0, 1080.0);
+  vec2 px = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y);
+  vec3 c = texture(uHDR, uv).rgb + texture(uBloom, uv).rgb/6.0*uBloomStr;
+  c *= uExp;
+  c = tonemap(c);
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(l), c, 1.10);
+  c += vec3(0.0004, 0.0005, 0.0014)*(1.0 - smoothstep(0.0, 0.05, l));
+  vec2 q = (uv - vec2(0.55, 0.52))*vec2(1.0, 0.8);
+  c *= 1.0 - 0.8*dot(q, q);
+  c = pow(max(c, 0.0), vec3(1.0/2.2));
+  if (uRaw == 0){
+    float gA = 0.004 + 0.014*sqrt(max(l, 0.0));
+    c += (h12(px + 17.0) + h12(px*1.3 + 91.0) - 1.0)*gA;
+  }
+  o = vec4(clamp(c, 0.0, 1.0), 1.0);
+}
+`;
+
+// ================================================================ render
+try {
+  const pBG = program(VS_FULL, FS_BG, 'bg');
+  const pStar = program(VS_STAR, FS_POINT, 'star');
+  const pPts = program(VS_PTS, FS_POINT, 'pts');
+  const pStarB = program(VS_FULL, FS_STARB, 'starb');
+  const pPearl = program(VS_FULL, FS_PEARL, 'pearl');
+  const pAcen = program(VS_FULL, FS_ACEN, 'acen');
+  const pDown = program(VS_FULL, FS_DOWN, 'down');
+  const pUp = program(VS_FULL, FS_UP, 'up');
+  const pFinal = program(VS_FULL, FS_FINAL, 'final');
+  log('compile ms ' + Math.round(performance.now() - T0));
+
+  const tMain = target(W, H);
+  const texU = tableTex(NQ, NBD, invU), texL = tableTex(NQ, NBD, invL), texW = tableTex(NQ, NBD, widL);
+  const laneU = { uLane: { v4: laneArr }, uLaneP: { v4: laneParr }, uNL: { i: LANES.length } };
+
+  // 1. deep space and the lit dust
+  setU(pBG, Object.assign({ uC: P.C, uRs: RS, uA: P.A, uBeam: P.beam, uDust: P.dust }, laneU));
+  fullscreen(pBG, tMain);
+
+  // 2. background stars
+  {
+    drawTo(tMain);
+    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE);
+    gl.useProgram(pStar);
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(starList), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 24, 0);
+    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 8);
+    gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 24, 20);
+    gl.drawArrays(gl.POINTS, 0, NSTAR);
+  }
+
+  // 3-6. far collectors, the star, the sim, near collectors (premultiplied over: far ones have alpha 0)
+  const drawSide = side => {
+    gl.useProgram(pPts); gl.bindVertexArray(vaoEmpty);
+    bindTex(pPts, 'uInvU', 0, texU); bindTex(pPts, 'uInvL', 1, texL); bindTex(pPts, 'uWidL', 2, texW);
+    const common = Object.assign({ uC: P.C, uRs: RS, uGain: P.gain, uRStar: P.rStar, uOcc: P.occ, uPearl: P.pearl, uSide: { i: side } }, laneU);
+    BANDS.forEach((b, bi) => {
+      setU(pPts, Object.assign({}, common, { uMode: { i: 0 }, uBa: b.a, uBc: b.c, uBn: b.nrm, uR: b.r, uDR: b.dr, uBW: b.w, uBT: b.t || 0.06, uRow: { i: bi }, uSeed: { ui: b.seed } }));
+      gl.drawArrays(gl.POINTS, 0, b.n);
+    });
+    if (P.nVeil > 0){
+      setU(pPts, Object.assign({}, common, { uMode: { i: 1 }, uRow: { i: 0 }, uSeed: { ui: 0x51ED27 }, uBa: [1, 0, 0], uBc: [0, 1, 0], uBn: [0, 0, 1], uR: 1, uDR: 0, uBW: 0 }));
+      gl.drawArrays(gl.POINTS, 0, P.nVeil);
+    }
+  };
+  gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+  if (VIEW !== 'noswarm') drawSide(0);
+  setU(pStarB, { uC: P.C, uRs: RS, uRStar: P.rStar });
+  gl.bindVertexArray(vaoEmpty); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  if (VIEW !== 'nosim'){
+    setU(pPearl, { uC: P.C, uRs: RS, uPearl: P.pearl });
+    gl.bindVertexArray(vaoEmpty); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  if (VIEW !== 'noswarm') drawSide(1);
+
+  // 7. Alpha Cen A
+  gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE);
+  setU(pAcen, { uA: P.A });
+  gl.bindVertexArray(vaoEmpty); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disable(gl.BLEND);
+
+  // 8. bloom chain
+  const sizes = [[960, 540], [480, 270], [240, 135], [120, 68], [60, 34], [30, 17]];
+  const down = sizes.map(s => target(s[0], s[1]));
+  const up = sizes.slice(0, 5).map(s => target(s[0], s[1]));
+  let src = tMain;
+  for (let i = 0; i < down.length; i++){
+    gl.useProgram(pDown); bindTex(pDown, 'uSrc', 0, src.tex);
+    setU(pDown, { uTS: [down[i].w, down[i].h], uSrcTexel: [1/src.w, 1/src.h], uPre: i === 0 ? 1 : 0 });
+    fullscreen(pDown, down[i]); src = down[i];
+  }
+  let low = down[5];
+  for (let i = 4; i >= 0; i--){
+    gl.useProgram(pUp); bindTex(pUp, 'uLow', 0, low.tex); bindTex(pUp, 'uCur', 1, down[i].tex);
+    setU(pUp, { uTS: [up[i].w, up[i].h], uLowTexel: [1/low.w, 1/low.h], uCurW: i === 0 ? 0 : 1 });
+    fullscreen(pUp, up[i]); low = up[i];
+  }
+
+  // 9. final
+  gl.useProgram(pFinal);
+  bindTex(pFinal, 'uHDR', 0, tMain.tex); bindTex(pFinal, 'uBloom', 1, up[0].tex);
+  setU(pFinal, { uBloomStr: P.bloom, uExp: P.exposure, uRaw: { i: VIEW === 'raw' ? 1 : 0 } });
+  fullscreen(pFinal, null);
+  const px = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+
+  // 10. diegetic HUD: a new episode, in the environment built for us
+  if (VIEW !== 'nohud'){
+    const hud = document.createElement('canvas'); hud.width = W; hud.height = H;
+    hud.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none';
+    document.body.appendChild(hud);
+    const hx = hud.getContext('2d');
+    hx.font = '14px Consolas, "Cascadia Mono", "Courier New", monospace';
+    if ('letterSpacing' in hx) hx.letterSpacing = '2px';
+    hx.fillStyle = 'rgba(245, 240, 232, 0.46)';
+    hx.fillText('EP    000001', 58, H - 74);
+    hx.fillText('STEP  000000', 58, H - 52);
+  }
+  log('gl error: ' + gl.getError() + ' | total ms ' + Math.round(performance.now() - T0));
+} catch (e) { log('EXC ' + e.message + '\n' + e.stack); }
+</script>
+</body>
+</html>

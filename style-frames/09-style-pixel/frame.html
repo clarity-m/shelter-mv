@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Shelter MV - style frame 09 - pixel</title>
+<style>html,body{margin:0;padding:0;background:#0a0a12;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="out" width="1920" height="1080"></canvas>
+<script>
+"use strict";
+// ============================================================================
+// Shelter MV, style frame 09: "The harness", pixel art.
+// Everything is authored at 480x270 into a palette-index buffer (30 colours),
+// lit through palette ramps with ordered-dither transitions, then blown up 4x
+// nearest-neighbour. Clawd sits on the same native grid (1 glyph cell = 1x2
+// native pixels). Deterministic: one seeded PRNG, no filtering anywhere.
+// ============================================================================
+const T0 = performance.now();
+const W = 480, H = 270, SC = 4;
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rnd = mulberry32(20260927);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+
+// ---------------------------------------------------------------- palette ---
+const HEX = [
+  // C0..C12  night ramp: indigo shadows up to pale grey-lavender
+  '#0a0a12', '#12121c', '#1a1a28', '#232335', '#2d2e43', '#3a3c54', '#4a4d67',
+  '#5d617b', '#747a92', '#8f95aa', '#adb3c2', '#ccd0da', '#e9eaee',
+  // W0..W8  Clawd's light (W5 is exactly #D97757)
+  '#28191f', '#3f2229', '#5e2e31', '#86403c', '#b0584a', '#d97757', '#eb9a72',
+  '#f6c296', '#fde8cc',
+  // S0..S4  skin
+  '#3b2b35', '#5c424a', '#82605f', '#a98176', '#cfa591',
+  // M0..M2  monitor glow (the one secondary accent, kept pale)
+  '#3d5663', '#6d9aa3', '#b4dcd8',
+];
+const C = Array.from({ length: 13 }, (_, i) => i);
+const Wc = Array.from({ length: 9 }, (_, i) => 13 + i);
+const Sk = Array.from({ length: 5 }, (_, i) => 22 + i);
+const Mo = Array.from({ length: 3 }, (_, i) => 27 + i);
+const RGB = HEX.map(h => [1, 3, 5].map(k => parseInt(h.slice(k, k + 2), 16)));
+
+// ---------------------------------------------------------------- buffers ---
+const IB = new Uint8Array(W * H);          // palette index per native pixel
+const LB = new Uint8Array(W * H);          // layer id per pixel
+const L_WALL = 1, L_BOARD = 2, L_FLOOR = 3, L_DESK = 4, L_MON = 5, L_FIGB = 6,
+  L_BENCH = 7, L_CABLE = 8, L_HARN = 9, L_CLAWD = 10, L_FIGA = 11, L_PROP = 12;
+function set(x, y, c, l) {
+  x |= 0; y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  const i = y * W + x; IB[i] = c; if (l !== undefined) LB[i] = l;
+}
+const get = (x, y) => IB[y * W + x];
+const layer = (x, y) => (x < 0 || y < 0 || x >= W || y >= H) ? 0 : LB[y * W + x];
+
+// ------------------------------------------------------------- dithering ---
+// Ordered dither only in narrow transition bands: a continuous level is
+// contrast-stretched around each step so most pixels land on solid ramp colours
+// and the 2x2 Bayer patterns (25/50/75%) appear only where ramps change.
+const BAY2 = [0.125, 0.625, 0.875, 0.375];
+const thr2 = (x, y) => BAY2[((y & 1) << 1) | (x & 1)];
+function qd(v, x, y, sharp) {
+  sharp = sharp || 2;
+  const b = Math.floor(v);
+  const f = (v - b - 0.5) * sharp + 0.5;
+  return b + (f > thr2(x, y) ? 1 : 0);
+}
+const pick = (ramp, v, x, y, sharp) => ramp[clamp(qd(v, x, y, sharp), 0, ramp.length - 1)];
+
+// ------------------------------------------------------------- rasterise ---
+function fillPoly(pts, fn) {
+  let y0 = Infinity, y1 = -Infinity;
+  for (const p of pts) { y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); }
+  for (let y = Math.max(0, Math.floor(y0)); y <= Math.min(H - 1, Math.ceil(y1)); y++) {
+    const yc = y + 0.5, xs = [];
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xa, ya] = pts[i], [xb, yb] = pts[j];
+      if ((ya <= yc && yb > yc) || (yb <= yc && ya > yc)) xs.push(xa + (yc - ya) / (yb - ya) * (xb - xa));
+    }
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const xa = Math.ceil(xs[k] - 0.5), xb = Math.floor(xs[k + 1] - 0.5);
+      for (let x = Math.max(0, xa); x <= Math.min(W - 1, xb); x++) fn(x, y);
+    }
+  }
+}
+function fillEllipse(cx, cy, rx, ry, fn) {
+  for (let y = Math.floor(cy - ry - 1); y <= Math.ceil(cy + ry + 1); y++)
+    for (let x = Math.floor(cx - rx - 1); x <= Math.ceil(cx + rx + 1); x++) {
+      const dx = (x + 0.5 - cx) / rx, dy = (y + 0.5 - cy) / ry;
+      if (dx * dx + dy * dy <= 1) fn(x, y);
+    }
+}
+function rect(x, y, w, h, fn) { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) fn(i, j); }
+function linePts(x0, y0, x1, y1) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const pts = [];
+  const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1, dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    pts.push([x0, y0]);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+  return pts;
+}
+// drop L-shaped corner pixels so 1px lines stay clean ("pixel-perfect" lines)
+function pixelPerfect(pts) {
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    if (out.length && i < pts.length - 1) {
+      const a = out[out.length - 1], b = pts[i], c = pts[i + 1];
+      if ((a[0] === b[0] || a[1] === b[1]) && (c[0] === b[0] || c[1] === b[1]) && a[0] !== c[0] && a[1] !== c[1]) continue;
+    }
+    out.push(pts[i]);
+  }
+  return out;
+}
+function densePts(dense) {
+  const pts = [];
+  let last = null;
+  for (const q of dense) {
+    const p = [Math.round(q[0]), Math.round(q[1])];
+    if (!last) { pts.push(p); last = p; continue; }
+    if (p[0] === last[0] && p[1] === last[1]) continue;
+    const seg = linePts(last[0], last[1], p[0], p[1]);
+    for (let k = 1; k < seg.length; k++) pts.push(seg[k]);
+    last = p;
+  }
+  return pixelPerfect(pts);
+}
+function bez(P, t) {
+  const u = 1 - t;
+  return [u * u * u * P[0][0] + 3 * u * u * t * P[1][0] + 3 * u * t * t * P[2][0] + t * t * t * P[3][0],
+          u * u * u * P[0][1] + 3 * u * u * t * P[1][1] + 3 * u * t * t * P[2][1] + t * t * t * P[3][1]];
+}
+const curvePts = (P, n) => densePts(Array.from({ length: (n || 80) + 1 }, (_, i) => bez(P, i / (n || 80))));
+function catmull(pts, n) {
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+    for (let k = 0; k < n; k++) {
+      const t = k / n, t2 = t * t, t3 = t2 * t;
+      const f = j => 0.5 * (2 * p1[j] + (-p0[j] + p2[j]) * t + (2 * p0[j] - 5 * p1[j] + 4 * p2[j] - p3[j]) * t2 + (-p0[j] + 3 * p1[j] - 3 * p2[j] + p3[j]) * t3);
+      out.push([f(0), f(1)]);
+    }
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+function polyline(pts, fn) {
+  let all = [];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const seg = linePts(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
+    all = all.concat(i ? seg.slice(1) : seg);
+  }
+  pixelPerfect(all).forEach(p => fn(p[0], p[1]));
+}
+// sprite from strings; key maps characters to palette indices
+function sprite(x0, y0, rows, key, l) {
+  for (let r = 0; r < rows.length; r++)
+    for (let c = 0; c < rows[r].length; c++) {
+      const v = key[rows[r][c]];
+      if (v !== undefined) set(x0 + c, y0 + r, v, l);
+    }
+}
+function rot(p, a) { const c = Math.cos(a), s = Math.sin(a); return [p[0] * c - p[1] * s, p[0] * s + p[1] * c]; }
+function tf(pts, cx, cy, a, sx, sc) {
+  sc = sc || 1;
+  return pts.map(p => { const r = rot([p[0] * sx * sc, p[1] * sc], a); return [cx + r[0], cy + r[1]]; });
+}
+const DIG = {
+  0: ['###', '#.#', '#.#', '#.#', '###'], 1: ['.#.', '##.', '.#.', '.#.', '###'], 2: ['###', '..#', '###', '#..', '###'],
+  3: ['###', '..#', '.##', '..#', '###'], 4: ['#.#', '#.#', '###', '..#', '..#'], 5: ['###', '#..', '###', '..#', '###'],
+  6: ['###', '#..', '###', '#.#', '###'], 7: ['###', '..#', '.#.', '.#.', '.#.'], 8: ['###', '#.#', '###', '#.#', '###'],
+  9: ['###', '#.#', '###', '..#', '###'], '.': ['.', '.', '.', '.', '#'], ' ': ['.', '.', '.', '.', '.'],
+};
+function digits(str, x, y, c, l) {
+  for (const ch of str) {
+    const g = DIG[ch];
+    g.forEach((row, r) => { for (let k = 0; k < row.length; k++) if (row[k] === '#') set(x + k, y + r, c, l); });
+    x += g[0].length + 1;
+  }
+}
+
+// ======================================================== scene constants ===
+const BENCH_TOP = 179, BENCH_EDGE = 194, BENCH_R = 352;
+const HX = 244.5, HY = 181;                 // harness base centre
+const CLX0 = 236, CLY0 = 171;               // Clawd glyph origin (18x10 native)
+const LX = 244.5, LY = 175;                 // Clawd light centre
+const WALL_BASE = 206;
+const MON = { x0: 348, y0: 114, x1: 395, y1: 150 };
+const MONC = [(MON.x0 + MON.x1) / 2, (MON.y0 + MON.y1) / 2];
+const WB = { x0: 302, y0: 28, x1: 450, y1: 80 };
+
+// moonlight shafts from a high window out of frame, upper left
+const SH_DX = 0.55;
+const SHAFTS = [[22, 50], [58, 86], [94, 120]];
+function shaftAt(x, y) {
+  const s = x - SH_DX * y;
+  let best = 0;
+  for (const [a, b] of SHAFTS) {
+    const e = Math.min(s - a, b - s);
+    best = Math.max(best, clamp((e + 1.5) / 3, 0, 1) * (1 + 0.25 * clamp(1 - Math.abs(s - (a + b) / 2) / ((b - a) / 2), 0, 1)));
+  }
+  return best;
+}
+const airShaft = (x, y) => shaftAt(x, y) * clamp(2.7 - y / 78, 0, 2.7);
+// Clawd's glow on the far wall / air: a few wide stepped rings
+function haloAt(x, y) {
+  const d = Math.hypot(x + 0.5 - LX, (y + 0.5 - LY) * 1.12);
+  return 3.3 * Math.pow(clamp(1 - d / 54, 0, 1), 1.35);
+}
+function monGlowAt(x, y) {
+  const dx = Math.max(MON.x0 - x, 0, x - MON.x1), dy = Math.max(MON.y0 - y, 0, y - MON.y1);
+  const d = Math.hypot(dx, dy * 1.25);
+  return 1.15 * Math.pow(clamp(1 - d / 34, 0, 1), 1.1);
+}
+
+// ================================================================= wall ====
+for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+  const vx = (x - 245) / 250;
+  let v = 1.45 + 1.7 * smooth(-30, 185, y) - 1.1 * vx * vx;
+  v += airShaft(x, y) + monGlowAt(x, y);
+  let c = C[clamp(qd(v, x, y), 1, 6)];
+  const h = qd(haloAt(x, y), x, y);
+  if (h >= 1) c = [Sk[0], Sk[0], Wc[1], Wc[2]][Math.min(h, 3)];
+  set(x, y, c, L_WALL);
+}
+// skirting on the visible right-hand wall base
+for (let x = BENCH_R; x < W; x++) { set(x, WALL_BASE - 3, C[4], L_WALL); set(x, WALL_BASE - 2, C[2], L_WALL); set(x, WALL_BASE - 1, C[1], L_WALL); }
+// floor (visible only right of the bench)
+for (let y = WALL_BASE; y < H; y++) for (let x = BENCH_R; x < W; x++) {
+  const v = 1.2 + 0.7 * smooth(WALL_BASE, H, y) + monGlowAt(x, y - 60) * 0.7;
+  set(x, y, C[clamp(qd(v, x, y), 1, 3)], L_FLOOR);
+}
+
+// ============================================================ whiteboard ===
+(function whiteboard() {
+  const { x0, y0, x1, y1 } = WB;
+  rect(x0 - 2, y0 - 2, x1 - x0 + 5, y1 - y0 + 5, (x, y) => set(x, y, C[1], L_BOARD));
+  rect(x0 - 1, y0 - 2, x1 - x0 + 3, 1, (x, y) => set(x, y, C[4], L_BOARD));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    let v = 3.55 - 0.5 * (x - x0) / (x1 - x0) + 0.3 * (1 - (y - y0) / (y1 - y0)) + monGlowAt(x, y) * 1.2;
+    set(x, y, C[clamp(qd(v, x, y), 3, 5)], L_BOARD);
+  }
+  // pen tray
+  rect(x0 + 6, y1 + 3, x1 - x0 - 12, 1, (x, y) => set(x, y, C[4], L_BOARD));
+  rect(x0 + 6, y1 + 4, x1 - x0 - 12, 1, (x, y) => set(x, y, C[1], L_BOARD));
+  rect(x0 + 24, y1 + 1, 7, 2, (x, y) => set(x, y, C[1], L_BOARD));
+  const dot = (x, y) => { if (layer(x, y) === L_BOARD && x >= x0 && x <= x1 && y >= y0 && y <= y1) set(x, y, C[2]); };
+  // causal attention pattern: lower-triangular grid of marker cells
+  const ax = x0 + 8, ay = y0 + 7, n = 7, cs = 4;
+  polyline([[ax, ay], [ax + n * cs, ay], [ax + n * cs, ay + n * cs], [ax, ay + n * cs], [ax, ay]], dot);
+  for (let i = 0; i < n; i++) for (let j = 0; j <= i; j++) {
+    const w = (i === j) ? 1 : ((i * 7 + j * 3) % 5) / 5;
+    if (w > 0.3) rect(ax + j * cs + 1, ay + i * cs + 1, cs - 1, cs - 1, (x, y) => { if (w > 0.7 || ((x + y) & 1)) dot(x, y); });
+  }
+  // loss curve
+  const lx = x0 + 46, ly = y0 + 7;
+  polyline([[lx, ly], [lx, ly + 28], [lx + 40, ly + 28]], dot);
+  const lc = [];
+  for (let k = 0; k <= 38; k += 2) lc.push([lx + 2 + k, Math.round(ly + 26 - 24 * Math.exp(-k / 7))]);
+  for (const p of lc) p[1] = Math.round(ly + 2 + 24 * (1 - Math.exp(-(p[0] - lx) / 7)));
+  polyline(lc, dot);
+  // generic math marks
+  const G = {
+    sig: ['#####', '.#...', '..#..', '.#...', '#####'],
+    par: ['.##.', '...#', '.###', '#..#', '.##.'],
+    eq: ['....', '####', '....', '####', '....'],
+    th: ['.##.', '#..#', '####', '#..#', '.##.'],
+    arr: ['..#.', '...#', '####', '...#', '..#.'],
+    pl: ['.#.', '###', '.#.'],
+    x: ['#.#', '.#.', '#.#'],
+    lp: ['.#', '#.', '#.', '#.', '.#'], rp: ['#.', '.#', '.#', '.#', '#.'],
+  };
+  const glyph = (g, x, y) => { g.forEach((row, r) => { for (let c = 0; c < row.length; c++) if (row[c] === '#') dot(x + c, y + r); }); return x + g[0].length + 2; };
+  let gx = x0 + 98, gy = y0 + 8;
+  gx = glyph(G.sig, gx, gy); gx = glyph(G.lp, gx, gy); gx = glyph(G.x, gx, gy + 1); gx = glyph(G.rp, gx, gy); gx = glyph(G.eq, gx, gy); glyph(G.th, gx, gy);
+  gx = x0 + 98; gy = y0 + 20;
+  gx = glyph(G.par, gx, gy); polyline([[gx, gy + 2], [gx + 10, gy + 2]], dot); glyph(G.x, gx + 3, gy - 3); glyph(G.th, gx + 3, gy + 4); gx += 13;
+  gx = glyph(G.eq, gx, gy); gx = glyph(G.th, gx, gy); glyph(G.pl, gx, gy + 1);
+  gx = x0 + 98; gy = y0 + 34;
+  gx = glyph(G.th, gx, gy); gx = glyph(G.arr, gx, gy); gx = glyph(G.th, gx, gy); glyph(G.sig, gx + 1, gy);
+})();
+
+// ====================================================== monitor + desk ====
+(function monitorDesk() {
+  rect(342, 158, 67, 1, (x, y) => set(x, y, x < 398 ? Mo[0] : C[5], L_DESK));
+  rect(342, 159, 67, 2, (x, y) => set(x, y, C[2], L_DESK));
+  rect(373, 161, 4, 55, (x, y) => set(x, y, x === 373 ? C[3] : C[1], L_DESK));
+  rect(358, 216, 34, 2, (x, y) => set(x, y, y === 216 ? C[4] : C[1], L_DESK));
+  set(402, 157, Mo[2], L_DESK);                                     // power led
+  rect(369, 150, 5, 8, (x, y) => set(x, y, x === 369 ? C[4] : C[2], L_MON));
+  rect(362, 157, 19, 1, (x, y) => set(x, y, C[4], L_MON));
+  rect(MON.x0, MON.y0, MON.x1 - MON.x0 + 1, MON.y1 - MON.y0 + 1, (x, y) => set(x, y, C[1], L_MON));
+  rect(MON.x0, MON.y0, MON.x1 - MON.x0 + 1, 1, (x, y) => set(x, y, C[4], L_MON));
+  const sx0 = MON.x0 + 2, sy0 = MON.y0 + 2, sx1 = MON.x1 - 2, sy1 = MON.y1 - 2;
+  rect(sx0, sy0, sx1 - sx0 + 1, sy1 - sy0 + 1, (x, y) => set(x, y, C[3], L_MON));
+  // gridworld: 5x5 cells, grey, one orange agent, one goal
+  const gx = sx0 + 2, gy = sy0 + 5, cs = 5, n = 5;
+  const walls = new Set(['1,1', '1,2', '3,3', '3,2', '0,4']);
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const wall = walls.has(i + ',' + j);
+    rect(gx + i * cs + 1, gy + j * cs + 1, cs - 1, cs - 1, (x, y) => set(x, y, wall ? C[5] : C[8], L_MON));
+  }
+  rect(gx + 4 * cs + 1, gy + 1, cs - 1, cs - 1, (x, y) => set(x, y, C[11], L_MON));
+  rect(gx + 1 * cs + 2, gy + 4 * cs + 2, 2, 2, (x, y) => set(x, y, Wc[5], L_MON));
+  // eval panel: rising curve, newest point bright
+  const px0 = gx + n * cs + 3, py1 = gy + n * cs, px1 = sx1 - 1;
+  polyline([[px0, gy + 6], [px0, py1], [px1, py1]], (x, y) => set(x, y, C[6], L_MON));
+  const vals = [0.05, 0.08, 0.07, 0.13, 0.16, 0.15, 0.25, 0.3, 0.37, 0.42, 0.5, 0.56, 0.62];
+  const pts = vals.map((v, k) => [px0 + 1 + k, py1 - 1 - Math.round(v * 22)]);
+  polyline(pts, (x, y) => set(x, y, Mo[2], L_MON));
+  const last = pts[pts.length - 1];
+  set(last[0], last[1], C[12], L_MON); set(last[0], last[1] - 1, C[12], L_MON);
+  digits('0.62', px0 + 1, sy0 + 2, Mo[2], L_MON);
+  rect(sx0 + 2, sy0 + 2, 11, 1, (x, y) => set(x, y, C[6], L_MON));
+})();
+
+// ================================================= figure shading system ===
+// Parts are rasterised into PB (part id per pixel, depth-sorted). Each light
+// marches from a pixel toward its source; if it leaves the part through an
+// open edge within K steps the pixel is lit, brighter the closer to the edge.
+// Materials map those light levels onto palette ramps.
+const PB = new Int16Array(W * H).fill(-1);
+const parts = [];
+function addPart(fig, mat, depth, raster) {
+  const id = parts.length;
+  parts.push({ id, fig, mat, depth });
+  raster((x, y) => {
+    if (x < 0 || y < 0 || x >= W || y >= H) return;
+    const i = y * W + x, cur = PB[i];
+    if (cur < 0 || parts[cur].depth <= depth) PB[i] = id;
+  });
+  return id;
+}
+function shadeFigure(fig, lights, lay, clip) {
+  for (let i = 0; i < W * H; i++) {
+    const pid = PB[i];
+    if (pid < 0) continue;
+    const p = parts[pid];
+    if (p.fig !== fig) continue;
+    const x = i % W, y = (i / W) | 0;
+    if (clip && !clip(x, y)) continue;
+    const lv = {};
+    for (const L of lights) {
+      const [dx, dy] = L.dir(x, y);
+      let lit = 0;
+      for (let s = 1; s <= L.K; s++) {
+        const qx = Math.round(x + dx * s), qy = Math.round(y + dy * s);
+        const q = (qx < 0 || qy < 0 || qx >= W || qy >= H) ? -1 : PB[qy * W + qx];
+        if (q === pid) continue;
+        if (q < 0 || parts[q].fig !== fig || parts[q].depth < p.depth) lit = (L.K - s + 1) / L.K;
+        break;
+      }
+      lv[L.kind] = Math.max(lv[L.kind] || 0, lit * L.int(x, y));
+    }
+    set(x, y, p.mat(x, y, lv), lay);
+  }
+}
+const towards = (tx, ty) => (x, y) => { const dx = tx - x, dy = ty - y, d = Math.hypot(dx, dy) || 1; return [dx / d, dy / d]; };
+const warmInt = (x, y) => clamp(1.4 - Math.hypot(x - LX, (y - LY) * 1.1) / 90, 0, 1);
+
+// ============================================================ researcher B ==
+(function researcherB() {
+  const F = 'B';
+  const HC = [425, 99], a = -0.08, sc = 0.78;
+  const T = pts => tf(pts, HC[0], HC[1], a, -1, sc);
+  const dark = (x, y, l) => { const m = l.mon || 0; return m > 0.02 ? pick([C[3], C[5], Mo[0], Mo[1]], 0.6 + m * 3.0, x, y, 6) : C[2]; };
+  const trousers = (x, y, l) => { const m = l.mon || 0; return m > 0.05 ? pick([C[2], C[3], Mo[0]], m * 2.4, x, y, 6) : C[1]; };
+  const hair = (x, y, l) => { const m = l.mon || 0; return m > 0.05 ? pick([C[2], C[3], Mo[0]], 0.3 + m * 2.6, x, y, 6) : C[1]; };
+  const skin = (x, y, l) => { const m = l.mon || 0; return m > 0.8 ? Mo[2] : pick([Sk[0], Sk[1], Sk[2], Sk[3]], 1 + m * 2.6, x, y, 6); };
+  const shoe = () => C[1];
+  addPart(F, trousers, 0, f => fillPoly([[414, 156], [437, 156], [436, 172], [434, 218], [427, 218], [426, 176], [423, 176], [422, 218], [415, 218], [413, 172]], f));
+  addPart(F, shoe, 0.1, f => fillPoly([[408, 217], [423, 216], [423, 221], [408, 221]], f));
+  addPart(F, shoe, 0.1, f => fillPoly([[421, 217], [436, 217], [436, 221], [421, 221]], f));
+  addPart(F, dark, -1, f => fillPoly([[436, 112], [444, 118], [446, 146], [441, 150], [437, 146]], f));
+  addPart(F, dark, 0, f => fillPoly([[413, 109], [431, 106], [440, 111], [443, 130], [440, 150], [437, 160], [413, 160], [410, 148], [408, 126], [409, 114]], f));
+  addPart(F, skin, 0.5, f => fillPoly(T([[-3, 6], [4, 7], [4, 13], [-4, 13]]), f));
+  addPart(F, hair, 1, f => fillEllipse(HC[0] + 0.5, HC[1] - 0.5, 8.2, 8.4, f));
+  addPart(F, skin, 2, f => fillPoly(T([[-1, -4], [4, -7], [8.5, -5], [9.5, -1], [10.2, 1], [12, 3.5], [10.2, 4.5], [10.2, 6], [9.6, 7.5], [8.6, 9.5], [5.5, 11.5], [1, 10.5], [-2, 7], [-3, 2]]), f));
+  addPart(F, skin, 2.5, f => fillEllipse(HC[0] + 1.6, HC[1] + 1.5, 1.7, 2.3, f));
+  addPart(F, hair, 3, f => fillPoly(T([[-9, 3], [-9.5, -3], [-7, -8], [-2, -10], [4, -10], [8.5, -8], [10.2, -4.5], [8, -5.2], [5, -4.5], [2, -4], [0, -2], [-1.5, 1], [-3, 4], [-6, 6]]), f));
+  addPart(F, dark, 4, f => fillPoly([[409, 112], [415, 115], [414, 132], [410, 136], [406, 132], [406, 118]], f));
+  addPart(F, dark, 5, f => fillPoly([[406, 130], [412, 131], [413, 136], [405, 137], [401, 134], [401, 129]], f));
+  const mug = (x, y, l) => { const m = l.mon || 0; return y === 123 ? C[9] : (m > 0.05 ? pick([C[6], C[8], Mo[1]], m * 2.8, x, y, 6) : C[5]); };
+  addPart(F, mug, 6, f => rect(396, 123, 7, 9, f));
+  addPart(F, skin, 7, f => fillPoly([[400, 128], [404, 127], [405, 131], [401, 133]], f));
+  shadeFigure(F, [{ kind: 'mon', K: 3, dir: towards(MONC[0], MONC[1]), int: (x, y) => clamp(1.3 - Math.hypot(x - MONC[0], y - MONC[1]) / 85, 0, 1) }], L_FIGB);
+  polyline([[415, 116], [415, 131]], (x, y) => { if (layer(x, y) === L_FIGB) set(x, y, C[1]); });
+  const P = p => T([p])[0].map(Math.round);
+  const e = P([6.5, 0.5]);
+  set(e[0], e[1], C[1]); set(e[0] + 1, e[1], C[1]);
+  set(e[0] - 1, e[1] - 1, C[1]); set(e[0], e[1] - 1, C[1]); set(e[0] + 1, e[1] - 1, Mo[2]); set(e[0] + 2, e[1] - 1, C[1]);
+  const m = P([9, 7.5]); set(m[0], m[1], Sk[0]);
+  [[399, 121], [400, 119], [399, 117], [400, 115], [402, 120], [402, 118], [403, 116]].forEach(([x, y], k) => { if (k % 2 === 0 || y > 117) set(x, y, C[5]); });
+})();
+
+// ================================================================= bench ===
+(function bench() {
+  for (let y = BENCH_TOP; y < H; y++) for (let x = 0; x < BENCH_R; x++) {
+    let c;
+    if (y < BENCH_EDGE) {                       // top surface
+      const t = (y - BENCH_TOP) / (BENCH_EDGE - BENCH_TOP);
+      let v = 3.3 + t * 1.6 - Math.pow(Math.abs(x - 230) / 250, 2) * 1.4;
+      if (x < 158) v += 2.3 * shaftAt(x, y);   // moon patch left of A
+      c = C[clamp(qd(v, x, y), 2, 8)];
+      const dx = Math.abs(x + 0.5 - HX), dy = (y - HY - 1) * 3.2;
+      const k = qd(5.2 * Math.pow(clamp(1 - Math.hypot(dx, dy) / 92, 0, 1), 1.5), x, y);
+      if (k >= 1) c = [c, Wc[1], Wc[2], Wc[3], Wc[4], Wc[6]][Math.min(k, 5)];
+    } else if (y === BENCH_EDGE) {              // lit front lip
+      c = C[5];
+      if (x < 158 && shaftAt(x, y - 4) > 0.5) c = C[8];
+      const k = qd(5 * Math.pow(clamp(1 - Math.abs(x + 0.5 - HX) / 78, 0, 1), 1.4), x, y);
+      if (k >= 1) c = [c, Wc[3], Wc[4], Wc[6], Wc[7], Wc[8]][Math.min(k, 5)];
+    } else if (y < BENCH_EDGE + 6) {            // slab edge
+      c = y === BENCH_EDGE + 1 ? C[3] : C[2];
+      const k = qd(2.6 * Math.pow(clamp(1 - Math.abs(x + 0.5 - HX) / 64, 0, 1), 1.5) * (1 - (y - BENCH_EDGE) / 7), x, y);
+      if (k >= 1) c = [c, Wc[1], Wc[2]][Math.min(k, 2)];
+    } else if (y < H - 6) {                     // cabinet
+      c = C[1];
+      const k = qd(2.1 * Math.pow(clamp(1 - Math.hypot(x + 0.5 - HX, (y - BENCH_EDGE) * 1.7) / 84, 0, 1), 1.3), x, y);
+      if (k >= 1) c = [c, Wc[0], Wc[1]][Math.min(k, 2)];
+    } else c = C[0];                            // plinth
+    set(x, y, c, L_BENCH);
+  }
+  for (let y = BENCH_TOP; y < H - 6; y++) set(BENCH_R - 1, y, y <= BENCH_EDGE ? C[5] : C[2], L_BENCH);
+  // cabinet doors: bevelled panels, handles catch Clawd's light
+  const doors = [[-4, 80], [84, 168], [172, 258], [262, 348]];
+  const top = BENCH_EDGE + 9, bot = H - 10;
+  for (const [a, b] of doors) {
+    for (let x = a; x <= b; x++) { if (layer(x, top) === L_BENCH && get(x, top) === C[1]) set(x, top, C[2]); set(x, bot, C[0]); }
+    for (let y = top; y <= bot; y++) { if (get(a, y) === C[1]) set(a, y, C[2]); set(b, y, C[0]); }
+    const hx = Math.round((a + b) / 2) - 6, hy = top + 5;
+    const near = Math.abs(hx + 6 - HX) < 50;
+    rect(hx, hy, 12, 1, (x, y) => set(x, y, near ? Wc[4] : C[4], L_BENCH));
+    rect(hx, hy + 1, 12, 1, (x, y) => set(x, y, C[0], L_BENCH));
+  }
+})();
+
+// rib shadows: Clawd is the light, so each rib throws a thin shadow outward
+(function ribShadows() {
+  const bases = [[-15, -2.5], [-20.5, 0], [-16, 2.5], [15, -2.5], [20.5, 0], [16, 2.5]];
+  const darker = { [Wc[6]]: Wc[4], [Wc[4]]: Wc[3], [Wc[3]]: Wc[2], [Wc[2]]: Wc[1], [Wc[1]]: Wc[0] };
+  for (const [bx, by] of bases) {
+    const x0 = HX + bx, y0 = HY + by + 1, dx = bx, dy = by + 4.5;
+    const L = Math.hypot(dx, dy * 3);
+    const x1 = x0 + dx / L * 70, y1 = y0 + dy * 3 / L * 70 / 3.2;
+    polyline([[x0, y0], [x1, y1]], (x, y) => {
+      if (layer(x, y) !== L_BENCH || y >= BENCH_EDGE) return;
+      const v = get(x, y);
+      if (darker[v] !== undefined) set(x, y, darker[v]);
+    });
+  }
+})();
+
+// ================================================================= props ===
+(function props() {
+  // A's mug, left of the moon patch
+  const mx = 98, my = 177;
+  rect(mx, my, 7, 8, (x, y) => set(x, y, x === mx ? C[6] : (x >= mx + 5 ? C[3] : C[4]), L_PROP));
+  rect(mx, my, 7, 1, (x, y) => set(x, y, C[6], L_PROP));
+  rect(mx + 1, my + 1, 5, 1, (x, y) => set(x, y, C[1], L_PROP));
+  [[mx - 1, my + 2], [mx - 2, my + 3], [mx - 2, my + 4], [mx - 1, my + 5]].forEach(([x, y]) => set(x, y, C[5], L_PROP));
+  // notebooks in the moonlight
+  rect(120, 181, 26, 2, (x, y) => set(x, y, y === 181 ? C[9] : C[6], L_PROP));
+  rect(121, 183, 24, 2, (x, y) => set(x, y, y === 183 ? C[10] : C[5], L_PROP));
+  rect(120, 181, 1, 4, (x, y) => set(x, y, C[3], L_PROP));
+  polyline([[124, 180], [138, 178]], (x, y) => set(x, y, C[3], L_PROP));
+  set(139, 178, C[8], L_PROP);
+  // tray of spare ribs, right of the harness
+  rect(286, 186, 24, 3, (x, y) => set(x, y, y === 186 ? C[6] : C[3], L_PROP));
+  rect(287, 187, 22, 1, (x, y) => set(x, y, C[2], L_PROP));
+  for (const [ox, h] of [[290, 5], [297, 6], [304, 4]]) {
+    polyline([[ox, 186], [ox + 1, 186 - h + 1], [ox + 3, 186 - h]], (x, y) => set(x, y, C[6], L_PROP));
+    set(ox, 186 - Math.max(1, h - 3), Wc[3], L_PROP);
+  }
+  polyline([[316, 190], [330, 188]], (x, y) => set(x, y, C[6], L_PROP));
+  polyline([[316, 191], [330, 190]], (x, y) => set(x, y, C[3], L_PROP));
+})();
+
+// ================================================================ cables ===
+function cable(P, hiFn) {
+  const pts = curvePts(P, 160);
+  for (const [x, y] of pts) { set(x, y, C[1], L_CABLE); set(x, y + 1, C[0], L_CABLE); }
+  for (const [x, y] of pts) if (layer(x, y - 1) !== L_CABLE) set(x, y - 1, hiFn(x, y), L_CABLE);
+}
+const cableHi = (x, y) => {
+  const k = qd(4 * Math.pow(clamp(1 - Math.hypot(x - LX, y - LY) / 64, 0, 1), 1.3), x, y, 3);
+  return k >= 1 ? [C[3], Wc[2], Wc[3], Wc[4], Wc[6]][Math.min(k, 4)] : C[3];
+};
+cable([[263, 183], [292, 191], [322, 192], [350, 190]], cableHi);
+cable([[350, 190], [356, 193], [357, 206], [364, 213]], cableHi);
+cable([[364, 213], [368, 216], [372, 214], [373, 204]], cableHi);
+cable([[259, 183], [270, 186], [276, 189], [282, 190]], cableHi);
+
+// =============================================================== harness ===
+// Cupped ribs: jointed like fingers, rising from a base plate and curling in
+// toward Clawd without closing. Outer faces catch the moon (left) or fall to
+// shadow (right); inner faces take Clawd's light.
+const RIBS = [
+  { side: -1, back: true, pts: [[-15, -2.5], [-21, -13], [-19, -26], [-8, -35]] },
+  { side: -1, back: false, pts: [[-20.5, 0], [-26, -12], [-24, -27], [-12, -37]] },
+  { side: -1, back: false, pts: [[-16, 2.5], [-22, -8], [-21, -20], [-14, -27]] },
+];
+RIBS.push(...RIBS.map(r => ({ side: 1, back: r.back, pts: r.pts.map(([x, y]) => [-x, y]) })));
+const RX = 21, RY = 3.6;
+const warmOn = (x, y, gain, rad) => gain * Math.pow(clamp(1 - Math.hypot(x - LX, (y - LY) * 1.05) / rad, 0, 1), 0.85);
+function drawRib(r) {
+  const P = r.pts.map(([x, y]) => [HX + x, HY + y]);
+  const pts = densePts(catmull(P, 30));
+  const inner = -r.side;                 // step toward the harness axis
+  const n = pts.length;
+  pts.forEach(([x, y], i) => {
+    const t = i / (n - 1);
+    const moonLit = r.side < 0 && !r.back;
+    const outer = r.back ? C[3] : (moonLit ? (t > 0.35 ? C[7] : C[6]) : C[4]);
+    set(x, y, outer, L_HARN);
+    const k = qd(warmOn(x, y, r.back ? 4.2 : 5.2, 58), x, y, 3);
+    set(x + inner, y, [C[6], Wc[3], Wc[4], Wc[6], Wc[7], Wc[8]][clamp(k, 0, 5)], L_HARN);
+    if (t < 0.3) set(x - inner, y, r.back ? C[2] : C[3], L_HARN);        // thicker root
+  });
+  // knuckles at the two middle joints
+  for (const J of [P[1], P[2]]) {
+    const [jx, jy] = J.map(Math.round);
+    set(jx - inner, jy, r.back ? C[4] : (r.side < 0 ? C[8] : C[5]), L_HARN);
+    set(jx - inner, jy - 1, r.back ? C[3] : C[6], L_HARN);
+    set(jx, jy, C[8], L_HARN);
+    set(jx + inner, jy, Wc[7], L_HARN);
+    set(jx + 2 * inner, jy, Wc[6], L_HARN);
+  }
+  // fingertip cap
+  const [tx, ty] = P[3].map(Math.round);
+  set(tx, ty, r.back ? Wc[4] : Wc[7], L_HARN); set(tx + inner, ty, Wc[8], L_HARN);
+  set(tx, ty - 1, r.back ? C[4] : C[7], L_HARN);
+}
+(function basePlate() {
+  fillEllipse(HX, HY, RX + 1, RY, (x, y) => {
+    const d = Math.hypot(x + 0.5 - LX, (y + 0.5 - HY) * 2.5);
+    const k = qd(4.8 * Math.pow(clamp(1 - d / 25, 0, 1), 0.75), x, y, 3);
+    set(x, y, [C[5], Wc[3], Wc[4], Wc[6], Wc[7], Wc[7]][clamp(k, 0, 5)], L_HARN);
+  });
+  for (let x = Math.floor(HX - RX - 1); x <= Math.ceil(HX + RX + 1); x++) {
+    const dx = (x + 0.5 - HX) / (RX + 1);
+    if (Math.abs(dx) > 1) continue;
+    const y = Math.round(HY + RY * Math.sqrt(1 - dx * dx));
+    const near = Math.abs(x + 0.5 - HX) < 13;
+    set(x, y, near ? Wc[4] : C[6], L_HARN); set(x, y + 1, near ? Wc[2] : C[3], L_HARN); set(x, y + 2, C[0], L_HARN);
+  }
+})();
+RIBS.filter(r => r.back).forEach(drawRib);
+
+// ================================================================= Clawd ===
+const CLAWD = ['...############...', '...##.######.##...', '.################.', '...############...', '....#.#....#.#....'];
+function drawClawd(x0, y0) {
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 18; c++) {
+    if (CLAWD[r][c] === '#') { set(x0 + c, y0 + r * 2, Wc[5], L_CLAWD); set(x0 + c, y0 + r * 2 + 1, Wc[5], L_CLAWD); }
+  }
+  for (const ex of [5, 12]) { set(x0 + ex, y0 + 2, C[1], L_CLAWD); set(x0 + ex, y0 + 3, C[1], L_CLAWD); }
+}
+drawClawd(CLX0, CLY0);
+RIBS.filter(r => !r.back).forEach(drawRib);
+
+// ============================================================ researcher A ==
+const HEAD_A = [
+  '....777....................',
+  '..7733277..................',
+  '..7442221..................',
+  '.725222227.................',
+  '.742222222755555...........',
+  '.74222221444232255.........',
+  '..72222415224433225........',
+  '..712241523222223325.......',
+  '....71122223322222325......',
+  '...724522222233222232a.....',
+  '...5242233222223222ars.....',
+  '..72422222332222rrrrrrs....',
+  '..52422222223qrrrrrqqst....',
+  '..52222222qrqrrrrprrqss....',
+  '..5222222qrsqrrrrrepsstt...',
+  '..5222222qprqrrrrrrrrsstv..',
+  '..5222222qprqrrrrrrrssqt...',
+  '..52222222qrqrrrrrrssst....',
+  '...522222222qrrrrrrssst....',
+  '...522222222qrrrrrsspt.....',
+  '....522222222qrrrrsssv.....',
+  '.....522222222qrrssss......',
+  '......52222ppppqrssst......',
+  '.......5122ppqqpsssv.......',
+  '.........5qqqqqrst.........',
+  '.........qqqqqr............',
+  '.........qqqqqr............',
+  '........qqqqqr.............',
+  '........qqqqqr.............',
+];
+const HEAD_KEY = {
+  '1': C[1], '2': C[2], '3': C[3], '4': C[4], '5': C[5], '7': C[7],
+  a: Wc[1], b: Wc[2], c: Wc[3], p: Sk[0], q: Sk[1], r: Sk[2], s: Sk[3], t: Sk[4], v: Wc[7], e: C[1], m: Wc[3],
+};
+const HAND_A = [
+  '...qqr.....',
+  '..qrrsr....',
+  '.qrrsss....',
+  'qrrssstt...',
+  'qrssttvvt..',
+  '.qrsstq....',
+  '..qssst....',
+  '...qsv.....',
+];
+(function researcherA() {
+  const F = 'A';
+  const coatMat = (base) => (x, y, l) => {
+    const w = l.warm || 0, m = l.moon || 0;
+    if (w > 0.05) return pick([C[base], Sk[1], Sk[2], Sk[3], Sk[4]], 0.2 + w * 4.4, x, y, 6);
+    if (m > 0.05) return pick([C[base], C[base + 1], C[base + 2], C[base + 3]], 0.4 + m * 3.0, x, y, 6);
+    return C[base];
+  };
+  const body = coatMat(3), sleeve = coatMat(4);
+  addPart(F, body, 0, f => fillPoly([[171, 184], [169, 170], [171, 158], [178, 147], [188, 140], [199, 138], [207, 142], [211, 152], [210, 168], [207, 184]], f));
+  addPart(F, body, 0.6, f => fillPoly([[186, 135], [197, 134], [204, 139], [197, 143], [189, 141]], f));
+  const ARM_U = [[198, 139], [208, 141], [214, 152], [216, 163], [211, 169], [205, 166], [201, 152]];
+  const ARM_F = [[209, 164], [213, 156], [216, 149], [221, 145], [224, 149], [219, 160], [213, 169]];
+  addPart(F, sleeve, 4, f => fillPoly(ARM_U, f));
+  addPart(F, sleeve, 5, f => fillPoly(ARM_F, f));
+  shadeFigure(F, [
+    { kind: 'warm', K: 3, dir: towards(LX, LY), int: warmInt },
+    { kind: 'moon', K: 3, dir: () => [-0.48, -0.88], int: () => 0.9 },
+  ], L_FIGA, (x, y) => y < BENCH_TOP);
+  // crease where the sleeve meets the body, then cloth folds (unlit cloth only)
+  fillPoly(ARM_U, (x, y) => { if (layer(x - 1, y) === L_FIGA && PB[y * W + x - 1] >= 0 && parts[PB[y * W + x - 1]].depth < 4 && y > 142) set(x - 1, y, C[1]); });
+  const fold = (pts, c) => polyline(pts, (x, y) => { const v = get(x, y); if (layer(x, y) === L_FIGA && (v === C[3] || v === C[4])) set(x, y, c || C[2]); });
+  fold([[186, 146], [179, 153], [175, 163]]);
+  fold([[193, 147], [190, 157]]);
+  fold([[180, 173], [190, 171], [199, 174]]);
+  fold([[210, 157], [213, 162]], C[3]);
+  fold([[205, 147], [207, 153]], C[3]);
+  sprite(183, 110, HEAD_A, HEAD_KEY, L_FIGA);
+  // re-lay the collar over the neck
+  fillPoly([[186, 136], [196, 135], [203, 139], [197, 142], [189, 141]], (x, y) => set(x, y, y <= 136 ? C[6] : C[5], L_FIGA));
+  set(196, 135, Sk[2], L_FIGA);
+  // hand + stylus
+  sprite(214, 137, HAND_A, { q: Sk[1], r: Sk[2], s: Sk[3], t: Sk[4], v: Wc[7] }, L_FIGA);
+  polyline([[219, 140], [231, 145]], (x, y) => set(x, y, C[1], L_FIGA));
+  polyline([[219, 139], [224, 141]], (x, y) => set(x, y, C[5], L_FIGA));
+  set(231, 145, Wc[8], L_FIGA); set(232, 144, Wc[7]); set(230, 143, Wc[6]); set(233, 146, Wc[6]);
+})();
+
+// ======================================================== motes, sparks ====
+(function motes() {
+  for (let k = 0; k < 1400; k++) {
+    const x = (rnd() * W) | 0, y = (rnd() * 175) | 0;
+    if (shaftAt(x, y) < 0.9 || layer(x, y) !== L_WALL) continue;
+    if (rnd() > 0.07) continue;
+    set(x, y, rnd() < 0.3 ? C[10] : C[8]);
+  }
+  [[240, 160, Wc[8]], [249, 157, Wc[7]], [236, 151, Wc[6]], [254, 147, Wc[6]], [244, 140, Wc[5]], [239, 129, Wc[4]], [251, 122, Wc[3]], [246, 111, Wc[2]]]
+    .forEach(([x, y, c]) => { if (layer(x, y) === L_WALL) set(x, y, c); });
+})();
+
+// ================================================================ output ===
+(function blit() {
+  const cv = document.getElementById('out');
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(W * SC, H * SC);
+  const d = img.data;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const [r, g, b] = RGB[IB[y * W + x]];
+    for (let j = 0; j < SC; j++) {
+      let o = ((y * SC + j) * W * SC + x * SC) * 4;
+      for (let i = 0; i < SC; i++) { d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255; o += 4; }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const ms = (performance.now() - T0).toFixed(1);
+  document.title = 'render ' + ms + ' ms';
+  console.log('render ms', ms);
+})();
+</script>
+</body></html>

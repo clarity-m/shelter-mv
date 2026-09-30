@@ -1,0 +1,7 @@
+The style frame is finished: `frame.png`, rendered through four passes (`pass1.png`–`pass4.png`). It shows a golden-hour valley built from blocky tiles. Clawd stands at the center of a small island of color, with grass, flowers, trees and a capsule agent pushing a cube toward a flag. Around it is untouched gray terrain where gray walking figures, four-legged ants and a hopper are mid-task, and color runs down a river toward a sunlit horizon where the blocks have resolved into smooth, natural land.
+
+The source is one self-contained, deterministic `frame.html`. It renders the 3D scene on the GPU, then paints over it with about 175,000 brush strokes, but only as much as each area has been "learned." So the colored land and the sky look painted while the untouched gray stays clean and computer-generated, and capability shows up as detail as well as color. `NOTES.md` covers the technique, what works, what doesn't, and what animating it would take.
+
+It reads at a glance and I think it's strong. The weak spots are a soft, empty upper-right sky, busy gray terraces on the right, a fairly symmetric layout, and Clawd being small in the frame.
+
+One thing to know before re-rendering: use `python3 render.py frame.png "ss=2"` (about 15 s) rather than the command in the brief. That command's default graphics path took about 2 minutes just to compile the shader, and its screenshot mode sometimes came back blank while four agents were sharing the GPU. The script switches Chrome to Vulkan and pulls the finished image out of the page itself, with automatic retries.

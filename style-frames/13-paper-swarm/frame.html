@@ -1,0 +1,925 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Shelter MV round 4 / 13: the swarm as a paper lantern</title>
+<style>html,body{margin:0;padding:0;background:#07080E;overflow:hidden;width:1920px;height:1080px}canvas{display:block;position:absolute;left:0;top:0}</style>
+</head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<pre id="log" style="display:none"></pre><pre id="png" style="display:none"></pre>
+<script>
+'use strict';
+// ============================================================================
+// Shelter MV, round 4, frame 13: the swarm as a paper lantern (S32 -> S33, ~3:31)
+//
+// A backlit shadow box photographed at night. Alpha Centauri B sits inside
+// three nested shells of paper panels (the swarm's collectors), like a carved
+// puzzle ball. The outer shell is a dark open lattice. The middle is glowing
+// vellum. The inner is hotter still. Each shell is a spherical Voronoi mosaic
+// with its own cell size, seam width, punched holes at the panel junctions and
+// missing panels. Eleven round ports are punched through all three shells on
+// shared axes, a twelfth on the view axis shows the star itself, and a
+// porthole in the outer shell shows the sim bubble in its cradle.
+// Every light value comes from one transport model:
+//   1. mask pass     : the three shells' open/closed masks over all directions
+//                      (equirect 2048x1024)
+//   2. transport pass: the star (a disc, not a point) seen through the stacked
+//                      masks. This gives the light that reaches shell 2, the
+//                      light that reaches shell 3, and the light that escapes.
+//                      Where the ports line up, the light escapes fully. Those
+//                      eleven beams are the spark. Stray alignments of seams
+//                      leak a faint corona.
+//   3. haze pass     : single scattering along each line of sight (outside the
+//                      swarm and between its shells), importance-sampled in
+//                      angle about the star. A loose collector in one beam casts
+//                      a soft shadow streak.
+//   4. scene pass    : the paper layers front to back (outer shell front, the
+//                      bubble, middle and inner fronts, the star, the lit inner
+//                      faces of the far hemispheres), then space: pinhole stars
+//                      on two layers, the Milky Way in torn tissue, A and the Sun.
+//                      Then the near layer: the straggler, soft-focused.
+//   5. bloom on the hottest holes only, then the warm and cool ramps, grain
+//      and vignette.
+// 2.5D: every layer carries a depth factor; &camx=&camy= moves the camera.
+//   production timing: &bench=N re-renders all passes N times in this page.
+// Warm light is a scalar mapped through the fixed ramp #8A3A24..#FFF3E6. Cool
+// light (stars) goes through its own ramp, which tops out at #D8E2F5.
+// Deterministic: all randomness is hashed from integer cells or seeded.
+//   frame.html?view=final|mask|E|haze|W   &param=value overrides any key of P
+// ============================================================================
+const T0 = performance.now();
+const Q = new URLSearchParams(location.search);
+const VIEW = Q.get('view') || 'final';
+const W = 1920, H = 1080;
+const LOG = [];
+const log = s => { LOG.push(String(s)); document.getElementById('log').textContent = LOG.join('\n'); };
+window.addEventListener('error', e => log('JSERR ' + e.message + ' @' + e.lineno + ':' + e.colno));
+
+const P = {
+  cx: 1030, cy: 520,                 // Alpha Cen B on screen (px)
+  R1: 86, R2: 128, R3: 172,          // shell radii (px)
+  Rs: 9,                             // drawn photosphere radius (px)
+  RsT: 8,                            // source radius used for the penumbrae (px)
+  K1: 5.5, K2: 6.5, K3: 5.0,         // panel density per shell (cells per radius)
+  w1: 0.22, w2: 0.7, w3: 1.2,        // seam half-width, px on the shell surface
+  h1: 0.5, h2: 2.2, h3: 3.6,         // punched hole at each panel junction, radius px
+  portScale: 1.3, winR: 31, peep: 0.045, // lane port size multiplier; bubble porthole radius (px); view-axis port (rad)
+  m1: 0.0, m2: 0.02, m3: 0.04,       // fraction of panels missing at random
+  L0: 1.0,                           // star light on the shells (relative)
+  amb1: 1.2, amb2: 0.45, amb3: 0.18, // diffuse light inside shell 1, between 1-2, between 2-3
+  tau1: 0.10, tau2: 0.12, tau3: 0.02, edgeGlow: 0.45, edgeW: 1.5, edgeFloor3: 0.45, rim: 0.9, silRim: 0.45,
+  th1: 3.5, th2: 2.6, th3: 0.30, lb1: 4.0, lb2: 5.0, lb3: 5.0,   // star glow through each shell's paper, lobe sharpness
+  alb1: 0.55, alb2: 0.45, alb3: 0.35,
+  starW: 14.0,
+  gOut: 2300, g3: 1500, g2: 250, g1: 10,  // single-scattering gains per region
+  Lh: 118, g: 0.2, eps: 0.001, floor: 0.025, // haze falloff (px), HG anisotropy, diffuse glow, far-haze floor
+  back: 0.0, backD: 420,             // lantern light pooled on the far backdrop
+  mw: 0.16,                          // Milky Way backlight
+  exposure: 1.0, bloomW: 0.35, bloomK: 0.30, grain: 0.03, vig: 0.18,
+  bx: -46, by: 34, br: 20, bz: 150, bubGain: 0.55,  // the sim bubble: screen offset from the star, radius, distance from the star (px)
+  ax: 340, ay: 212,                  // Alpha Cen A
+  camx: 0, camy: 0,                  // 2.5D camera offset (px)
+  sunx: 232, suny: 874,              // the Sun
+};
+for (const k of Object.keys(P)) if (Q.has(k)) P[k] = +Q.get(k);
+const R = [P.R1, P.R2, P.R3], KS = [P.K1, P.K2, P.K3];
+const SEEDS = [1013, 2027, 3041];
+
+// ---------------------------------------------------------------- the swarm's sites, mirrored in JS
+// The shader hashes one jittered site per integer cell and keeps the sites whose
+// point lies within half a cell of the sphere of radius K; the site is then pushed
+// out onto that sphere. JS runs the same hash to find which panels to leave out.
+function pcg3d(x, y, z) {
+  x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+  y = (Math.imul(y, 1664525) + 1013904223) >>> 0;
+  z = (Math.imul(z, 1664525) + 1013904223) >>> 0;
+  x = (x + Math.imul(y, z)) >>> 0; y = (y + Math.imul(z, x)) >>> 0; z = (z + Math.imul(x, y)) >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0; y = (y ^ (y >>> 16)) >>> 0; z = (z ^ (z >>> 16)) >>> 0;
+  x = (x + Math.imul(y, z)) >>> 0; y = (y + Math.imul(z, x)) >>> 0; z = (z + Math.imul(x, y)) >>> 0;
+  return [x, y, z];
+}
+function hash3i(cx, cy, cz, seed) {
+  const r = pcg3d(((cx + 1024) + seed) >>> 0, (cy + 1024) >>> 0, (cz + 1024) >>> 0);
+  return [(r[0] & 0xFFFFFF) / 16777215, (r[1] & 0xFFFFFF) / 16777215, (r[2] & 0xFFFFFF) / 16777215];
+}
+function shellSites(k) {
+  const K = KS[k], out = [], n = Math.ceil(K) + 2, f = Math.fround;
+  for (let cz = -n; cz <= n; cz++) for (let cy = -n; cy <= n; cy++) for (let cx = -n; cx <= n; cx++) {
+    const h = hash3i(cx, cy, cz, SEEDS[k]);
+    const pt = [f(cx + 0.1 + f(0.8 * f(h[0]))), f(cy + 0.1 + f(0.8 * f(h[1]))), f(cz + 0.1 + f(0.8 * f(h[2])))];
+    const L = Math.hypot(pt[0], pt[1], pt[2]);
+    if (Math.abs(L - K) > 0.5) continue;
+    out.push({ c: [cx, cy, cz], d: [pt[0] / L, pt[1] / L, pt[2] / L], edge: Math.abs(Math.abs(L - K) - 0.5) < 2e-3 });
+  }
+  return out;
+}
+const SITES = [0, 1, 2].map(shellSites);
+log('sites per shell: ' + SITES.map(s => s.length).join(', '));
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const norm3 = a => { const l = Math.hypot(a[0], a[1], a[2]); return [a[0] / l, a[1] / l, a[2] / l]; };
+const nearest = (k, dir, n) => SITES[k].filter(s => !s.edge).map(s => [dot3(s.d, dir), s]).sort((a, b) => b[0] - a[0]).slice(0, n).map(x => x[1]);
+
+// ---------------------------------------------------------------- the eleven lanes (the spark)
+// Screen angle in degrees (clockwise from +x, y down), elevation toward the camera
+// (rad), and the angular radius of the round port punched through all three
+// shells on that axis. The ports line up, so the star shines straight out; their
+// sizes set how thick and how long each ray is.
+const LANES = [
+  [-90, 0.10, 0.085],
+  [-57, -0.16, 0.045],
+  [-24, 0.42, 0.062],
+  [5, -0.05, 0.080],
+  [36, 0.55, 0.040],
+  [68, -0.20, 0.055],
+  [97, 0.08, 0.070],
+  [128, -0.10, 0.045],
+  [160, 0.18, 0.080],
+  [194, -0.25, 0.040],
+  [228, 0.12, 0.060],
+];
+const MISS = [];           // [cx, cy, cz, shell]
+const addMiss = (s, k) => { if (!MISS.some(m => m[3] === k && m[0] === s.c[0] && m[1] === s.c[1] && m[2] === s.c[2])) MISS.push([s.c[0], s.c[1], s.c[2], k]); };
+const LANE_DIRS = [];
+// stragglers: [x, y, z] relative to the star (px), half-size, rotation, aspect, corner radius, soft focus (px).
+// One sits in the right-hand ray (lane 3), backlit, and throws a shadow streak down it.
+const STRAG = [
+  [300, 23, -16, 9.5, 0.45, 0.62, 1.8, 1.2],
+  [0, 0, 5000, 0.0, 0.0, 1.0, 0.0, 1.0],
+  [0, 0, 5000, 0.0, 0.0, 1.0, 0.0, 1.0],
+  [0, 0, 5000, 0.0, 0.0, 1.0, 0.0, 1.0],
+  [0, 0, 5000, 0.0, 0.0, 1.0, 0.0, 1.0],
+  [0, 0, 5000, 0.0, 0.0, 1.0, 0.0, 1.0],
+];
+const STR_A = new Float32Array(24), STR_B = new Float32Array(24);
+STRAG.forEach((t, j) => { STR_A.set([t[0], t[1], t[2], t[3]], j * 4); STR_B.set([t[4], t[5], t[6], t[7]], j * 4); });
+const LANE_ARR = new Float32Array(44);
+LANES.forEach(([deg, el, rad], j) => {
+  const a = deg * Math.PI / 180;
+  const L = [Math.cos(el) * Math.cos(a), Math.cos(el) * Math.sin(a), Math.sin(el)];
+  LANE_DIRS.push(L); LANE_ARR.set([L[0], L[1], L[2], rad * P.portScale], j * 4);
+});
+// the porthole onto the sim bubble: a round window in the outer shell only (the bubble sits between
+// the outer and middle shells, so the glowing middle shell is its backdrop and no lane opens toward us)
+const WIN = (() => { const x = P.bx, y = P.by + 3; const d = norm3([x, y, Math.sqrt(P.R3 * P.R3 - x * x - y * y)]); return [d[0], d[1], d[2], P.winR / P.R3]; })();
+log('missing panels (explicit): ' + MISS.length);
+const MISS_ARR = new Int32Array(96 * 4);
+MISS.slice(0, 96).forEach((m, i) => MISS_ARR.set(m, i * 4));
+
+// ================================================================ WebGL
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
+if (!gl) log('NO WEBGL2');
+const extCBF = gl.getExtension('EXT_color_buffer_float');
+gl.getExtension('OES_texture_float_linear');
+const dri = gl.getExtension('WEBGL_debug_renderer_info');
+log('renderer: ' + (dri ? gl.getParameter(dri.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) + ' | float targets: ' + !!extCBF);
+
+function compile(type, src, name) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const info = gl.getShaderInfoLog(s); log('COMPILE ERROR ' + name + ':\n' + info);
+    const lines = src.split('\n'); const re = /0:(\d+)/g; let m, seen = 0;
+    while ((m = re.exec(info)) && seen < 4) { const ln = +m[1]; seen++; for (let i = Math.max(1, ln - 2); i <= Math.min(lines.length, ln + 1); i++) log('  ' + i + ': ' + lines[i - 1]); }
+  }
+  return s;
+}
+function program(vs, fs, name) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs, name + '.vs'));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs, name + '.fs'));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) log('LINK ERROR ' + name + ': ' + gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS) || 0;
+  for (let i = 0; i < n; i++) { const inf = gl.getActiveUniform(p, i); u[inf.name.replace(/\[0\]$/, '')] = gl.getUniformLocation(p, inf.name); }
+  p.u = u; return p;
+}
+function setU(p, vals) {
+  gl.useProgram(p);
+  for (const k in vals) {
+    const loc = p.u[k]; if (loc === undefined || loc === null) continue;
+    const v = vals[k];
+    if (typeof v === 'number') gl.uniform1f(loc, v);
+    else if (v.i !== undefined) gl.uniform1i(loc, v.i);
+    else if (v.iv4 !== undefined) gl.uniform4iv(loc, v.iv4);
+    else if (v instanceof Float32Array) gl.uniform4fv(loc, v);
+    else if (v.length === 2) gl.uniform2f(loc, v[0], v[1]);
+    else if (v.length === 3) gl.uniform3f(loc, v[0], v[1], v[2]);
+    else if (v.length === 4) gl.uniform4f(loc, v[0], v[1], v[2], v[3]);
+  }
+}
+function bindTex(p, name, unit, t) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); if (p.u[name]) gl.uniform1i(p.u[name], unit); }
+function target(w, h, nAtt, wrapS) {
+  const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  const texs = [];
+  for (let i = 0; i < (nAtt || 1); i++) {
+    const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrapS || gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, tex, 0);
+    texs.push(tex);
+  }
+  if (nAtt > 1) gl.drawBuffers(texs.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
+  const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (st !== gl.FRAMEBUFFER_COMPLETE) log('FB incomplete ' + st);
+  return { fb, tex: texs[0], texs, w, h };
+}
+const vaoEmpty = gl.createVertexArray();
+function fullscreen(p, tgt) { gl.bindFramebuffer(gl.FRAMEBUFFER, tgt ? tgt.fb : null); gl.viewport(0, 0, tgt ? tgt.w : W, tgt ? tgt.h : H); gl.useProgram(p); gl.bindVertexArray(vaoEmpty); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+
+// ---------------------------------------------------------------- GLSL
+const HDR = '#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n';
+const VS = HDR + 'void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }\n';
+const COMMON = `
+const float PI = 3.14159265358979, TAU = 6.28318530717959;
+uvec3 pcg3d(uvec3 v){
+  v = v*1664525u + 1013904223u;
+  v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;
+  v ^= v >> 16u;
+  v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;
+  return v;
+}
+vec3 hash3i(ivec3 c, uint seed){ uvec3 u = uvec3(c + ivec3(1024)); u.x += seed; return vec3(pcg3d(u) & uvec3(0xFFFFFFu))/16777215.0; }
+float h12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y)*p3.z); }
+vec2 h22(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz)*p3.zy); }
+float gn(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*f*(f*(f*6.0-15.0)+10.0);
+  float a = dot(h22(i)*2.0-1.0, f);
+  float b = dot(h22(i+vec2(1.0,0.0))*2.0-1.0, f-vec2(1.0,0.0));
+  float c = dot(h22(i+vec2(0.0,1.0))*2.0-1.0, f-vec2(0.0,1.0));
+  float d = dot(h22(i+vec2(1.0,1.0))*2.0-1.0, f-vec2(1.0,1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm(vec2 p, int oct){
+  float s = 0.0, a = 0.5;
+  mat2 Rm = mat2(0.8, -0.6, 0.6, 0.8);
+  for (int i = 0; i < 6; i++){ if (i >= oct) break; s += a*gn(p); p = Rm*p*2.03 + vec2(13.7, 7.3); a *= 0.5; }
+  return s;
+}
+float h13(vec3 p){ p = fract(p*0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y)*p.z); }
+float vn3(vec3 p){
+  vec3 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+  return mix(mix(mix(h13(i), h13(i+vec3(1,0,0)), f.x), mix(h13(i+vec3(0,1,0)), h13(i+vec3(1,1,0)), f.x), f.y),
+             mix(mix(h13(i+vec3(0,0,1)), h13(i+vec3(1,0,1)), f.x), mix(h13(i+vec3(0,1,1)), h13(i+vec3(1,1,1)), f.x), f.y), f.z);
+}
+float fbm3(vec3 p){ return 0.55*vn3(p) + 0.30*vn3(p*2.07 + 17.1) + 0.15*vn3(p*4.13 + 5.3); }
+vec2 dirUV(vec3 d){ return vec2(atan(d.y, d.x)/TAU + 0.5, acos(clamp(d.z, -1.0, 1.0))/PI); }
+vec3 uvDir(vec2 uv){ float ph = uv.x*TAU - PI, th = uv.y*PI; return vec3(sin(th)*cos(ph), sin(th)*sin(ph), cos(th)); }
+mat2 rot2(float a){ float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+
+// ---- stragglers: loose collectors outside the swarm (xyz relative to the star in px, w = half-size)
+uniform vec4 uStr[6]; uniform vec4 uStrB[6];   // uStrB: rotation, aspect, corner, soft-focus px
+float strShadow(vec3 P){                      // is the star hidden from P by a straggler? (soft, star-sized penumbra)
+  float sh = 1.0;
+  for (int j = 0; j < 6; j++){
+    vec3 S = uStr[j].xyz; float rS = uStr[j].w*0.85;
+    float t = dot(S, P)/dot(P, P);
+    if (t <= 0.0 || t >= 1.0) continue;
+    float dd = length(S - t*P);
+    float pen = 1.0 + 4.0*(1.0 - t)/max(t, 0.05);
+    sh *= mix(1.0, smoothstep(rS - 0.5*pen, rS + 0.5*pen, dd), 0.95);
+  }
+  return sh;
+}
+// ---- the swarm: three shells of panels, a spherical Voronoi from jittered 3D cells
+uniform vec3 uK;          // cells per radius
+uniform vec3 uWn;         // seam half-width (cell units)
+uniform vec3 uMissR;      // random missing fraction
+uniform ivec4 uMiss[96];  // explicitly missing panels: cell xyz, shell w
+uniform int uNMiss;
+const uint SEEDS[3] = uint[3](1013u, 2027u, 3041u);
+bool siteOf(ivec3 c, float K, uint seed, out vec3 s){
+  vec3 h = hash3i(c, seed);
+  vec3 pt = vec3(c) + 0.1 + 0.8*h;
+  float L = length(pt);
+  s = pt*(K/L);
+  return abs(L - K) <= 0.5;
+}
+struct VC { bool ok; float md; vec3 n; float md2; vec3 n2; ivec3 id; vec3 a; };
+VC voro(vec3 d, int k){
+  float K = uK[k]; uint seed = SEEDS[k];
+  VC r; r.ok = false; r.md = 1e3; r.n = vec3(0.0, 0.0, 1.0); r.md2 = 1e3; r.n2 = vec3(0.0, 1.0, 0.0); r.id = ivec3(0); r.a = d*K;
+  vec3 P = d*K; ivec3 ic = ivec3(floor(P));
+  float best = 1e9;
+  for (int z = -1; z <= 1; z++) for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++){
+    ivec3 c = ic + ivec3(x, y, z);
+    if (abs(length(vec3(c) + 0.5) - K) > 1.25) continue;
+    vec3 s; if (!siteOf(c, K, seed, s)) continue;
+    vec3 v = s - P; float dd = dot(v, v);
+    if (dd < best){ best = dd; r.a = s; r.id = c; }
+  }
+  if (best > 1e8) return r;
+  r.ok = true;
+  for (int z = -2; z <= 2; z++) for (int y = -2; y <= 2; y++) for (int x = -2; x <= 2; x++){
+    if (x == 0 && y == 0 && z == 0) continue;
+    ivec3 c = r.id + ivec3(x, y, z);
+    if (abs(length(vec3(c) + 0.5) - K) > 1.25) continue;
+    vec3 b; if (!siteOf(c, K, seed, b)) continue;
+    vec3 n = normalize(b - r.a);
+    float dist = dot(0.5*(r.a + b) - P, n);
+    if (dist < r.md){ r.md2 = r.md; r.n2 = r.n; r.md = dist; r.n = n; } else if (dist < r.md2){ r.md2 = dist; r.n2 = n; }
+  }
+  return r;
+}
+uniform vec3 uHole;       // radius of the punched hole at each panel junction (cell units)
+float cutDist(VC v, int k){
+  float c = -dot(v.n, v.n2);                              // cos of the panel's corner angle
+  float sn = sqrt(max(1.0 - c*c, 0.05));
+  float rv = sqrt(max(v.md*v.md + v.md2*v.md2 + 2.0*v.md*v.md2*c, 0.0))/sn;   // distance to the corner
+  return min(v.md - uWn[k], rv - uHole[k]);
+}
+// the eleven lanes: round ports punched through all three shells on the same axis
+uniform vec4 uLane[11];
+uniform vec4 uWin;        // the porthole onto the sim bubble (outer shell only): axis, angular radius
+uniform float uPeep;      // a small port on the view axis through all shells (0 = none)
+float portAngle(vec3 d, int k, out vec3 L){
+  float best = 10.0; L = vec3(0.0, 0.0, 1.0);
+  for (int j = 0; j < 11; j++){ float a = acos(clamp(dot(d, uLane[j].xyz), -1.0, 1.0)) - uLane[j].w; if (a < best){ best = a; L = uLane[j].xyz; } }
+  if (k == 2){ float a = acos(clamp(dot(d, uWin.xyz), -1.0, 1.0)) - uWin.w; if (a < best){ best = a; L = uWin.xyz; } }
+  if (uPeep > 0.0){ float a = acos(clamp(d.z, -1.0, 1.0)) - uPeep*(k == 0 ? 1.0 : (k == 1 ? 0.8 : 0.62)); if (a < best){ best = a; L = vec3(0.0, 0.0, 1.0); } }
+  return best;
+}
+bool missing(VC v, int k){
+  for (int i = 0; i < 96; i++){ if (i >= uNMiss) break; if (uMiss[i].w == k && uMiss[i].xyz == v.id) return true; }
+  return hash3i(v.id, SEEDS[k] + 7777u).x < uMissR[k];
+}
+// ---- paper
+float fibres(vec2 p, float s){
+  float acc = 0.0;
+  for (int i = 0; i < 3; i++){
+    float a = 0.35 + (float(i) - 1.0)*0.55 + s*2.0;
+    vec2 r = rot2(a)*p;
+    float n = gn(vec2(r.x*0.07, r.y*0.45) + vec2(s*13.1 + float(i)*7.7, s*5.3 - float(i)*3.1));
+    acc += pow(clamp(1.0 - abs(n)*3.2, 0.0, 1.0), 5.0);
+  }
+  return acc/3.0;
+}
+float paperT(vec2 p, float s){   // transmission of thin paper: cloudy flocs, mottling, fibres (mean ~1)
+  float fl = fbm(p*0.026 + s*3.1, 4);
+  float md = fbm(p*0.12 + s*1.7, 3);
+  float f = fibres(p, s);
+  return clamp(1.0 + 1.0*fl + 0.35*md + 1.1*(f - 0.10), 0.15, 2.5);
+}
+float paperS(vec2 p, float s){   // surface relief seen in raking light (mean ~0)
+  return 0.6*fbm(p*0.10 + s*2.3, 3) + 0.6*(fibres(p*1.4, s + 0.5) - 0.10);
+}
+`;
+
+// ---- 1. masks: the three shells over all directions (R, G, B = open fraction of shells 1, 2, 3)
+const FS_MASK = HDR + COMMON + `
+uniform vec2 uRes;
+out vec4 o;
+void main(){
+  vec3 d = uvDir(gl_FragCoord.xy/uRes);
+  float aa = 0.75*PI/uRes.y;
+  vec3 g = vec3(1.0);
+  for (int k = 0; k < 3; k++){
+    vec3 Lp; float pa = portAngle(d, k, Lp);
+    float port = 1.0 - smoothstep(-aa, aa, pa);
+    VC v = voro(d, k);
+    if (!v.ok || missing(v, k)) continue;
+    float K = uK[k];
+    g[k] = max(1.0 - smoothstep(-aa*K, aa*K, cutDist(v, k)), port);
+  }
+  o = vec4(g, 1.0);
+}`;
+
+// ---- 2. transport: the star disc seen through the stacked shells
+const FS_TRANS = HDR + COMMON + `
+uniform sampler2D uMask; uniform vec2 uRes; uniform vec3 uR; uniform float uRsT;
+out vec4 o;
+void main(){
+  vec3 d = uvDir(gl_FragCoord.xy/uRes);
+  vec3 t1 = normalize(abs(d.z) < 0.9 ? cross(d, vec3(0.0, 0.0, 1.0)) : cross(d, vec3(1.0, 0.0, 0.0)));
+  vec3 t2 = cross(d, t1);
+  float rot = h12(gl_FragCoord.xy)*TAU;
+  float e1 = 0.0, e2 = 0.0, e3 = 0.0;
+  const int N = 32;
+  for (int i = 0; i < N; i++){
+    float rr = sqrt((float(i) + 0.5)/float(N))*uRsT;
+    float a = float(i)*2.39996323 + rot;
+    vec3 s = (cos(a)*t1 + sin(a)*t2)*rr;
+    float g1a = texture(uMask, dirUV(normalize(d + s*(uR.y - uR.x)/(uR.x*uR.y)))).r;   // at shell 2
+    float g1b = texture(uMask, dirUV(normalize(d + s*(uR.z - uR.x)/(uR.x*uR.z)))).r;   // at shell 3
+    float g2b = texture(uMask, dirUV(normalize(d + s*(uR.z - uR.y)/(uR.y*uR.z)))).g;
+    float g1c = texture(uMask, dirUV(normalize(d + s/uR.x))).r;                        // escaping
+    float g2c = texture(uMask, dirUV(normalize(d + s/uR.y))).g;
+    float g3c = texture(uMask, dirUV(normalize(d + s/uR.z))).b;
+    e1 += g1a; e2 += g1b*g2b; e3 += g1c*g2c*g3c;
+  }
+  o = vec4(e1, e2, e3, 0.0)/float(N);
+}`;
+
+// ---- 3. haze: single scattering along each line of sight, sampled in angle about the star
+const FS_HAZE = HDR + COMMON + `
+uniform sampler2D uE; uniform vec2 uRes; uniform vec2 uC; uniform vec3 uR; uniform float uRs;
+uniform float uLh, uG, uEps, uFloor; uniform vec4 uGain;   // out, between 2-3, between 1-2, inside 1
+out vec4 o;
+float hg(float mu){ float g2 = uG*uG; return pow(1.0 + g2, 1.5)/pow(1.0 + g2 - 2.0*uG*mu, 1.5); }  // 1 at 90 degrees
+float clump(vec3 P){ float f = fbm3(P/150.0 + vec3(3.1, 7.7, 1.3)); return 0.35 + 1.3*f; }
+float region(float rho, vec2 qh, float Rin, float Rout, int ch, float jit){
+  if (rho >= Rout) return 0.0;
+  float a1 = acos(rho/Rout), a0 = rho < Rin ? acos(rho/Rin) : -a1;
+  const int N = 20; float da = (a1 - a0)/float(N), s = 0.0;
+  for (int i = 0; i < N; i++){
+    float a = a0 + (float(i) + jit)*da;
+    vec3 d = vec3(qh*cos(a), sin(a));
+    float E = ch == 0 ? 1.0 : (ch == 1 ? texture(uE, dirUV(d)).r : texture(uE, dirUV(d)).g);
+    s += E*clump(d*rho/cos(a))*hg(d.z);
+  }
+  return s*da/rho;
+}
+void main(){
+  vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y)*(1920.0/uRes.x);
+  vec2 q = p - uC; float rho = max(length(q), 0.75); vec2 qh = q/rho;
+  float jit = h12(gl_FragCoord.xy + 0.5);
+  float Wout = 0.0;
+  float Rf = uR.z + 6.0*uLh;
+  if (rho < Rf){
+    float amax = acos(clamp(rho/Rf, 0.0, 0.9999));
+    float a0 = rho < uR.z ? acos(rho/uR.z) : -amax;
+    if (amax > a0){
+      const int N = 96; float da = (amax - a0)/float(N);
+      for (int i = 0; i < N; i++){
+        float a = a0 + (float(i) + jit)*da;
+        vec3 d = vec3(qh*cos(a), sin(a));
+        float r = rho/cos(a);
+        float h = (exp(-(r - uR.z)/uLh) + uFloor*exp(-(r - uR.z)/(3.0*uLh)))*clump(d*r);
+        Wout += h*(texture(uE, dirUV(d)).b*strShadow(d*r) + uEps)*hg(d.z);
+      }
+      Wout *= da/rho;
+    }
+  }
+  float W3 = region(rho, qh, uR.y, uR.z, 2, jit);
+  float W2 = region(rho, qh, uR.x, uR.y, 1, jit);
+  float W1 = region(rho, qh, uRs, uR.x, 0, jit);
+  o = vec4(Wout, W3, W2, W1)*uGain;
+}`;
+
+// ---- 4. scene: paper layers front to back, then space
+const FS_SCENE = HDR + COMMON + `
+uniform sampler2D uE, uHz;
+uniform vec2 uC; uniform vec3 uR; uniform float uRs;
+uniform vec3 uAmb, uTau, uAlb, uI, uThru, uLobe, uEdgeFloor;
+uniform float uL0, uEdgeGlow, uEdgeW, uRim, uSilRim, uStarW;
+uniform vec4 uBub;          // bubble centre offset from the star (px), radius (px)
+uniform float uBubGain;
+uniform vec2 uCam;          // camera offset (px); each layer moves by uCam times its depth factor
+uniform vec2 uA, uSun;
+uniform float uMW, uBack, uBackD, uEps;
+layout(location = 0) out vec4 oL;     // x: warm light, y: cool light
+layout(location = 1) out vec4 oB;     // linear rgb of the paper itself and the sim bubble
+vec3 lin(vec3 c){ return pow(c, vec3(2.2)); }
+
+float wobble(vec2 p, float s){   // hand-cut edges: sub-pixel wander plus the odd small nick
+  float w = 0.45*gn(p*0.21 + s) + 0.22*gn(p*0.63 - s*1.7);
+  float nick = smoothstep(0.50, 0.60, gn(p*0.075 + s*3.7 + 11.0));
+  return w - 1.4*nick;
+}
+struct Lay { float a; float W; vec3 base; };
+const vec3 CARD0 = vec3(0.0144, 0.0185, 0.0513);  // #212843 inner (farthest of the three)
+const vec3 CARD1 = vec3(0.0080, 0.0110, 0.0296);  // #171C30
+const vec3 CARD2 = vec3(0.0052, 0.0065, 0.0144);  // #10131F outer (nearest)
+Lay shell(int k, float side, vec2 p, vec2 q, float rho, vec2 qh){
+  Lay L; L.a = 0.0; L.W = 0.0; L.base = vec3(0.0);
+  float Rk = uR[k];
+  if (rho >= Rk + 1.5) return L;
+  float zz = sqrt(max(Rk*Rk - rho*rho, 0.0));
+  vec3 Pl = vec3(q, side*zz);
+  vec3 d = normalize(Pl);
+  VC v = voro(d, k);
+  if (!v.ok) return L;
+  bool present = !missing(v, k);
+  float K = uK[k];
+  float zs = side*max(zz, 0.03*Rk);
+  vec2 g = (K/Rk)*vec2(v.n.x - v.n.z*Pl.x/zs, v.n.y - v.n.z*Pl.y/zs);
+  float gl = max(length(g), 1e-4);
+  vec2 nS = g/gl;                                     // screen direction from inside the panel toward its nearest cut
+  float sd = float(k)*17.3 + side*5.1;
+  float edge = cutDist(v, k)/gl;                      // px from the cut into the panel
+  vec3 Lp; float pa = portAngle(d, k, Lp);
+  vec3 np = normalize(d - Lp*dot(d, Lp) + 1e-6);
+  vec2 gp = vec2(np.x - np.z*Pl.x/zs, np.y - np.z*Pl.y/zs)/Rk;
+  float edgeP = pa/max(length(gp), 1e-4);
+  if (edgeP < edge){ edge = edgeP; nS = -gp/max(length(gp), 1e-4); }
+  edge += wobble(p, sd);
+  float limb = (Rk - rho) + 0.5*gn(p*0.2 + sd + 3.0);
+  float a = present ? clamp(edge + 0.5, 0.0, 1.0) : 0.0;
+  a *= clamp(limb + 0.5, 0.0, 1.0);
+  if (a <= 0.0) return L;
+  float pid = hash3i(v.id, SEEDS[k] + 99u).x;
+  vec2 pp = rot2(pid*TAU)*(p + pid*vec2(517.0, 293.0));
+  float trans = paperT(pp, pid*7.0);
+  float surf = paperS(pp, pid*7.0);
+  vec4 E = texture(uE, dirUV(d));
+  float facing = clamp(dot(nS, -qh), 0.0, 1.0);
+  float ne = exp(-max(edge, 0.0)/0.9);
+  float tone = 0.85 + 0.3*hash3i(v.id, SEEDS[k] + 5u).y;   // each collector cut from a slightly different sheet
+  if (side > 0.0){
+    // front hemisphere: we see the outer face; its light arrives from inside, through the paper
+    float inner = k == 0 ? uL0*uI.x + uAmb.x : (k == 1 ? uL0*uI.y*E.r + uAmb.y : uL0*uI.z*E.g + uAmb.z);
+    float outer = k == 0 ? uAmb.y : (k == 1 ? uAmb.z : 0.0);
+    float thru = uThru[k]*uL0*pow(max(d.z, 0.0), uLobe[k]);          // the star through the paper: forward-scattered
+    float Wt = (uTau[k]*inner + thru)*trans*tone + uEdgeGlow*(inner + thru + uEdgeFloor[k])*exp(-max(edge, 0.0)/uEdgeW)*trans;
+    float Wr = uAlb[k]*outer*(0.8 + 0.4*surf)*tone;
+    float rim = uRim*inner*ne*pow(facing, 1.5)*(0.3 + 0.7*(rho/Rk)*(rho/Rk));
+    float dark = 1.0 - 0.6*ne*(1.0 - facing);
+    L.W = (Wt + Wr)*dark + rim;
+  } else {
+    // far hemisphere: we see its inner face, lit by the star
+    float lit = k == 0 ? uL0*uI.x : (k == 1 ? uL0*uI.y*E.r : uL0*uI.z*E.g);
+    float amb = k == 0 ? uAmb.x : (k == 1 ? uAmb.y : uAmb.z);
+    float Wr = uAlb[k]*(lit + 0.5*amb)*(0.75 + 0.5*surf)*tone;
+    float rim = 0.6*uRim*lit*ne*pow(facing, 1.5);
+    float dark = 1.0 - 0.5*ne*(1.0 - facing);
+    L.W = Wr*dark + rim;
+  }
+  vec3 card = k == 0 ? CARD0 : (k == 1 ? CARD1 : CARD2);
+  L.base = card*(0.9 + 0.2*surf);
+  L.a = a;
+  return L;
+}
+
+// depth factors (how far each layer moves for a unit camera offset): far pinholes 0.10, Milky Way
+// tissue 0.14, mid pinholes 0.25, lantern far hemispheres 0.42-0.49, star 0.52, near hemispheres
+// 0.55-0.62, bubble 0.60, stragglers 0.90
+const float F_SHELL[6] = float[6](0.55, 0.58, 0.62, 0.49, 0.46, 0.42);   // fronts k=0..2, backs k=0..2
+Lay shellAt(int k, float side, vec2 p){
+  vec2 q = p - uC - uCam*F_SHELL[side > 0.0 ? k : k + 3];
+  float rho = length(q);
+  return shell(k, side, p, q, rho, q/max(rho, 1e-3));
+}
+// ---- the simulated world: a tiny luminous sphere with a hill and a sunset
+vec3 simWorld(vec2 u){
+  float r2 = dot(u, u);
+  vec2 w = u*(1.0 + 0.22*r2);                          // seen through a curved skin
+  float hz = 0.20;
+  vec3 lav = lin(vec3(0.788, 0.737, 0.922)), pink = lin(vec3(0.953, 0.733, 0.812)), peach = lin(vec3(1.0, 0.839, 0.710));
+  float t = clamp((w.y + 1.0)/(hz + 1.0), 0.0, 1.0);
+  vec3 col = mix(lav, pink, smoothstep(0.05, 0.62, t));
+  col = mix(col, peach, smoothstep(0.55, 1.0, t));
+  vec2 sp = vec2(0.36, hz - 0.05);
+  float ds = length((w - sp)*vec2(1.0, 1.25));
+  col += lin(vec3(1.0, 0.86, 0.70))*0.55*exp(-ds*ds/0.06);
+  col = mix(col, lin(vec3(1.0, 0.96, 0.88))*1.6, smoothstep(0.15, 0.12, ds));
+  if (w.y > hz) col = mix(lin(vec3(0.97, 0.78, 0.72)), lin(vec3(0.70, 0.62, 0.80)), clamp((w.y - hz)/0.6, 0.0, 1.0));
+  float hill = hz + 0.05 - 0.36*exp(-pow((w.x + 0.30)/0.46, 2.0)) - 0.10*exp(-pow((w.x - 0.55)/0.35, 2.0));
+  float inHill = smoothstep(-0.02, 0.02, w.y - hill);
+  vec3 hillC = mix(lin(vec3(0.49, 0.58, 0.55)), lin(vec3(0.60, 0.66, 0.62)), clamp((w.y - hill)*2.5, 0.0, 1.0));
+  hillC += lin(vec3(1.0, 0.80, 0.62))*0.35*exp(-(w.y - hill)*40.0)*smoothstep(-0.6, 0.4, w.x);   // sunset rim on the crest
+  col = mix(col, hillC, inHill);
+  vec2 tb = vec2(-0.30, hz + 0.05 - 0.36 + 0.03);      // tree standing on the crest
+  float trunk = smoothstep(0.045, 0.030, abs(w.x - tb.x))*step(w.y, tb.y)*step(tb.y - 0.15, w.y);
+  float crown = smoothstep(0.12, 0.095, length((w - tb - vec2(0.0, -0.19))*vec2(0.95, 1.2)));
+  col = mix(col, lin(vec3(0.33, 0.42, 0.42)), max(trunk, crown));
+  return col;
+}
+
+// ---- space
+const vec2 MW0 = vec2(232.0, 874.0);
+const vec2 MWA = vec2(0.9204, -0.3912), MWN = vec2(0.3912, 0.9204);
+float mwS(vec2 p, out float t){ vec2 v = p - MW0; t = dot(v, MWA); return dot(v, MWN) - (0.00009*(t - 850.0)*(t - 850.0) - 65.0); }
+float mwW(float t){ return 150.0 + 40.0*sin(t/430.0 + 1.1) + 30.0*gn(vec2(t/260.0, 3.1)); }
+float mwProfile(vec2 p){ float t; float s = mwS(p, t); float w = mwW(t); return exp(-2.0*s*s/(w*w)); }
+float torn(vec2 p, float s){ return 10.0*fbm(p/60.0 + s, 3) + 3.0*fbm(p/11.0 - s, 2) + 1.3*gn(p/2.6 + s*5.0); }
+float milkyWay(vec2 p){
+  float t; float s = mwS(p, t); float w = mwW(t);
+  float prof = exp(-2.2*s*s/(w*w));
+  float along = 0.55 + 0.45*smoothstep(1900.0, -150.0, t);
+  float T0 = 0.75*paperT(p*0.7, 5.0);
+  float c1 = s - (-22.0 + 34.0*sin(t/310.0));
+  float in1 = smoothstep(-0.8, 0.8, (26.0 + 12.0*sin(t/170.0 + 2.0)) + torn(p, 1.0) - abs(c1));
+  float c2 = s - (48.0 + 20.0*sin(t/230.0 + 4.0));
+  float in2 = smoothstep(-0.8, 0.8, (14.0 + 9.0*sin(t/120.0 + 1.0)) + torn(p, 2.0) - abs(c2));
+  float T1 = mix(1.0, 0.72*paperT(p*0.9, 8.0), in1);
+  float T2 = mix(1.0, 0.75*paperT(p*1.1, 9.0), in2);
+  return uMW*prof*along*T0*T1*T2;
+}
+float starLayer(vec2 p, float cs, float dens, float seed, float bmin, float bmax, float bpow, float rad){
+  vec2 cell = floor(p/cs); float K = 0.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++){
+    vec2 c = cell + vec2(float(i), float(j));
+    vec2 sp = (c + 0.12 + 0.76*h22(c + seed))*cs;
+    float dl = dens*(1.0 + 3.0*mwProfile(sp));
+    if (h12(c*1.37 + seed*0.71) > dl) continue;
+    float u = pow(h12(c + seed*3.3 + 0.5), bpow);
+    float b = bmin + (bmax - bmin)*u;
+    float r = rad*(0.6 + 0.7*sqrt(u));
+    float dd = length(p - sp);
+    K += b*clamp(r + 0.5 - dd, 0.0, 1.0) + 0.10*b*exp(-dd*dd/(8.0*r*r));
+  }
+  return K;
+}
+float acenA(vec2 p){
+  float dd = length(p - uA);
+  float tis = paperT(p*1.3, 11.0);
+  return 9.0*clamp(2.4 - dd, 0.0, 1.0) + (1.2*exp(-dd/5.0) + 0.32*exp(-dd/20.0))*tis + 0.05*exp(-dd/80.0);
+}
+float sunDot(vec2 p){
+  float dd = length(p - uSun);
+  return 2.4*clamp(1.35 - dd, 0.0, 1.0) + 0.30*exp(-dd/3.5)*paperT(p*1.5, 13.0) + 0.05*exp(-dd/14.0);
+}
+
+void main(){
+  vec2 p = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y);
+  vec2 q = p - uC; float rho = length(q); vec2 qh = q/max(rho, 1e-3);
+  vec4 hz = texture(uHz, (gl_FragCoord.xy + vec2(-uCam.x, uCam.y)*0.52)/vec2(1920.0, 1080.0));
+  float T = 1.0, Wl = 0.0; vec3 B = vec3(0.0);
+  if (rho < uR.z + 1.5 + 0.7*length(uCam)){
+    Lay L = shellAt(2, 1.0, p);
+    Wl += T*L.a*L.W; B += T*L.a*L.base; T *= 1.0 - L.a;
+    // silhouette rim: the cut edge of the outermost disc catches the glow behind it
+    Wl += uSilRim*exp(-max(uR.z - rho, 0.0)/1.2)*step(rho, uR.z + 1.0)*L.a;
+    Wl += T*hz.y*0.5;
+    // the sim bubble, held in a small cupped cradle between the outer and middle shells
+    {
+      vec2 ub = (q - uCam*0.60 - uBub.xy)/uBub.z; float rb = length(ub);
+      if (rb < 1.5){
+        // cradle: the swarm element hosting the sim, a cupped piece of card under the bubble
+        float ang = atan(ub.x, ub.y);                        // 0 = straight down
+        float tt = clamp(abs(ang)/1.30, 0.0, 1.0);
+        float thick = 0.26*sqrt(max(1.0 - tt*tt, 0.0));
+        float dIn = (rb - 1.08)*uBub.z, dOut = (1.08 + thick - rb)*uBub.z, dTip = (1.30 - abs(ang))*rb*uBub.z;
+        float ac = clamp(min(min(dIn, dOut), dTip) + 0.5 + 0.35*gn(p*0.5), 0.0, 1.0);
+        vec2 toStar = normalize(-uBub.xy);
+        float warmRim = exp(-max(dOut, 0.0)/0.9)*clamp(dot(normalize(ub), toStar) + 0.35, 0.0, 1.0);
+        float pastRim = exp(-max(dIn, 0.0)/0.8);
+        Wl += T*ac*(0.9*warmRim + 0.10);
+        B += T*ac*(CARD2 + lin(vec3(0.96, 0.80, 0.84))*0.30*pastRim);
+        T *= 1.0 - ac;
+        // the bubble: a tiny luminous world
+        float ab = clamp((1.0 - rb)*uBub.z + 0.5, 0.0, 1.0);
+        if (ab > 0.0){
+          vec3 col = simWorld(ub);
+          float film = smoothstep(0.78, 1.0, rb);
+          vec3 irid = lin(vec3(0.74, 0.90, 0.94)*(0.5 + 0.5*cos(vec3(0.0, 2.1, 4.2) + atan(ub.y, ub.x)*2.0 + rb*9.0))*0.5 + 0.5);
+          col = mix(col, col*0.8 + irid*0.30, film);
+          float spec = exp(-pow(length(ub - 0.62*toStar)/0.16, 2.0));   // the star glints on the skin
+          Wl += T*ab*(0.8*spec + 0.08*film);
+          B += T*ab*col*uBubGain;
+          T *= 1.0 - ab;
+        }
+        B += T*lin(vec3(0.95, 0.82, 0.86))*0.06*exp(-max(rb - 1.0, 0.0)*uBub.z/4.0)*step(1.0, rb);
+      }
+    }
+    Wl += T*hz.y*0.5;
+    if (T > 0.003){
+      L = shellAt(1, 1.0, p);
+      Wl += T*L.a*L.W; B += T*L.a*L.base; T *= 1.0 - L.a;
+      Wl += T*hz.z;
+      if (T > 0.003){
+        L = shellAt(0, 1.0, p);
+        Wl += T*L.a*L.W; B += T*L.a*L.base; T *= 1.0 - L.a;
+        Wl += T*hz.w;
+        if (T > 0.003){
+          float rs = length(q - uCam*0.52);
+          if (rs < uRs + 1.0){
+            float as = clamp(uRs - rs + 0.5, 0.0, 1.0);
+            float mu = sqrt(max(1.0 - (rs/uRs)*(rs/uRs), 0.0));
+            Wl += T*as*uStarW*(0.55 + 0.45*mu)*(0.85 + 0.3*fbm(p*0.8, 3));
+            T *= 1.0 - as;
+          }
+          for (int k = 0; k < 3; k++){
+            if (T <= 0.003) break;
+            L = shellAt(k, -1.0, p);
+            Wl += T*L.a*L.W; B += T*L.a*L.base; T *= 1.0 - L.a;
+          }
+        }
+      }
+    }
+  }
+  // space behind
+  float Kbg = 0.0, Wbg = 0.0;
+  vec3 base = lin(mix(vec3(0.027, 0.031, 0.055), vec3(0.055, 0.067, 0.125), clamp(0.25 + 0.55*p.y/1080.0 + 0.25*mwProfile(p), 0.0, 1.0)));
+  base *= 0.92 + 0.16*paperS(p, 21.0);
+  Kbg += milkyWay(p - uCam*0.14);
+  Kbg += starLayer(p - uCam*0.10, 11.0, 0.22, 1.0, 0.02, 0.35, 5.0, 0.55);
+  Kbg += starLayer(p - uCam*0.25, 37.0, 0.30, 2.0, 0.10, 1.40, 3.0, 0.75);
+  Kbg += acenA(p - uCam*0.18) + sunDot(p - uCam*0.12);
+  if (uBack > 0.0){
+    vec3 dir = normalize(vec3(q, -uBackD));
+    float irr = uBackD*uBackD*uBackD/pow(rho*rho + uBackD*uBackD, 1.5);
+    Wbg += uBack*irr*(texture(uE, dirUV(dir)).b + uEps)*(0.8 + 0.5*paperS(p, 21.0));
+  }
+  Wl += T*Wbg; B += T*base;
+  float Kl = T*Kbg;
+  Wl += hz.x;
+  for (int j = 0; j < 6; j++){
+    vec4 S = uStr[j], Sb = uStrB[j];
+    if (S.w <= 0.0) continue;
+    vec2 lq = rot2(-Sb.x)*(q - uCam*0.90 - S.xy);
+    vec2 hs = vec2(S.w, S.w*Sb.y);
+    vec2 dq = abs(lq) - hs + Sb.z;
+    float sdf = length(max(dq, 0.0)) + min(max(dq.x, dq.y), 0.0) - Sb.z;
+    sdf = max(sdf, dot(lq, normalize(vec2(0.8, 1.0))) - 0.55*S.w);      // one corner cut off: a panel, not a tile
+    sdf += 0.35*gn(p*0.4 + float(j)*7.0);
+    float a = clamp(0.5 - sdf/Sb.w, 0.0, 1.0);
+    if (a <= 0.0) continue;
+    vec2 gq = vec2(dFdx(sdf), dFdy(sdf));
+    vec3 sd = normalize(S.xyz);
+    float inLane = 0.0;
+    for (int l = 0; l < 11; l++) inLane = max(inLane, smoothstep(cos(uLane[l].w*1.3), cos(uLane[l].w*0.5), dot(sd, uLane[l].xyz)));
+    float irr = uL0*pow(uR.z/length(S.xyz), 2.0)*(0.08 + 4.0*inLane);
+    vec2 ns = gq/max(length(gq), 1e-4);
+    float facing = clamp(dot(ns, -normalize(S.xy)), 0.0, 1.0);
+    float rim = irr*exp(-max(-sdf, 0.0)/1.1)*(0.35 + 0.65*facing);     // backlit: the whole outline glows, most on the star side
+    Wl = mix(Wl, rim + 0.03*irr, a);
+    B = mix(B, CARD2*0.9, a);
+    Kl *= 1.0 - a;
+  }
+  oL = vec4(Wl, Kl, 0.0, 1.0);
+  oB = vec4(B, 1.0);
+}`;
+
+// ---- 5. bloom and the photograph
+const FS_DOWN = HDR + `
+uniform sampler2D uSrc; uniform vec2 uTS, uSrcTexel, uThr; uniform int uPre;
+out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy/uTS;
+  vec4 c = 0.25*(texture(uSrc, uv + uSrcTexel*vec2(-1.0, -1.0)) + texture(uSrc, uv + uSrcTexel*vec2(1.0, -1.0))
+               + texture(uSrc, uv + uSrcTexel*vec2(-1.0, 1.0)) + texture(uSrc, uv + uSrcTexel*vec2(1.0, 1.0)));
+  if (uPre == 1) c = vec4(max(c.x - uThr.x, 0.0), max(c.y - uThr.y, 0.0), 0.0, 0.0);
+  o = c;
+}`;
+const FS_UP = HDR + `
+uniform sampler2D uLow, uCur; uniform vec2 uTS, uLowTexel; uniform float uCurW;
+out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy/uTS; vec2 t = uLowTexel;
+  vec4 s = texture(uLow, uv)*4.0
+         + (texture(uLow, uv + vec2(t.x, 0.0)) + texture(uLow, uv - vec2(t.x, 0.0)) + texture(uLow, uv + vec2(0.0, t.y)) + texture(uLow, uv - vec2(0.0, t.y)))*2.0
+         + texture(uLow, uv + t) + texture(uLow, uv - t) + texture(uLow, uv + vec2(t.x, -t.y)) + texture(uLow, uv + vec2(-t.x, t.y));
+  o = s/16.0 + uCurW*texture(uCur, uv);
+}`;
+const FS_FINAL = HDR + COMMON + `
+uniform sampler2D uL, uB, uBloom; uniform float uExp, uBloomW, uBloomK, uGrain, uVig;
+out vec4 o;
+vec3 rampW(float x){
+  const vec3 c0 = vec3(0.541, 0.227, 0.141), c1 = vec3(0.769, 0.376, 0.247), c2 = vec3(0.851, 0.467, 0.341);
+  const vec3 c3 = vec3(0.941, 0.627, 0.439), c4 = vec3(1.0, 0.851, 0.722), c5 = vec3(1.0, 0.953, 0.902);
+  if (x < 0.28) return c0*(x/0.28);
+  if (x < 0.46) return mix(c0, c1, (x - 0.28)/0.18);
+  if (x < 0.60) return mix(c1, c2, (x - 0.46)/0.14);
+  if (x < 0.74) return mix(c2, c3, (x - 0.60)/0.14);
+  if (x < 0.87) return mix(c3, c4, (x - 0.74)/0.13);
+  return mix(c4, c5, clamp((x - 0.87)/0.10, 0.0, 1.0));
+}
+vec3 rampK(float x){
+  const vec3 k1 = vec3(0.290, 0.345, 0.471), k2 = vec3(0.624, 0.702, 0.851), k3 = vec3(0.847, 0.886, 0.961);
+  if (x < 0.40) return k1*(x/0.40);
+  if (x < 0.75) return mix(k1, k2, (x - 0.40)/0.35);
+  return mix(k2, k3, clamp((x - 0.75)/0.25, 0.0, 1.0));
+}
+void main(){
+  vec2 uv = gl_FragCoord.xy/vec2(1920.0, 1080.0);
+  vec4 L = texture(uL, uv); vec3 base = texture(uB, uv).rgb; vec4 bl = texture(uBloom, uv);
+  float Wv = (L.x + uBloomW*bl.x)*uExp, Kv = (L.y + uBloomK*bl.y)*uExp;
+  vec3 c = base + pow(rampW(1.0 - exp(-Wv)), vec3(2.2)) + pow(rampK(1.0 - exp(-Kv)), vec3(2.2));
+  c = pow(clamp(c, 0.0, 1.0), vec3(1.0/2.2));
+  vec2 v = (uv - 0.5)*vec2(1.0, 0.5625)*2.0;
+  c *= 1.0 - uVig*smoothstep(0.25, 1.25, dot(v, v));
+  float luma = dot(c, vec3(0.299, 0.587, 0.114));
+  float gr = h12(gl_FragCoord.xy*1.013 + 17.0) + h12(gl_FragCoord.xy*0.917 + 91.0) - 1.0;
+  c += gr*uGrain*1.7*(0.30 + 0.70*sqrt(luma));
+  c = max(c, vec3(0.020, 0.024, 0.043));      // the night paper never goes to black
+  o = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`;
+const FS_DEBUG = HDR + COMMON + `
+uniform sampler2D uT; uniform vec4 uScale; uniform int uMode;
+out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy/vec2(1920.0, 1080.0);
+  if (uMode == 1) uv.y = 1.0 - uv.y;
+  vec4 t = texture(uT, uv)*uScale;
+  o = vec4(pow(clamp(t.rgb + vec3(t.a), 0.0, 1.0), vec3(1.0/2.2)), 1.0);
+}`;
+
+try {
+  const pMask = program(VS, FS_MASK, 'mask');
+  const pTrans = program(VS, FS_TRANS, 'trans');
+  const pHaze = program(VS, FS_HAZE, 'haze');
+  const pScene = program(VS, FS_SCENE, 'scene');
+  const pDown = program(VS, FS_DOWN, 'down');
+  const pUp = program(VS, FS_UP, 'up');
+  const pFinal = program(VS, FS_FINAL, 'final');
+  const pDebug = program(VS, FS_DEBUG, 'debug');
+  gl.finish();
+  const tc = performance.now(); log('compile ms ' + Math.round(tc - T0));
+
+  const swarmU = {
+    uK: KS, uWn: [P.w1 * P.K1 / P.R1, P.w2 * P.K2 / P.R2, P.w3 * P.K3 / P.R3], uMissR: [P.m1, P.m2, P.m3],
+    uMiss: { iv4: MISS_ARR }, uNMiss: { i: Math.min(MISS.length, 96) },
+    uHole: [P.h1 * P.K1 / P.R1, P.h2 * P.K2 / P.R2, P.h3 * P.K3 / P.R3], uLane: LANE_ARR, uWin: WIN, uStr: STR_A, uStrB: STR_B, uPeep: P.peep, uCam: [P.camx, P.camy],
+  };
+  // 1. masks
+  const tMask = target(2048, 1024, 1, gl.REPEAT);
+  setU(pMask, Object.assign({ uRes: [2048, 1024] }, swarmU));
+  fullscreen(pMask, tMask);
+  // 2. transport
+  const tE = target(1024, 512, 1, gl.REPEAT);
+  gl.useProgram(pTrans); bindTex(pTrans, 'uMask', 0, tMask.tex);
+  setU(pTrans, Object.assign({ uRes: [1024, 512], uR: R, uRsT: P.RsT }, swarmU));
+  fullscreen(pTrans, tE);
+  gl.finish(); const tt = performance.now(); log('mask+transport ms ' + Math.round(tt - tc));
+  // 3. haze
+  const tHz = target(960, 540);
+  gl.useProgram(pHaze); bindTex(pHaze, 'uE', 0, tE.tex);
+  setU(pHaze, Object.assign({ uRes: [960, 540], uC: [P.cx, P.cy], uR: R, uRs: P.Rs, uLh: P.Lh, uG: P.g, uEps: P.eps, uFloor: P.floor, uGain: [P.gOut, P.g3, P.g2, P.g1] }, swarmU));
+  fullscreen(pHaze, tHz);
+  gl.finish(); const th = performance.now(); log('haze ms ' + Math.round(th - tt));
+  // 4. scene
+  const tS = target(W, H, 2);
+  gl.useProgram(pScene); bindTex(pScene, 'uE', 0, tE.tex); bindTex(pScene, 'uHz', 1, tHz.tex);
+  const I = [Math.pow(P.R3 / P.R1, 2), Math.pow(P.R3 / P.R2, 2), 1];
+  setU(pScene, Object.assign({
+    uC: [P.cx, P.cy], uR: R, uRs: P.Rs, uAmb: [P.amb1, P.amb2, P.amb3], uTau: [P.tau1, P.tau2, P.tau3], uThru: [P.th1, P.th2, P.th3], uLobe: [P.lb1, P.lb2, P.lb3], uEdgeFloor: [0, 0.2, P.edgeFloor3], uAlb: [P.alb1, P.alb2, P.alb3], uI: I,
+    uL0: P.L0, uEdgeGlow: P.edgeGlow, uEdgeW: P.edgeW, uRim: P.rim, uSilRim: P.silRim, uStarW: P.starW,
+    uBub: [P.bx, P.by, P.br, 0], uBubGain: P.bubGain, uA: [P.ax, P.ay], uSun: [P.sunx, P.suny], uMW: P.mw, uBack: P.back, uBackD: P.backD, uEps: P.eps,
+  }, swarmU));
+  fullscreen(pScene, tS);
+  gl.finish(); const ts = performance.now(); log('scene ms ' + Math.round(ts - th));
+  if (Q.get('probe') === '1') {   // calibration: warm light W along each lane and between lanes, and coverage
+    gl.bindFramebuffer(gl.FRAMEBUFFER, tS.fb); gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    const buf = new Float32Array(W * H * 4); gl.readPixels(0, 0, W, H, gl.RGBA, gl.FLOAT, buf);
+    const at = (x, y) => { x = Math.round(x); y = Math.round(y); if (x < 0 || y < 0 || x >= W || y >= H) return NaN; return buf[((H - 1 - y) * W + x) * 4]; };
+    const radii = [150, 180, 200, 250, 300, 380, 460, 560];
+    const f2 = v => (isNaN(v) ? ' --- ' : v.toFixed(2).padStart(5));
+    log('probe W by radius: ' + radii.join(' '));
+    LANE_DIRS.forEach((d, j) => {
+      const a = Math.atan2(d[1], d[0]);
+      let best = radii.map(r => { let m = 0; for (let da = -0.06; da <= 0.06; da += 0.006) m = Math.max(m, at(P.cx + r * Math.cos(a + da), P.cy + r * Math.sin(a + da)) || 0); return m; });
+      log(' lane ' + String(j).padStart(2) + ' ang ' + String(Math.round(a * 180 / Math.PI)).padStart(4) + ' el ' + d[2].toFixed(2) + ' : ' + best.map(f2).join(' '));
+    });
+    const angs = LANE_DIRS.map(d => Math.atan2(d[1], d[0])).sort((x, y) => x - y);
+    for (let j = 0; j < angs.length; j++) {
+      const a0 = angs[j], a1 = j + 1 < angs.length ? angs[j + 1] : angs[0] + 2 * Math.PI, a = (a0 + a1) / 2;
+      log(' gap  ' + String(Math.round(a * 180 / Math.PI)).padStart(4) + '          : ' + radii.map(r => f2(at(P.cx + r * Math.cos(a), P.cy + r * Math.sin(a)))).join(' '));
+    }
+    let n1 = 0, n3 = 0, n10 = 0, n20 = 0, mx = 0;
+    for (let i = 0; i < W * H; i++) { const v = buf[i * 4]; if (v > 0.1) n1++; if (v > 0.3) n3++; if (v > 1.0) n10++; if (v > 2.0) n20++; if (v > mx) mx = v; }
+    const pc = n => (100 * n / (W * H)).toFixed(1) + '%';
+    log('coverage W>0.1 ' + pc(n1) + ' | >0.3 ' + pc(n3) + ' | >1 ' + pc(n10) + ' | >2 ' + pc(n20) + ' | max ' + mx.toFixed(1));
+    const disc = []; for (let y = -170; y <= 170; y += 2) for (let x = -170; x <= 170; x += 2) if (x * x + y * y < 165 * 165) disc.push(at(P.cx + x, P.cy + y));
+    disc.sort((x, y) => x - y); const qn = f => disc[Math.floor(f * (disc.length - 1))].toFixed(2);
+    log('lantern disc W quantiles 10/50/80/95/99%: ' + [0.1, 0.5, 0.8, 0.95, 0.99].map(qn).join(' '));
+  }
+  // 5. bloom
+  const sizes = [[960, 540], [480, 270], [240, 135], [120, 68], [60, 34]];
+  const down = sizes.map(s => target(s[0], s[1])), up = sizes.slice(0, 4).map(s => target(s[0], s[1]));
+  const bloom = () => {
+    let src = { tex: tS.texs[0], w: W, h: H };
+    for (let i = 0; i < down.length; i++) {
+      gl.useProgram(pDown); bindTex(pDown, 'uSrc', 0, src.tex);
+      setU(pDown, { uTS: [down[i].w, down[i].h], uSrcTexel: [1 / src.w, 1 / src.h], uPre: { i: i === 0 ? 1 : 0 }, uThr: [2.2, 1.6] });
+      fullscreen(pDown, down[i]); src = down[i];
+    }
+    let low = down[down.length - 1];
+    for (let i = up.length - 1; i >= 0; i--) {
+      gl.useProgram(pUp); bindTex(pUp, 'uLow', 0, low.tex); bindTex(pUp, 'uCur', 1, down[i].tex);
+      setU(pUp, { uTS: [up[i].w, up[i].h], uLowTexel: [1 / low.w, 1 / low.h], uCurW: i === 0 ? 0.6 : 1.0 });
+      fullscreen(pUp, up[i]); low = up[i];
+    }
+  };
+  const finalPass = () => {
+    gl.useProgram(pFinal);
+    bindTex(pFinal, 'uL', 0, tS.texs[0]); bindTex(pFinal, 'uB', 1, tS.texs[1]); bindTex(pFinal, 'uBloom', 2, up[0].tex);
+    setU(pFinal, { uExp: P.exposure, uBloomW: P.bloomW, uBloomK: P.bloomK, uGrain: P.grain, uVig: P.vig });
+    fullscreen(pFinal, null);
+  };
+  bloom();
+  // 6. final
+  if (VIEW === 'final') finalPass();
+  else {
+    const map = { mask: [tMask.tex, [1, 1, 1, 0], 1], E: [tE.tex, [3, 20, 60, 0], 1], haze: [tHz.tex, [1, 1, 1, 0], 0], W: [tS.texs[0], [0.4, 0.4, 0, 0], 0] };
+    const m = map[VIEW] || map.mask;
+    gl.useProgram(pDebug); bindTex(pDebug, 'uT', 0, m[0]);
+    setU(pDebug, { uScale: m[1], uMode: { i: m[2] } });
+    fullscreen(pDebug, null);
+  }
+  const px = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const tf = performance.now();
+  log('bloom+final ms ' + Math.round(tf - ts) + ' | frame ms (excl. compile) ' + Math.round(tf - tc) + ' | total ms ' + Math.round(tf - T0) + ' | gl error ' + gl.getError());
+  // production timing: re-render every pass in this persistent page (compiled programs and targets reused)
+  const BENCH = +(Q.get('bench') || 0);
+  if (BENCH > 0) {
+    const sync = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const light = () => {
+      gl.useProgram(pHaze); bindTex(pHaze, 'uE', 0, tE.tex); fullscreen(pHaze, tHz);
+      gl.useProgram(pScene); bindTex(pScene, 'uE', 0, tE.tex); bindTex(pScene, 'uHz', 1, tHz.tex); fullscreen(pScene, tS);
+      bloom(); finalPass();
+    };
+    const swarm = () => {
+      gl.useProgram(pMask); fullscreen(pMask, tMask);
+      gl.useProgram(pTrans); bindTex(pTrans, 'uMask', 0, tMask.tex); fullscreen(pTrans, tE);
+    };
+    sync(); let t0 = performance.now();
+    for (let i = 0; i < BENCH; i++) { swarm(); light(); sync(); }
+    const full = (performance.now() - t0) / BENCH;
+    t0 = performance.now();
+    for (let i = 0; i < BENCH; i++) { light(); sync(); }
+    const lit = (performance.now() - t0) / BENCH;
+    log('bench x' + BENCH + ': all passes ' + full.toFixed(0) + ' ms/frame | haze+scene+post only ' + lit.toFixed(0) + ' ms/frame');
+  }
+  if (Q.get('dump') === '1') document.getElementById('png').textContent = cv.toDataURL('image/png');
+} catch (e) { log('EXC ' + e.message + '\n' + e.stack); }
+</script>
+</body></html>

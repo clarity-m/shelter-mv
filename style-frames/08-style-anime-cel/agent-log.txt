@@ -1,0 +1,10 @@
+You've hit your session limit · resets 4am (America/New_York)
+The anime-cel frame is finished. Three soft beams from a dusk window slant down onto tiny Clawd, who glows inside six finger-like harness ribs. Researcher A leans in with a needle probe, face and hand warmed by his light, with his orange showing as a catchlight in her eye. Researcher B stands back holding a mug, lit cool by a monitor showing the gray gridworld and a rising eval curve. The room is lavender-slate and Clawd is the only colour; all 54 of his cells are exact #D97757 on whole pixels, and re-renders come out identical. On whether humans hold up: the face does, even at 2x in `detail.png`, and it's the most emotionally direct style and the closest link to Shelter. The hands are the weak spot: A's curled fingers are chunky and stiff, and B is generic. My view is that this style works for mid-shots with simple hands, but hero close-ups would need hand-traced poses. The frame renders in about 2.9 s; caching the static background per shot would bring that to about 1 s.
+
+Files are in `C:/Users/USER/Projects/shelter-mv/style-frames/08-style-anime-cel/`:
+- frame.png
+- detail.png
+- frame.html
+- render.sh
+- pass1.png to pass5.png
+- NOTES.md

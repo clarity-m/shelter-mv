@@ -1,0 +1,210 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Shelter MV 10: world ladder</title>
+<style>html,body{margin:0;padding:0;background:#000;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="out" width="1920" height="1080"></canvas>
+<pre id="log" style="display:none"></pre><pre id="png" style="display:none"></pre>
+<script>
+'use strict';
+// ============================================================================
+// Shelter MV, style frame 10: one shot, five rungs of world fidelity.
+// One scene (camera, hill, tree, a seated figure, Clawd, clouds, the dome grid)
+// is described once in 3D. Every rung ray-casts the same geometry through the
+// same lens, and only the "lens" changes: pixel, vector, low-poly, paint, light.
+//   ladder.html?rung=1..5      (dbg=geo shows the raw G-buffer lighting)
+// ============================================================================
+const T0 = performance.now();
+const Q = new URLSearchParams(location.search);
+const RUNG = +(Q.get('rung') || 3);
+const DBG = Q.get('dbg') || '';
+const W = 1920, H = 1080;
+const LOG = [];
+const log = s => { LOG.push(s); document.getElementById('log').textContent = LOG.join('\n'); };
+
+// ---------------------------------------------------------------- utilities
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const lerp = (a, b, t) => a + (b - a) * t;
+const v3 = {
+  add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  mul: (a, s) => [a[0] * s, a[1] * s, a[2] * s],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  len: a => Math.hypot(a[0], a[1], a[2]),
+  norm: a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+};
+const fx = x => { const s = (+x).toFixed(5); return s.indexOf('.') < 0 ? s + '.0' : s; };
+const g3 = a => `vec3(${fx(a[0])},${fx(a[1])},${fx(a[2])})`;
+
+// ================================================================ THE SCENE
+// Units are metres. x right, y up, z away from the camera. The camera looks
+// straight down +z with a shifted lens: the horizon sits at y = 730 px, so
+// verticals stay vertical (anime background convention).
+const F = 1400, CY = 780, CAMH = 0.7;
+const CAM = [0, CAMH, 0];
+const project = p => [960 + F * p[0] / p[2], CY - F * (p[1] - CAMH) / p[2]];
+const rayDir = (px, py) => v3.norm([(px - 960) / F, (CY - py) / F, 1]);
+
+// The hill: a broad mound with a crest on the right and a shoulder on the left.
+const HILL = [ // amplitude, cx, cz, sx, sz
+  [1.618, 1.621, 12.597, 1.657, 4.959],
+  [0.935, -5.269, 10.239, 4.032, 1.825],
+  [1.138, 0.370, 7.926, 6.181, 3.047],
+];
+function hillH(x, z) {
+  let h = 0;
+  for (const [a, cx, cz, sx, sz] of HILL) { const dx = (x - cx) / sx, dz = (z - cz) / sz; h += a * Math.exp(-(dx * dx + dz * dz)); }
+  return h;
+}
+
+// Sun: low, just behind the crest to Clawd's right.
+const SUN_PX = [Q.has('sx') ? +Q.get('sx') : 1266, Q.has('sy') ? +Q.get('sy') : 612];
+const SUN = rayDir(SUN_PX[0], SUN_PX[1]);
+
+// Clawd on the crest. Glyph cell u wide, 2u tall; screen width ~144 px at rungs 1-2.
+const CLAWD = { x: 1.51, z: 9.6 };
+CLAWD.y = hillH(CLAWD.x, CLAWD.z);
+CLAWD.u = 144 * CLAWD.z / F / 18;        // metres per glyph column
+CLAWD.yaw = 0.22;                        // turned a little toward the figure (radians)
+CLAWD.depth = 4 * CLAWD.u;
+
+// The figure: seated, hugging her knees, watching Clawd.
+const HUMAN = { x: -1.37, z: 5.2 };
+HUMAN.y = hillH(HUMAN.x, HUMAN.z);
+HUMAN.look = Math.atan2(CLAWD.x - HUMAN.x, CLAWD.z - HUMAN.z);
+HUMAN.yaw = HUMAN.look + 0.30;          // body turned a little more side-on; the head turns back to him
+
+// The tree on the left shoulder.
+const TREE = { x: -4.1, z: 9.2 };
+TREE.y = hillH(TREE.x, TREE.z);
+
+// Environment boundary: a dome with a latitude/longitude grid.
+const DOME = { c: [0, 0, 10], R: 220 };
+
+// ---------------------------------------------------------------- primitives
+// Human, local frame: f forward, u up, s toward her right hand. Seat origin on the ground.
+const MAT = { SKY: 0, FLOOR: 1, HILL: 2, TRUNK: 3, LEAF: 4, SKIN: 5, HAIR: 6, SWEATER: 7, PANTS: 8, SHOE: 9, CLAWD: 10, CLOUD: 11 };
+const HUMAN_PRIMS = (() => {
+  const P = [];
+  const add = (o) => P.push(o);
+  // pelvis and torso (two offset round cones give the sweater an oval section)
+  add({ t: 'ell', c: [-0.03, 0.13, 0], rad: [0.13, 0.11, 0.165], mat: MAT.PANTS, part: 1, k: 0.02 });
+  for (const s of [-1, 1]) add({ t: 'rc', a: [-0.03, 0.18, 0.06 * s], b: [0.07, 0.49, 0.075 * s], r: 0.118, r2: 0.112, mat: MAT.SWEATER, part: 2, k: 0.06 });
+  for (const s of [-1, 1]) add({ t: 'sph', c: [0.07, 0.505, 0.15 * s], r: 0.075, mat: MAT.SWEATER, part: 2, k: 0.07 });
+  add({ t: 'cap', a: [0.08, 0.54, 0], b: [0.105, 0.655, 0], r: 0.046, mat: MAT.SKIN, part: 3, k: 0.03 });
+  // head and bob
+  const turn = (c) => { const a = -0.30, f = c[0] - 0.1, z = c[2]; return [0.1 + f * Math.cos(a) - z * Math.sin(a), c[1], f * Math.sin(a) + z * Math.cos(a)]; };
+  add({ t: 'ell', c: turn([0.125, 0.755, 0]), rad: [0.098, 0.116, 0.086], mat: MAT.SKIN, part: 3, k: 0.02 });
+  add({ t: 'ell', c: turn([0.102, 0.772, 0]), rad: [0.106, 0.124, 0.1], mat: MAT.HAIR, part: 4, k: 0.01 });
+  add({ t: 'ell', c: turn([0.08, 0.69, 0]), rad: [0.088, 0.06, 0.106], mat: MAT.HAIR, part: 4, k: 0.04 });
+  // legs: thighs up to the knees, shins down to the feet
+  for (const s of [-1, 1]) {
+    const hip = [0.0, 0.12, 0.085 * s], knee = [0.35, 0.44, 0.08 * s], ankle = [0.41, 0.075, 0.075 * s];
+    add({ t: 'rc', a: hip, b: knee, r: 0.078, r2: 0.058, mat: MAT.PANTS, part: 5 + (s > 0 ? 1 : 0), k: 0.03 });
+    add({ t: 'rc', a: knee, b: ankle, r: 0.056, r2: 0.04, mat: MAT.PANTS, part: 5 + (s > 0 ? 1 : 0), k: 0.02 });
+    add({ t: 'rc', a: [0.39, 0.05, 0.075 * s], b: [0.53, 0.035, 0.085 * s], r: 0.045, r2: 0.036, mat: MAT.SHOE, part: 7, k: 0.02 });
+  }
+  // arms hugging the shins, hands clasped in front
+  for (const s of [-1, 1]) {
+    const sh = [0.07, 0.5, 0.165 * s], el = [0.25, 0.33, 0.205 * s], wr = [0.45, 0.37, 0.045 * s];
+    add({ t: 'rc', a: sh, b: el, r: 0.058, r2: 0.05, mat: MAT.SWEATER, part: 8 + (s > 0 ? 1 : 0), k: 0.03 });
+    add({ t: 'rc', a: el, b: wr, r: 0.049, r2: 0.037, mat: MAT.SWEATER, part: 8 + (s > 0 ? 1 : 0), k: 0.02 });
+    add({ t: 'ell', c: [0.475, 0.37, 0.018 * s], rad: [0.05, 0.036, 0.04], mat: MAT.SKIN, part: 10, k: 0.02 });
+  }
+  return P;
+})();
+
+const TREE_PRIMS = (() => {
+  const P = [];
+  const add = (o) => P.push(o);
+  // trunk leaning a little toward the figure, forking into three limbs
+  add({ t: 'rc', a: [0, -0.3, 0], b: [0.12, 1.0, 0.0], r: 0.16, r2: 0.105, mat: MAT.TRUNK, part: 11, k: 0.05 });
+  add({ t: 'rc', a: [0.12, 1.0, 0.0], b: [-0.42, 1.85, 0.05], r: 0.085, r2: 0.05, mat: MAT.TRUNK, part: 11, k: 0.06 });
+  add({ t: 'rc', a: [0.12, 1.0, 0.0], b: [0.78, 1.78, -0.05], r: 0.08, r2: 0.045, mat: MAT.TRUNK, part: 11, k: 0.06 });
+  add({ t: 'rc', a: [0.12, 1.0, 0.0], b: [0.2, 2.15, 0.0], r: 0.08, r2: 0.05, mat: MAT.TRUNK, part: 11, k: 0.06 });
+  const canopy = [
+    // left clump
+    [-0.6, 2.2, 0.1, 0.6], [-1.05, 2.0, 0.0, 0.4], [-0.35, 2.52, 0.0, 0.48],
+    // top clump
+    [0.2, 2.76, 0.0, 0.6], [-0.15, 2.95, 0.1, 0.44], [0.56, 2.9, -0.05, 0.44],
+    // right clump, reaching toward the figure
+    [0.98, 2.1, -0.05, 0.54], [1.4, 1.96, 0.0, 0.37], [0.72, 2.36, 0.0, 0.44],
+    // back fill
+    [0.2, 2.3, 0.45, 0.58],
+  ];
+  for (const [x, y, z, r] of canopy) add({ t: 'sph', c: [x, y, z], r, mat: MAT.LEAF, part: 12, k: 0.2 });
+  return P;
+})();
+
+// Clouds: world-space ellipsoids far out under the dome.
+function cloudAt(az, el, dist) {
+  const a = az * Math.PI / 180, e = el * Math.PI / 180;
+  return [dist * Math.sin(a) * Math.cos(e), CAMH + dist * Math.sin(e), dist * Math.cos(a) * Math.cos(e)];
+}
+const CLOUDS = (() => {
+  const C = [];
+  const blob = (az, el, dist, parts) => {
+    const c0 = cloudAt(az, el, dist);
+    for (const [dx, dy, dz, rx, ry, rz] of parts) C.push({ c: [c0[0] + dx, c0[1] + dy, c0[2] + dz], rad: [rx, ry, rz] });
+  };
+  // A: a soft cumulus upper left, behind the canopy's right edge
+  blob(-12, 23, 150, [[0, 0, 0, 12, 6, 8], [-11, -1.5, 2, 8, 4.5, 6], [10, -2, -1, 9, 4.2, 6], [-3, 4.5, 1, 7.5, 5, 6], [5, 3.5, 0, 6, 4.5, 5], [19, -3.2, 0, 6, 2.6, 4.5]]);
+  // B: a long thin band to the right, above the glow, lit from below
+  blob(26, 15.5, 175, [[0, 0, 0, 26, 2.4, 10], [27, -1.0, 4, 18, 2.0, 8], [-24, 1.0, -3, 14, 1.8, 7], [47, -1.8, 8, 13, 1.6, 6]]);
+  // C: a small cloud high on the right
+  blob(22, 29, 160, [[0, 0, 0, 7, 3.6, 5], [6, -0.8, 1, 5, 2.8, 4], [-5.5, -1.0, 0, 4.5, 2.6, 4]]);
+  return C;
+})();
+
+// ---------------------------------------------------------------- GLSL codegen
+function sdfCode(prims, name) {
+  let s = `float ${name}(vec3 p, out int mat, out int part) {\n  float d = 1e9, di; mat = 0; part = 0;\n`;
+  for (const q of prims) {
+    let e;
+    if (q.t === 'sph') e = `length(p - ${g3(q.c)}) - ${fx(q.r)}`;
+    else if (q.t === 'ell') e = `sdEll(p - ${g3(q.c)}, ${g3(q.rad)})`;
+    else if (q.t === 'cap') e = `sdCap(p, ${g3(q.a)}, ${g3(q.b)}, ${fx(q.r)})`;
+    else if (q.t === 'rc') e = `sdRC(p, ${g3(q.a)}, ${g3(q.b)}, ${fx(q.r)}, ${fx(q.r2)})`;
+    s += `  di = ${e};\n  if (di < d) { mat = ${q.mat}; part = ${q.part}; }\n  d = smin(d, di, ${fx(q.k || 0.001)});\n`;
+  }
+  return s + '  return d;\n}\n';
+}
+function sdfCodeD(prims, name) {   // distance only (shadows, AO)
+  let s = `float ${name}(vec3 p) {\n  float d = 1e9;\n`;
+  for (const q of prims) {
+    let e;
+    if (q.t === 'sph') e = `length(p - ${g3(q.c)}) - ${fx(q.r)}`;
+    else if (q.t === 'ell') e = `sdEll(p - ${g3(q.c)}, ${g3(q.rad)})`;
+    else if (q.t === 'cap') e = `sdCap(p, ${g3(q.a)}, ${g3(q.b)}, ${fx(q.r)})`;
+    else if (q.t === 'rc') e = `sdRC(p, ${g3(q.a)}, ${g3(q.b)}, ${fx(q.r)}, ${fx(q.r2)})`;
+    s += `  d = smin(d, ${e}, ${fx(q.k || 0.001)});\n`;
+  }
+  return s + '  return d;\n}\n';
+}
+function boundOf(prims) {
+  let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+  const grow = (c, r) => { for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], c[i] - r); hi[i] = Math.max(hi[i], c[i] + r); } };
+  for (const q of prims) {
+    if (q.t === 'sph') grow(q.c, q.r);
+    else if (q.t === 'ell') grow(q.c, Math.max(...q.rad));
+    else { grow(q.a, Math.max(q.r, q.r2 || 0)); grow(q.b, Math.max(q.r, q.r2 || 0)); }
+  }
+  const c = v3.mul(v3.add(lo, hi), 0.5);
+  return { c, r: v3.len(v3.sub(hi, lo)) * 0.5 + 0.05 };
+}
+const HB = boundOf(HUMAN_PRIMS), TB = boundOf(TREE_PRIMS);
+
+function hillCode() {
+  return HILL.map(([a, cx, cz, sx, sz]) =>
+    `  { vec2 d = (q - vec2(${fx(cx)},${fx(cz)})) * vec2(${fx(1 / sx)},${fx(1 / sz)}); h += ${fx(a)} * exp(-dot(d, d)); }`).join('\n');
+}
+

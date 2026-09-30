@@ -1,0 +1,8 @@
+{
+ "bpm": 100.0,
+ "bar_s": 2.4,
+ "beat_s": 0.6,
+ "bar1_t": 0.38,
+ "n_bars": 91,
+ "note": "bar b (1-based) starts at bar1_t + (b-1)*bar_s; beat j of bar b at + (j-1)*beat_s"
+}

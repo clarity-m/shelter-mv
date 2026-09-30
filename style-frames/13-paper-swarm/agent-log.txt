@@ -1,0 +1,17 @@
+I made the swarm as a paper lantern: Alpha Centauri B inside three nested paper shells, like a carved puzzle ball. A dark lattice of cut panels with punched holes sits over a glowing vellum shell and a hotter inner one. A small hole straight toward the camera shows the star white-hot at the centre, and a round window shows the sim bubble (sunset, hill, tree) resting in a small cupped holder.
+
+The eleven uneven rays of the spark aren't drawn. Round holes cut through all three shells on the same line let the star's light out, and each hole's size sets its ray's width and length. A, a faint Sun and a torn-tissue Milky Way sit in near-black space.
+
+At 320x180 it reads within a second as a lit lantern with the spark bursting from it, and warm light covers about 8% of the frame. Up close the paper holds up: fibre shows in the lit vellum, and the panel edges glow where light comes from behind.
+
+Its weaknesses:
+- **At full frame it looks more like a glowing sphere than photographed paper craft.** The paper only shows in the details.
+- **The lattice can suggest a tortoiseshell.**
+- **Faint stray rays blur the count of eleven.**
+- **The bright centre is a bit of a bullseye.**
+
+Speed is not a concern. The page re-renders in about 340 ms per frame, or 140 ms if the swarm isn't moving, and two renders match exactly. The brief's screenshot command reproduces the frame, but its default graphics backend takes about 3 minutes to compile the shaders; adding `--use-angle=vulkan` brings the whole page down to about 2 seconds. Each layer is set up to move at its own depth for 2.5D camera moves, and `parallax-test.png` shows this working.
+
+My opinion: this is the strongest ending the paper style could have, and I'd pick it over pixel. It only works as the outside look for the whole film if the lab and city shots carry the paper through their silhouettes, because space alone barely reads as paper.
+
+Everything is in `style-frames/13-paper-swarm/`: `frame.png`, `thumb.png`, `NOTES.md`, the source `frame.html`, `pass1.png` through `pass10.png` (plus a variant, `pass9a.png`), and `render.py`, the helper I used to render.

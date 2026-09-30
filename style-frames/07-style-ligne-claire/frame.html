@@ -1,0 +1,762 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Shelter MV / 07 ligne claire / the harness</title>
+<style>
+html,body{margin:0;padding:0;background:#f5f0e8;overflow:hidden;}
+canvas{display:block;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<!--
+  Shelter MV style frame 07: ligne claire. "The harness", early phase.
+  Pure Canvas2D vector drawing: flat fills, uniform ink lines, one flat shade per surface.
+  Lighting is two flat states: the whole scene is drawn in its dusk (shade) palette, then again offscreen
+  in its lamp-lit palette and composited through one clip: the lamp's beam (convex hull of shade rim +
+  pool on the bench, with a narrower second-step core on the wall). Researcher A's lit version is also
+  composited through a disc around Clawd: his glow lights the face and hands turned toward him.
+  One clip per layer, so each pixel is lit or shaded exactly once (no seams). ~0.1-0.5 s per frame.
+  Architecture and props are modelled in world centimetres and projected (one-point perspective);
+  figures are authored as Catmull-Rom contours in local centimetre frames and placed at their depth.
+  Clawd is stamped last on the device pixel grid, never outlined.
+  ?view=detail&x=..&y=..&z=..&w=..&h=..  re-renders the same drawing as a close-up.
+-->
+<script>
+"use strict";
+(function () {
+const T0 = performance.now();
+const Q = new URLSearchParams(location.search);
+const VIEW = Q.get('view') || 'frame';
+let VW = 1920, VH = 1080, Z = 1, OX = 0, OY = 0;
+if (VIEW === 'detail') {
+  VW = +(Q.get('w') || 1080); VH = +(Q.get('h') || 1080); Z = +(Q.get('z') || 2.2);
+  const fx = +(Q.get('x') || 760), fy = +(Q.get('y') || 560);
+  OX = fx - VW / 2 / Z; OY = fy - VH / 2 / Z;
+}
+const cv = document.getElementById('c');
+cv.width = VW; cv.height = VH;
+let ctx = cv.getContext('2d');
+ctx.setTransform(Z, 0, 0, Z, -OX * Z, -OY * Z);
+ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+const LWK = Math.pow(Z, -0.45);          // close-ups thicken lines by Z^0.55, like a redrawn panel
+const LW = 2.5, LW2 = 1.6, LW3 = 1.05;   // figures+props / architecture / fine detail
+const INK = '#1c1b1a';
+
+// ------------------------------------------------------------------ palettes (dusk shade / lamp light)
+const SH = {
+  clawd: '#D97757',
+  wall: '#89939b', rail: '#a3aaa5', railSh: '#8a918d', skirt: '#59626a', reveal: '#6c767e',
+  sky1: '#6a7b88', sky2: '#82929d', sky3: '#a8aeab', sky4: '#cdc3af', hill1: '#6c7a81', hill2: '#56646b', moon: '#efeadd', winFrame: '#434c4b',
+  floor: '#6a7076', floorLn: '#60666c', floorSh: '#585e64',
+  benchTop: '#a9a797', benchEdge: '#878679', benchSh: '#8f8e80', body: '#535d64', bodyHi: '#5b656c', bodySh: '#474f56',
+  metal: '#b3b8bc', metalSh: '#979da2', metalDk: '#777f85', steel: '#8d959b',
+  cable: '#33383b', cable2: '#7b817e',
+  coat: '#aeb7be', skinA: '#bf9e88', hairA: '#28231f', hairAln: '#4e4843', topA: '#3c4b4e', trouA: '#343a3f', trouAFar: '#2a2f33', shoeA: '#252321',
+  skinB: '#6a4639', skinBSh: '#5a3a2f', hairB: '#c3c1b9', hairBln: '#8e8b84', cardB: '#4e5b63', cardBSh: '#434f56', shirtB: '#bfc0b8', trouB: '#32373b', trouBFar: '#272a2d', shoeB: '#2e2622',
+  mon: '#2d3133', screen: '#434a4d', cell: '#687072', cellLt: '#98a0a0', cellDk: '#2a3032', curve: '#e6e2d6',
+  lampOut: '#47514e', lampIn: '#f8f0dd', bulb: '#fffcf4', mug: '#9aa4a6', mugIn: '#5d5550', steam: '#9aa1a2',
+  peach: '#d9b39c', paper: '#cfd2cd', clockRim: '#8e9693', blushA: '#bf9e88', coatBtn: '#9aa3a2',
+};
+const LIT = Object.assign({}, SH, {
+  wall: '#d2caaf', rail: '#dcd5bf', railSh: '#c3bca6', skirt: '#9d9a8a',
+  benchTop: '#eee5ce', benchEdge: '#cdc2a8', benchSh: '#d6ccb4',
+  metal: '#efebe0', metalSh: '#cfc9ba', metalDk: '#a39e92', steel: '#c4bfb2',
+  cable: '#3e4346', cable2: '#a5a196',
+  coat: '#f4efe5', skinA: '#eecbac', blushA: '#ecbca3', topA: '#56676a', trouA: '#40464b',
+  peach: '#f4cdb2',
+});
+let C = SH;
+
+// ------------------------------------------------------------------ utilities
+const D2R = Math.PI / 180;
+// camera: world cm, x right, y up, z = depth from the camera
+const CAM = { e: 140, f: 2300, cx: 960, cy: 400 };
+const P = (x, y, z) => [CAM.cx + CAM.f * x / z, CAM.cy - CAM.f * (y - CAM.e) / z];
+const S = z => CAM.f / z;
+
+function poly(pts, closed = true) {
+  const p = new Path2D();
+  pts.forEach((q, i) => i ? p.lineTo(q[0], q[1]) : p.moveTo(q[0], q[1]));
+  if (closed) p.closePath();
+  return p;
+}
+const poly3 = (pts, closed = true) => poly(pts.map(q => P(q[0], q[1], q[2])), closed);
+// Catmull-Rom through points; a third element of 1 marks a corner
+function cr(pts, closed = true) {
+  const p = new Path2D(), n = pts.length;
+  const g = i => closed ? pts[(i + n) % n] : pts[Math.max(0, Math.min(n - 1, i))];
+  p.moveTo(pts[0][0], pts[0][1]);
+  const segs = closed ? n : n - 1;
+  for (let i = 0; i < segs; i++) {
+    const p0 = g(i - 1), p1 = g(i), p2 = g(i + 1), p3 = g(i + 2);
+    let c1x, c1y, c2x, c2y;
+    if (p1[2]) { c1x = p1[0] + (p2[0] - p1[0]) / 3; c1y = p1[1] + (p2[1] - p1[1]) / 3; }
+    else { c1x = p1[0] + (p2[0] - p0[0]) / 6; c1y = p1[1] + (p2[1] - p0[1]) / 6; }
+    if (p2[2]) { c2x = p2[0] - (p2[0] - p1[0]) / 3; c2y = p2[1] - (p2[1] - p1[1]) / 3; }
+    else { c2x = p2[0] - (p3[0] - p1[0]) / 6; c2y = p2[1] - (p3[1] - p1[1]) / 6; }
+    p.bezierCurveTo(c1x, c1y, c2x, c2y, p2[0], p2[1]);
+  }
+  if (closed) p.closePath();
+  return p;
+}
+function xf(p, m) { const q = new Path2D(); q.addPath(p, m); return q; }
+function fill(p, col) { ctx.fillStyle = col; ctx.fill(p); }
+function line(p, lw = LW, col = INK) { ctx.strokeStyle = col; ctx.lineWidth = lw * LWK; ctx.stroke(p); }
+function shape(p, col, lw = LW) { fill(p, col); line(p, lw); }
+function clipped(clip, fn) { ctx.save(); ctx.clip(clip); fn(); ctx.restore(); }
+// merged silhouette: all strokes (2x) first, then all fills, so shared edges vanish
+function group(parts, lw = LW) {
+  ctx.strokeStyle = INK; ctx.lineWidth = 2 * lw * LWK;
+  for (const q of parts) ctx.stroke(q[0]);
+  for (const q of parts) fill(q[0], q[1]);
+}
+function tubeLine(p, w, col, lw = LW) {
+  ctx.strokeStyle = INK; ctx.lineWidth = w + 2 * lw * LWK; ctx.stroke(p);
+  ctx.strokeStyle = col; ctx.lineWidth = w; ctx.stroke(p);
+}
+function circle(x, y, r) { const p = new Path2D(); p.arc(x, y, r, 0, 2 * Math.PI); return p; }
+function rectP(x, y, w, h) { const p = new Path2D(); p.rect(x, y, w, h); return p; }
+// horizontal world circle / arc (angle 0 = +z, 90 = +x)
+function hpts(cx, y, cz, r, a0 = 0, a1 = 360, n = 72) {
+  const out = [];
+  for (let i = 0; i <= n; i++) { const a = (a0 + (a1 - a0) * i / n) * D2R; out.push(P(cx + r * Math.sin(a), y, cz + r * Math.cos(a))); }
+  return out;
+}
+const hcircle = (cx, y, cz, r) => poly(hpts(cx, y, cz, r, 0, 360, 96));
+// local figure frame -> screen: u along world x (flip -1 mirrors), v = up, cm
+function figM(x0, y0, z, flip = 1) { const s = CAM.f / z; return new DOMMatrix([s * flip, 0, 0, -s, CAM.cx + s * x0, CAM.cy + s * (CAM.e - y0)]); }
+const sub = (M, u, v, deg = 0, sc = 1) => M.multiply(new DOMMatrix().translate(u, v).rotate(deg).scale(sc));
+const L = (M, pts, closed = true) => xf(cr(pts, closed), M);
+const Lc = (M, u, v, r) => xf(circle(u, v, r), M);
+const Le = (M, u, v, rx, ry, rot = 0) => { const p = new Path2D(); p.ellipse(u, v, rx, ry, rot, 0, 2 * Math.PI); return xf(p, M); };
+const rotPt = (q, deg) => { const c = Math.cos(deg * D2R), s = Math.sin(deg * D2R); return [q[0] * c - q[1] * s, q[0] * s + q[1] * c]; };
+// tube outline from a centreline (sleeves, trousers, ribs)
+function tube(c, r, capA = 'round', capB = 'round') {
+  const n = c.length, A = [], B = [];
+  for (let i = 0; i < n; i++) {
+    const a = c[Math.max(0, i - 1)], b = c[Math.min(n - 1, i + 1)];
+    let tx = b[0] - a[0], ty = b[1] - a[1]; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
+    A.push([c[i][0] - ty * r[i], c[i][1] + tx * r[i]]);
+    B.push([c[i][0] + ty * r[i], c[i][1] - tx * r[i]]);
+  }
+  const dir = (i, j) => { const dx = c[j][0] - c[i][0], dy = c[j][1] - c[i][1], l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l]; };
+  const out = [];
+  if (capA === 'flat') { A[0].push(1); B[0].push(1); }
+  if (capB === 'flat') { A[n - 1].push(1); B[n - 1].push(1); }
+  out.push(...A);
+  if (capB === 'round') { const d = dir(n - 2, n - 1); out.push([c[n - 1][0] + d[0] * r[n - 1] * 0.95, c[n - 1][1] + d[1] * r[n - 1] * 0.95]); }
+  out.push(...B.reverse());
+  if (capA === 'round') { const d = dir(1, 0); out.push([c[0][0] + d[0] * r[0] * 0.95, c[0][1] + d[1] * r[0] * 0.95]); }
+  return out;
+}
+const lerp = (a, b, t) => a + (b - a) * t;
+const lerp2 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
+function hull(pts) {
+  const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], up = [];
+  for (const q of p) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
+  for (let i = p.length - 1; i >= 0; i--) { const q = p[i]; while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); }
+  up.pop(); lo.pop();
+  return lo.concat(up);
+}
+
+// ------------------------------------------------------------------ scene constants
+const BW = 640;                                          // back wall depth
+const HAR = { x: 0, y: 90, z: 360, discR: 31, discH: 3.4, r0: 22 };
+const BN = { x0: -62, x1: 70, z0: 320, z1: 402, top: 90 };
+const ST = { x: -96, z: 368, seat: 66 };
+const AF = { x: -96, y: 66, z: 368 };                   // researcher A frame origin (stool seat centre)
+const CT = { x0: 64, x1: 122, z0: 502, z1: 550, top: 92, low: 24 };
+const BF = { x: 142, y: 0, z: 505 };                     // researcher B frame origin (between the feet)
+const LAMP = { x: 0, z: 356, rim: 178, r: 16 };
+const RP = 50;                                            // radius of the lamp pool on the bench
+// the harness is two cupped hands: four finger-ribs per side in parallel planes, curling toward each other
+// [side (-1 left, +1 right), depth offset, tip dx, tip dh, fitted]
+const FINGERS = [[-1, -20, -3.0, -3.2, 1], [-1, -6.5, 0.6, 0.4, 1], [-1, 7, 1.2, 1.2, 1], [-1, 20, -1.6, -1.6, 1],
+                 [1, -20, -3.0, -3.2, 0], [1, -6.5, 0.6, 0.4, 1], [1, 7, 1.2, 1.2, 1], [1, 20, -1.6, -1.6, 1]];
+const A_TGT_F = 0, A_TGT_T = 0.3;
+let A_state = null;
+
+try { main(); } catch (e) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#e33'; ctx.font = '20px monospace';
+  String(e && e.stack || e).split('\n').slice(0, 10).forEach((l, i) => ctx.fillText(l, 20, 40 + i * 26));
+}
+console.log('render ms ' + (performance.now() - T0).toFixed(1));
+
+function main() {
+  drawScene(false);                                            // whole scene, dusk palette
+  const litAll = offscreen(() => drawScene(true));             // whole scene, lamp-lit palette
+  const litA = offscreen(() => { C = LIT; drawA('body'); drawA('hands'); });
+  const cut = () => ctx.clip(rectP(-1e4, -1e4, 3e4, P(0, BN.top, BN.z0)[1] + 1e4));
+  composite(litAll, () => { ctx.clip(beamPath()); cut(); });  // the lamp beam
+  composite(litA, () => { const [gx, gy] = P(HAR.x, HAR.y + 9, HAR.z); ctx.clip(circle(gx, gy, 380)); cut(); }); // Clawd's glow on A
+  C = SH;
+  drawLamp();
+  drawClawd();
+}
+function offscreen(fn) {
+  const c2 = document.createElement('canvas'); c2.width = VW; c2.height = VH;
+  const keep = ctx; ctx = c2.getContext('2d');
+  ctx.setTransform(Z, 0, 0, Z, -OX * Z, -OY * Z); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  fn();
+  ctx = keep;
+  return c2;
+}
+function composite(img, clipFn) {
+  ctx.save(); clipFn(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(img, 0, 0); ctx.restore();
+}
+function drawScene(lit) {
+  C = lit ? LIT : SH;
+  if (!lit) {
+    drawRoom(); drawWindow(); drawClock(); drawFloor(); drawCart(); drawB(); drawBenchBack();
+    drawBenchTop(); drawStool(); drawA('body'); drawBenchFront(); drawHarness(); drawA('hands'); drawCables();
+    return;
+  }
+  drawRoom(); drawBeamCore(); drawMotes(); drawBenchTop(); drawA("body"); drawHarness(); drawA("hands"); drawCables();
+}
+function drawBeamCore() {
+  const pts = [...hpts(LAMP.x, LAMP.rim, LAMP.z, 7, 0, 360, 48), ...hpts(HAR.x, BN.top + 0.2, HAR.z, 30, 0, 360, 96)];
+  fill(poly(hull(pts)), "#ddd5bb");
+}
+function drawMotes() {
+  let a = 1234567;
+  const rnd = () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  for (let i = 0; i < 26; i++) {
+    const y = lerp(230, 560, rnd()), x = 960 + (rnd() - 0.5) * lerp(200, 520, (y - 230) / 330);
+    fill(circle(x, y, lerp(0.9, 2.0, rnd())), '#e7e0c8');
+  }
+}
+function beamPath() {
+  const pts = [...hpts(LAMP.x, LAMP.rim, LAMP.z, LAMP.r - 1.4, 0, 360, 64), ...hpts(HAR.x, BN.top + 0.2, HAR.z, RP, 0, 360, 128)];
+  return poly(hull(pts));
+}
+
+// ------------------------------------------------------------------ room
+function drawRoom() {
+  const X0 = OX - 4, Y0 = OY - 4, WW = VW / Z + 8, HH = VH / Z + 8;
+  fill(rectP(X0, Y0, WW, HH), C.wall);
+  // skirting
+  const yS = P(0, 12, BW)[1], yB = P(0, 0, BW)[1];
+  fill(rectP(X0, yS, WW, yB - yS), C.skirt);
+  line(poly([[X0, yS], [X0 + WW, yS]], false), LW2);
+}
+
+function drawWindow() {
+  const x0 = -262, x1 = -128, yb = 172, yt = 300, zw = BW, zg = BW + 16;
+  const o = [P(x0, yt, zw), P(x1, yt, zw), P(x1, yb, zw), P(x0, yb, zw)];
+  const g = [P(x0, yt, zg), P(x1, yt, zg), P(x1, yb, zg), P(x0, yb, zg)];
+  const open = poly(o);
+  fill(open, C.reveal);
+  clipped(open, () => {
+    const glass = poly(g);
+    clipped(glass, () => {
+      const gx0 = g[0][0] - 2, gx1 = g[1][0] + 2, H0 = CAM.cy;
+      const band = (ya, yb2, col) => fill(rectP(gx0, ya, gx1 - gx0, yb2 - ya), col);
+      band(g[0][1] - 400, H0 - 300, C.sky1);
+      band(H0 - 300, H0 - 190, C.sky2);
+      band(H0 - 190, H0 - 128, C.sky3);
+      band(H0 - 128, g[2][1] + 4, C.sky4);
+      const strat = (cx, cy, w, h, col) => { const p = new Path2D(); p.ellipse(cx, cy, w, h, 0, 0, 2 * Math.PI); fill(p, col); };
+      strat(gx0 + 150, H0 - 222, 130, 4.5, C.sky3);
+      strat(gx0 + 300, H0 - 350, 160, 5, C.sky2);
+      strat(gx0 + 90, H0 - 150, 110, 3.5, C.sky4);
+      const hy = g[2][1];
+      const hill = (pts, col) => { fill(poly(pts), col); line(poly(pts.slice(1, -1), false), LW3); };
+      const H1 = [[gx0, hy + 6]], H2 = [[gx0, hy + 6]];
+      for (let i = 0; i <= 40; i++) {
+        const x = lerp(gx0, gx1, i / 40), t = i / 40;
+        H1.push([x, hy - 24 - 12 * Math.sin(t * 4.1 + 0.6) - 5 * Math.sin(t * 11.3)]);
+        H2.push([x, hy - 9 - 7 * Math.sin(t * 6.3 + 2.0) - 3 * Math.sin(t * 15.1 + 1)]);
+      }
+      H1.push([gx1, hy + 6]); H2.push([gx1, hy + 6]);
+      hill(H1, C.hill1); hill(H2, C.hill2);
+      // crescent moon
+      const mx = gx0 + 345, my = H0 - 285, mr = 14;
+      const outer = circle(mx, my, mr), inner = circle(mx + 7.5, my - 4, mr * 0.92);
+      const both = new Path2D(); both.addPath(outer); both.addPath(inner);
+      clipped(outer, () => { ctx.fillStyle = C.moon; ctx.fill(both, 'evenodd'); line(inner, LW3); });
+      const big = new Path2D(); big.rect(mx - 60, my - 60, 120, 120); big.addPath(inner);
+      ctx.save(); ctx.clip(big, 'evenodd'); line(outer, LW3); ctx.restore();
+    });
+    // steel frame in the glass plane
+    const fw = 4.5, mw = 3.6, xm = (x0 + x1) / 2;
+    const r3 = (xa, xb, ya, yb2) => poly3([[xa, yb2, zg - 1], [xb, yb2, zg - 1], [xb, ya, zg - 1], [xa, ya, zg - 1]]);
+    group([r3(x0, x1, yb, yb + fw), r3(x0, x0 + fw, yb, yt), r3(x1 - fw, x1, yb, yt), r3(xm - mw / 2, xm + mw / 2, yb, yt), r3(x0, x1, 238, 238 + mw)].map(p => [p, C.winFrame]), LW2 * 0.85);
+    const h1 = P(xm + 5, 212, zg - 3), h2 = P(xm + 5, 198, zg - 3);
+    tubeLine(poly([h1, h2], false), 2.4, C.steel, LW3);
+  });
+  line(open, LW2);
+  // sill board (front face; the camera is below its top)
+  const s1 = P(x0 - 8, yb, zw - 5), s2 = P(x1 + 8, yb - 4, zw - 5);
+  shape(poly([s1, [s2[0], s1[1]], s2, [s1[0], s2[1]]]), C.rail, LW2);
+}
+
+function drawClock() {
+  const [cx, cy] = P(236, 214, BW - 2), r = 12.5 * S(BW - 2);
+  shape(circle(cx, cy, r + 2.6), C.clockRim, LW2);
+  shape(circle(cx, cy, r), C.paper, LW3);
+  const t = new Path2D();
+  for (let i = 0; i < 12; i++) { const a = i / 12 * 2 * Math.PI, r0 = i % 3 ? r * 0.84 : r * 0.72; t.moveTo(cx + Math.sin(a) * r0, cy - Math.cos(a) * r0); t.lineTo(cx + Math.sin(a) * r * 0.92, cy - Math.cos(a) * r * 0.92); }
+  line(t, LW3);
+  const hand = (a, len, w) => line(poly([[cx, cy], [cx + Math.sin(a) * len, cy - Math.cos(a) * len]], false), w);
+  hand((7 + 52 / 60) / 12 * 2 * Math.PI, r * 0.5, LW2 * 1.2);
+  hand(52 / 60 * 2 * Math.PI, r * 0.78, LW3 * 1.2);
+  fill(circle(cx, cy, 1.8), INK);
+}
+
+function drawFloor() {
+  const yB = P(0, 0, BW)[1];
+  const X0 = OX - 4, WW = VW / Z + 8, Y1 = OY + VH / Z + 4;
+  fill(rectP(X0, yB, WW, Y1 - yB), C.floor);
+  line(poly([[X0, yB], [X0 + WW, yB]], false), LW2);
+  const t = new Path2D();
+  for (let x = -600; x <= 600; x += 75) { const a = P(x, 0, BW), b = P(x, 0, 200); t.moveTo(a[0], a[1]); t.lineTo(b[0], b[1]); }
+  for (let z = BW - 75; z > 250; z -= 75) { const y = P(0, 0, z)[1]; t.moveTo(X0, y); t.lineTo(X0 + WW, y); }
+  line(t, LW3, C.floorLn);
+  fill(poly3([[CT.x0 - 3, 0, CT.z0], [CT.x1 + 4, 0, CT.z0], [CT.x1 + 6, 0, CT.z1 + 6], [CT.x0 - 2, 0, CT.z1 + 6]]), C.floorSh);
+  fill(poly(hpts(BF.x + 1, 0, BF.z + 2, 19)), C.floorSh);
+}
+
+// ------------------------------------------------------------------ boxes, bench, stool
+function box3(x0, x1, y0, y1, z0, z1, cols, lw = LW) {
+  const f = [[x0, y1, z0], [x1, y1, z0], [x1, y0, z0], [x0, y0, z0]];
+  const faces = [];
+  if (y1 < CAM.e) faces.push([[[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]], cols.top]);
+  if (x1 < 0) faces.push([[[x1, y1, z0], [x1, y1, z1], [x1, y0, z1], [x1, y0, z0]], cols.side]);
+  if (x0 > 0) faces.push([[[x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [x0, y0, z0]], cols.side]);
+  faces.push([f, cols.front]);
+  group(faces.map(([q, c]) => [poly3(q), c]), lw);
+  for (const [q] of faces) line(poly3(q), lw * 0.6);
+}
+function drawBenchBack() {
+  box3(BN.x0 + 2, BN.x0 + 7, 0, 85.5, BN.z1 - 7, BN.z1 - 2, { top: C.body, side: C.bodySh, front: C.body });
+}
+function drawBenchTop() {
+  const top = poly3([[BN.x0, BN.top, BN.z0], [BN.x1, BN.top, BN.z0], [BN.x1, BN.top, BN.z1], [BN.x0, BN.top, BN.z1]]);
+  fill(top, C.benchTop);
+  clipped(top, () => {
+    fill(hcircle(HAR.x + 1, BN.top, HAR.z + 3, HAR.discR + 2.2), C.benchSh);
+    fill(poly3([[29, BN.top, 336], [64, BN.top, 344], [64, BN.top, 352], [29, BN.top, 343]]), C.benchSh);
+  });
+  line(top, LW);
+}
+function drawBenchFront() {
+  const f = poly3([[BN.x0, BN.top, BN.z0], [BN.x1, BN.top, BN.z0], [BN.x1, BN.top - 4.5, BN.z0], [BN.x0, BN.top - 4.5, BN.z0]]);
+  shape(f, C.benchEdge, LW);
+  const cx0 = -16, cx1 = BN.x1 - 3, cz = BN.z0 + 2;
+  shape(poly3([[cx0, BN.top - 4.5, cz], [cx1, BN.top - 4.5, cz], [cx1, 0, cz], [cx0, 0, cz]]), C.body, LW);
+  const xm = (cx0 + cx1) / 2;
+  const panel = (xa, xb, ya, yb2) => poly3([[xa, ya, cz - 0.5], [xb, ya, cz - 0.5], [xb, yb2, cz - 0.5], [xa, yb2, cz - 0.5]]);
+  for (const [xa, xb] of [[cx0 + 3, xm - 1.5], [xm + 1.5, cx1 - 3]]) {
+    shape(panel(xa, xb, 82.5, 67), C.bodyHi, LW2);
+    shape(panel(xa, xb, 64.5, 4), C.bodyHi, LW2);
+    const hm = (xa + xb) / 2;
+    tubeLine(poly3([[hm - 8, 76, cz - 1.8], [hm + 8, 76, cz - 1.8]], false), 3.2, C.steel, LW3 * 1.2);
+  }
+  tubeLine(poly3([[xm - 4, 59, cz - 1.8], [xm - 4, 44, cz - 1.8]], false), 3.2, C.steel, LW3 * 1.2);
+  tubeLine(poly3([[xm + 4, 59, cz - 1.8], [xm + 4, 44, cz - 1.8]], false), 3.2, C.steel, LW3 * 1.2);
+  shape(poly3([[BN.x0 + 2, BN.top - 4.5, BN.z0 + 2], [cx0, BN.top - 4.5, BN.z0 + 2], [cx0, BN.top - 11, BN.z0 + 2], [BN.x0 + 2, BN.top - 11, BN.z0 + 2]]), C.body, LW);
+  box3(BN.x0 + 2, BN.x0 + 7, 0, BN.top - 4.5, BN.z0 + 2, BN.z0 + 7, { top: C.body, side: C.bodySh, front: C.body });
+}
+function drawStool() {
+  const { x, z, seat } = ST;
+  const legs = [45, 135, 225, 315].map(a => [a, [x + 9 * Math.sin(a * D2R), seat - 5, z + 9 * Math.cos(a * D2R)], [x + 21 * Math.sin(a * D2R), 0, z + 21 * Math.cos(a * D2R)]]);
+  for (const [a, p0, p1] of legs) if (Math.cos(a * D2R) > 0) tubeLine(poly3([p0, p1], false), 6, C.steel);
+  tubeLine(poly(hpts(x, 24, z, 17.5, 0, 360, 72)), 4, C.steel);
+  for (const [a, p0, p1] of legs) if (Math.cos(a * D2R) <= 0) tubeLine(poly3([p0, p1], false), 6, C.steel);
+  const upF = hpts(x, seat, z, 17, 90, 270, 36), loF = hpts(x, seat - 4, z, 17, 90, 270, 36);
+  shape(poly([...upF, ...loF.reverse()]), C.bodySh, LW);
+  shape(poly(hpts(x, seat, z, 17, 0, 360, 72)), C.body, LW);
+}
+
+// ------------------------------------------------------------------ cart + monitor
+function monFrame() {
+  const a = 38 * D2R, c = [93, 124, 532], w = 54, h = 34;
+  const u = [Math.cos(a), 0, Math.sin(a)], n = [Math.sin(a), 0, -Math.cos(a)];
+  const at = (du, dv, dn = 0) => [c[0] + u[0] * du + n[0] * dn, c[1] + dv, c[2] + u[2] * du + n[2] * dn];
+  return { a, c, w, h, u, n, at };
+}
+function drawCart() {
+  const { x0, x1, z0, z1, top, low } = CT;
+  const legC = { top: C.steel, side: C.metalDk, front: C.steel };
+  box3(x0 + 1, x0 + 4, 7, top, z1 - 4, z1 - 1, legC, LW2);
+  box3(x1 - 4, x1 - 1, 7, top, z1 - 4, z1 - 1, legC, LW2);
+  box3(x0, x1, low - 2.5, low, z0, z1, { top: C.metalSh, side: C.metalDk, front: C.metalDk }, LW2);
+  box3(x0 + 6, x0 + 34, low, low + 36, z0 + 6, z1 - 6, { top: C.body, side: C.bodySh, front: C.bodyHi }, LW);
+  const gr = new Path2D();
+  for (let i = 0; i < 6; i++) { const a = P(x0 + 10 + i * 3.6, low + 30, z0 + 5.5), b = P(x0 + 10 + i * 3.6, low + 8, z0 + 5.5); gr.moveTo(a[0], a[1]); gr.lineTo(b[0], b[1]); }
+  line(gr, LW3);
+  const led = P(x0 + 31, low + 32, z0 + 5.5); fill(circle(led[0], led[1], 1.7), C.curve);
+  box3(x0, x1, top - 3, top, z0, z1, { top: C.metalSh, side: C.metalDk, front: C.metalDk }, LW);
+  box3(x0 + 1, x0 + 4, 7, top - 3, z0 + 1, z0 + 4, legC, LW2);
+  box3(x1 - 4, x1 - 1, 7, top - 3, z0 + 1, z0 + 4, legC, LW2);
+  for (const [cx, cz] of [[x0 + 2.5, z0 + 2.5], [x1 - 2.5, z0 + 2.5], [x0 + 2.5, z1 - 2.5], [x1 - 2.5, z1 - 2.5]]) {
+    const q = P(cx, 3.5, cz); shape(circle(q[0], q[1], 3.5 * S(cz)), INK, LW3);
+  }
+  const m = monFrame();
+  box3(m.c[0] - 2, m.c[0] + 2, top, m.c[1] - 10, m.c[2] + 7, m.c[2] + 11, { top: C.mon, side: C.mon, front: C.cellDk }, LW2);
+  const kb = poly3([[x0 + 10, top + 1.4, z0 + 3], [x1 - 10, top + 1.4, z0 + 3], [x1 - 10, top + 1.4, z0 + 16], [x0 + 10, top + 1.4, z0 + 16]]);
+  shape(kb, C.metalSh, LW2);
+  const kl = new Path2D();
+  for (let r = 1; r < 5; r++) { const a = P(x0 + 11, top + 1.4, z0 + 3 + r * 2.6), b = P(x1 - 11, top + 1.4, z0 + 3 + r * 2.6); kl.moveTo(a[0], a[1]); kl.lineTo(b[0], b[1]); }
+  line(kl, LW3 * 0.8);
+  drawMonitor(m);
+}
+function drawMonitor(m) {
+  const { w, h, at } = m, d = 4.5, b = 2.4;
+  const F = [at(-w / 2, h / 2), at(w / 2, h / 2), at(w / 2, -h / 2), at(-w / 2, -h / 2)];
+  const Bk = [at(-w / 2, h / 2, -d), at(-w / 2, -h / 2, -d)];
+  shape(poly3([F[0], Bk[0], Bk[1], F[3]]), C.cellDk, LW);
+  shape(poly3(F), C.mon, LW);
+  const sw = w - 2 * b, sh = h - 2 * b;
+  const sp = (a, bb) => P(...at(-sw / 2 + a * sw, sh / 2 - bb * sh, 0.3));
+  const scr = poly([sp(0, 0), sp(1, 0), sp(1, 1), sp(0, 1)]);
+  shape(scr, C.screen, LW3);
+  clipped(scr, () => {
+    const g0 = [0.05, 0.16], gs = 0.072, gh = gs * sw / sh;
+    const walls = new Set(['1,1', '1,2', '3,3', '4,3', '3,4', '0,4', '2,0']);
+    for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) {
+      const a0 = g0[0] + i * gs, b0 = g0[1] + j * gh;
+      const cell = poly([sp(a0 + 0.005, b0 + 0.008), sp(a0 + gs - 0.005, b0 + 0.008), sp(a0 + gs - 0.005, b0 + gh - 0.008), sp(a0 + 0.005, b0 + gh - 0.008)]);
+      const key = i + ',' + j;
+      fill(cell, walls.has(key) ? C.cellDk : (key === '5,0' ? C.cellLt : C.cell));
+      if (key === '0,5') { fill(cell, C.screen); line(cell, LW3 * 0.8, C.cellLt); }
+    }
+    const ax0 = 0.56, ax1 = 0.95, ay0 = 0.84, ay1 = 0.16;
+    line(poly([sp(ax0, ay1), sp(ax0, ay0), sp(ax1, ay0)], false), LW3 * 0.8, C.cellLt);
+    const ev = [0.05, 0.06, 0.05, 0.08, 0.09, 0.08, 0.12, 0.15, 0.14, 0.2, 0.24, 0.23, 0.31, 0.37];
+    const pts = ev.map((v, i) => sp(ax0 + 0.01 + (ax1 - ax0 - 0.05) * i / (ev.length - 1), ay0 - (ay0 - ay1) * v * 1.55));
+    line(poly(pts, false), LW3 * 1.2, C.curve);
+    const tip = pts[pts.length - 1];
+    fill(circle(tip[0], tip[1], 2.3), C.clawd);
+    ctx.fillStyle = C.cellLt; ctx.font = '6px Consolas, monospace';
+    const t1 = sp(0.6, 0.11); ctx.fillText('0.37', t1[0], t1[1]);
+  });
+}
+
+// ------------------------------------------------------------------ harness
+function fingerProf(f, t) {   // (x toward the centre from the left rim, height above the disc), cubic Bezier
+  const P0 = [-HAR.r0, 0], P1 = [-HAR.r0 - 7.5, 12], P2 = [-HAR.r0 + 2.5, 38 + f[3]], P3 = [-4.5 + f[2], 30 + f[3]];
+  const u = 1 - t, k0 = u * u * u, k1 = 3 * u * u * t, k2 = 3 * u * t * t, k3 = t * t * t;
+  return [k0 * P0[0] + k1 * P1[0] + k2 * P2[0] + k3 * P3[0], k0 * P0[1] + k1 * P1[1] + k2 * P2[1] + k3 * P3[1]];
+}
+function fingerWorld(f, t) { const [x, h] = fingerProf(f, t); return [HAR.x - f[0] * x, HAR.y + HAR.discH + h, HAR.z + f[1]]; }
+function fingerPts3(f, n = 28) { const out = []; for (let i = 0; i < n; i++) out.push(fingerWorld(f, i / (n - 1))); return out; }
+function drawRibScreen(pts3) {
+  const n = pts3.length, q = pts3.map(p => P(...p));
+  const rad = pts3.map((p, i) => lerp(0.68, 0.42, i / (n - 1)) * S(p[2]));
+  shape(cr(tube(q, rad, 'flat', 'round')), C.metal, LW);
+  // collars at two knuckles
+  for (const t of [0.3, 0.62]) {
+    const i = Math.round(t * (n - 1)), a = q[Math.max(0, i - 1)], b = q[Math.min(n - 1, i + 1)];
+    let dx = b[0] - a[0], dy = b[1] - a[1]; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
+    const hl = 0.75 * S(pts3[i][2]), hw = rad[i] + 0.45 * S(pts3[i][2]);
+    const c0 = q[i];
+    const band = poly([[c0[0] - dx * hl - dy * hw, c0[1] - dy * hl + dx * hw], [c0[0] + dx * hl - dy * hw, c0[1] + dy * hl + dx * hw], [c0[0] + dx * hl + dy * hw, c0[1] + dy * hl - dx * hw], [c0[0] - dx * hl + dy * hw, c0[1] - dy * hl - dx * hw]]);
+    shape(band, C.metalSh, LW2);
+  }
+  // fingertip pad
+  const tp = q[n - 1];
+  shape(circle(tp[0], tp[1], 1.05 * S(pts3[n - 1][2])), C.metalSh, LW2);
+  return q;
+}
+function drawHarness() {
+  const { x, y, z, discR, discH } = HAR;
+  const upF = hpts(x, y + discH, z, discR, 90, 270, 48), loF = hpts(x, y, z, discR, 90, 270, 48);
+  shape(poly([...upF, ...loF.reverse()]), C.metalSh, LW);
+  const top = poly(hpts(x, y + discH, z, discR, 0, 360, 128));
+  shape(top, C.metal, LW);
+  clipped(top, () => fill(hcircle(x, y + discH, z - 1, 13.5), C.peach));
+  line(poly(hpts(x, y + discH, z, discR - 2.6, 0, 360, 128)), LW3);
+  const ticks = new Path2D();
+  for (let i = 0; i < 60; i++) {
+    const a = i / 60 * 360 * D2R, r0 = i % 5 ? discR - 1.3 : discR - 2.2;
+    const p0 = P(x + r0 * Math.sin(a), y + discH, z + r0 * Math.cos(a)), p1 = P(x + (discR - 0.4) * Math.sin(a), y + discH, z + (discR - 0.4) * Math.cos(a));
+    ticks.moveTo(p0[0], p0[1]); ticks.lineTo(p1[0], p1[1]);
+  }
+  line(ticks, LW3 * 0.75);
+  // side port on the right
+  const pa = P(x + discR * Math.sin(84 * D2R), y + 0.7, z + discR * Math.cos(84 * D2R)), pb = P(x + discR * Math.sin(100 * D2R), y + 2.7, z + discR * Math.cos(100 * D2R));
+  shape(poly([pa, [pb[0], pa[1]], pb, [pa[0], pb[1]]]), C.metalDk, LW3);
+  // finger mounts: small blocks on the rim; the empty one shows its pin hole
+  const byDepth = FINGERS.slice().sort((p, q) => q[1] - p[1]);
+  for (const f of byDepth) {
+    const m = P(HAR.x - f[0] * -HAR.r0, y + discH, z + f[1]), s = S(z + f[1]);
+    shape(Le(new DOMMatrix(), m[0], m[1] + 0.6, 2.0 * s, 0.8 * s), C.metalDk, LW2);
+    if (!f[4]) fill(Le(new DOMMatrix(), m[0], m[1] + 0.3, 0.7 * s, 0.3 * s), INK);
+  }
+  for (const f of byDepth) if (f[4]) drawRibScreen(fingerPts3(f));
+  // the eighth finger lies on the bench, waiting to be fitted
+  const spare = FINGERS[4], lying = [];
+  for (let i = 0; i < 28; i++) { const [xl, h] = fingerProf(spare, i / 27); lying.push([34 + h * 0.8, BN.top + 0.9, 334 + (xl + HAR.r0) * 0.5 + h * 0.2]); }
+  drawRibScreen(lying);
+  // tray of pins
+  box3(46, 62, 90, 91.6, 326, 336, { top: C.metalSh, side: C.metalDk, front: C.metalDk }, LW2);
+  for (let i = 0; i < 4; i++) { const q = P(48.5 + i * 3.8, 91.8, 331); shape(circle(q[0], q[1], 1.6), C.metal, LW3); }
+}
+
+// ------------------------------------------------------------------ Clawd
+function drawClawd() {
+  const G = ["...############...", "...##.######.##...", ".################.", "...############...", "....#.#....#.#...."];
+  const [bx, by] = P(HAR.x, HAR.y + HAR.discH, HAR.z - 1);
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const U = Math.max(1, Math.round(1.05 * S(HAR.z) * Z));
+  const left = Math.round((bx - OX) * Z - 9 * U), bottom = Math.round((by - OY) * Z);
+  const top = bottom - 10 * U;
+  ctx.fillStyle = SH.clawd;
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 18; c++) if (G[r][c] === '#') ctx.fillRect(left + c * U, top + r * 2 * U, U, 2 * U);
+  ctx.restore();
+}
+
+// ------------------------------------------------------------------ cables
+function drawCables() {
+  const run = (pts, w, col) => tubeLine(cr(pts.map(p => P(...p)), false), w, col);
+  run([[discX(96), 90.9, 356], [34, 90.8, 366], [46, 90.8, 380], [56, 90.8, 394], [62, 90.6, 403]], 4.2, C.cable);
+  run([[discX(99), 90.9, 362], [38, 90.8, 373], [52, 90.8, 388], [60, 90.6, 405]], 2.8, C.cable2);
+}
+function discX(deg) { return HAR.discR * Math.sin(deg * D2R) + 0.6; }
+
+// ------------------------------------------------------------------ lamp
+function drawLamp() {
+  const { x: lx, z: lz, rim, r } = LAMP;
+  const top = P(lx, rim + 19, lz);
+  line(poly([[top[0], OY - 10], top], false), LW);
+  const prof = [[3.2, rim + 18], [4.6, rim + 16.8], [7.8, rim + 13.4], [11.2, rim + 8.8], [14.0, rim + 4.4], [15.5, rim + 1.4], [r, rim]];
+  const Lp = prof.map(([rr, yy]) => P(lx - rr, yy, lz)), Rp = prof.map(([rr, yy]) => P(lx + rr, yy, lz));
+  const inside = poly(hpts(lx, rim, lz, r, 0, 360, 96));
+  shape(inside, C.lampIn, LW);
+  const b = P(lx, rim + 1.5, lz + 3);
+  fill(Le(new DOMMatrix(), b[0], b[1] + 2, 8, 2.8), C.bulb);
+  const outer = poly([...Lp, ...hpts(lx, rim, lz, r, 270, 90, 64), ...Rp.slice().reverse()]);
+  shape(outer, C.lampOut, LW);
+  line(poly(hpts(lx, rim + 1.1, lz, r - 0.4, 270, 90, 48), false), LW3);
+  box3(-2.8, 2.8, rim + 18, rim + 25, lz - 2.8, lz + 2.8, { top: C.steel, side: C.metalDk, front: C.steel }, LW2);
+}
+
+// ------------------------------------------------------------------ researcher A (seated, leaning in)
+function headA(M) {
+  // head-local: origin at the ear, u toward the face, v up, centimetres
+  const skin = [
+    [-0.8, 11.8], [4.6, 11.2], [8.0, 8.6], [9.25, 5.6], [9.75, 3.3], [9.35, 1.95], [10.3, 0.1],
+    [11.5, -1.65], [11.25, -2.5], [10.35, -3.05, 1], [10.65, -4.25], [10.2, -5.05, 1], [10.35, -5.75],
+    [9.8, -6.85], [10.05, -8.4], [9.3, -9.95], [7.4, -10.55], [5.3, -10.5], [4.5, -13.2], [4.3, -16.0],
+    [-4.6, -15.0], [-5.0, -11.0], [-6.6, -7.2], [-9.9, -1.0], [-9.4, 6.0], [-5.8, 10.6],
+  ];
+  const hair = [
+    [8.2, 8.6], [6.6, 11.3], [1.8, 13.2], [-3.8, 12.9], [-8.4, 10.0], [-10.7, 5.2], [-11.0, 0.2],
+    [-9.6, -4.4], [-6.9, -7.6], [-5.0, -6.7], [-3.3, -3.2], [-2.8, 1.8], [-1.0, 3.9], [2.2, 5.0],
+    [4.8, 5.6], [6.9, 6.9],
+  ];
+  // bun + tie
+  shape(Lc(M, -12.0, -2.8, 3.8), C.hairA, LW);
+  line(L(M, [[-13.6, -0.6], [-12.4, -2.6], [-13.0, -4.8]], false), LW3, C.hairAln);
+  shape(L(M, skin), C.skinA, LW);
+  // flat shade under the jaw and on the neck
+  clipped(L(M, skin), () => fill(L(M, [[9.0, -10.2], [5.6, -9.4], [2.0, -7.9], [-0.6, -6.2], [-3.6, -6.4], [-6.0, -9.0], [-6.0, -16.5], [5.5, -16.5], [5.2, -11.2]]), SH.skinA));
+  line(L(M, [[9.0, -10.15], [5.6, -9.4], [2.0, -7.9], [-0.2, -6.0], [-0.1, -4.4]], false), LW3 * 1.2);
+  // cheek warmth
+  fill(Le(M, 6.4, -3.0, 1.6, 0.95, 0), C.blushA);
+  shape(L(M, hair), C.hairA, LW);
+  line(L(M, [[6.9, 10.0], [1.6, 11.3], [-4.3, 10.2], [-8.7, 5.6]], false), LW3, C.hairAln);
+  line(L(M, [[5.2, 7.1], [0.0, 8.3], [-5.6, 6.6], [-9.2, 1.4]], false), LW3, C.hairAln);
+  shape(Lc(M, -8.6, -3.2, 0.75), C.topA, LW3);
+  // ear
+  const ear = [[0.75, 2.2], [-0.4, 3.0], [-1.9, 2.5], [-2.45, 0.4], [-2.0, -1.7], [-0.9, -3.1], [0.35, -3.3], [0.85, -2.2], [0.95, 0.3]];
+  shape(L(M, ear), C.skinA, LW);
+  line(L(M, [[-0.3, 1.7], [-1.35, 1.1], [-1.25, -0.7], [-0.35, -1.5]], false), LW3);
+  fill(Lc(M, 0.1, -3.55, 0.42), C.metalSh);
+  // a wisp escaping in front of the ear
+  shape(L(M, [[2.1, 5.3], [3.1, 3.4], [3.4, 0.9], [2.8, -1.8], [2.25, -0.4], [2.45, 1.8], [1.9, 3.8]]), C.hairA, LW3 * 1.2);
+  // eye: lid lowered, looking down at the work
+  const lidP = [[6.85, 1.95], [7.85, 2.2], [8.8, 1.8]];
+  clipped(L(M, [[6.8, 1.9], [7.9, 2.25], [8.9, 1.8], [8.6, 0.9], [7.6, 0.55], [6.9, 1.0]]), () => fill(Le(M, 8.1, 1.25, 0.5, 0.62), INK));
+  line(L(M, lidP, false), LW * 1.05);
+  line(L(M, [[8.75, 1.8], [9.35, 2.15]], false), LW3 * 1.1);
+  line(L(M, [[7.3, 0.8], [8.2, 0.7]], false), LW3 * 0.8);
+  line(L(M, [[7.0, 2.65], [7.9, 2.9], [8.5, 2.75]], false), LW3 * 0.8);
+  line(L(M, [[6.1, 3.6], [7.6, 4.1], [9.0, 3.9]], false), LW * 0.95);
+  // nostril, mouth with a small smile
+  line(L(M, [[10.05, -2.25], [10.45, -2.7], [10.95, -2.6]], false), LW3);
+  line(L(M, [[10.2, -5.05], [9.55, -5.0], [9.05, -4.75]], false), LW3 * 1.15);
+}
+function drawA(stage) {
+  const M = figM(AF.x, AF.y, AF.z, 1);
+  const tw = fingerWorld(FINGERS[A_TGT_F], A_TGT_T);
+  const tgt = [tw[0] - AF.x, tw[1] - AF.y];
+  const handAng = 10, tipL = [20.5, -4.0];
+  const tr = rotPt(tipL, handAng);
+  const wrist = [tgt[0] - tr[0], tgt[1] - tr[1]];
+  const elbow = [34.5, 29.5], shoulder = [28, 50.5];
+  const MH = sub(M, wrist[0], wrist[1], handAng);
+  const farW = [60.5, 28.4];
+  if (stage === 'body') {
+    const leg = [[-2, 9], [16, 12.8], [34, 12.2], [45, 10.6], [49.3, 6.2], [48.8, 0], [45.2, -11], [40.6, -22], [36.2, -31.5], [33.2, -34.2], [28.6, -33.2], [30.4, -24], [34.2, -11], [37.2, 0.4], [29, 1.6], [12, 0.8], [-2, 0.4]];
+    shape(L(M, leg.map(([u, v]) => [u - 3.5, v + 1.2])), C.trouAFar, LW);
+    shape(L(M, leg), C.trouA, LW);
+    line(L(M, [[40, 8.5], [44.6, 4.2], [45.2, -1]], false), LW3);
+    const shoe = [[28.2, -33.6], [34.4, -33.9], [38.6, -37.4], [43.4, -40.4], [43.2, -42.4], [32, -42.2], [27.2, -41.4, 1], [27.0, -37.0]];
+    shape(L(M, shoe.map(([u, v]) => [u - 4, v + 1.4])), INK, LW);
+    shape(L(M, shoe), C.shoeA, LW);
+    // far arm: sleeve along the bench
+    shape(L(M, tube([[shoulder[0] - 3, shoulder[1] - 3], [elbow[0] - 3, 28.4], [farW[0] - 1.5, farW[1] + 0.2]], [6, 5, 4.4], 'round', 'flat')), SH.coat, LW);
+    // coat
+    const coat = [
+      [30.5, 59.5], [24, 56.8], [15, 51.2], [5.2, 42.2], [-3.6, 30.4], [-9.8, 18.4], [-13.4, 8.4], [-16, 0.4],
+      [-17.6, -8.5, 1], [-5.5, -9.2], [4.5, -6.2], [9, 0.8], [22, 2.4], [34.2, 4.6, 1], [35.8, 10.8],
+      [30.5, 13.6], [21.5, 16.4], [24.2, 23.2], [31.6, 31.0], [38.8, 38.8], [42.4, 45.2], [40.8, 50.6], [36.4, 56.4],
+    ];
+    shape(L(M, coat), C.coat, LW);
+    clipped(L(M, coat), () => {
+      fill(L(M, [[-16.5, 2], [-13.4, 8.4], [-9.8, 18.4], [-3.6, 30.4], [3, 37], [-1, 25], [-4, 10], [-3, -2], [-6, -9.5], [-18, -9]]), SH.coat);
+      fill(L(M, [[9, 0.8], [22, 2.4], [34.2, 4.6], [35.8, 10.8], [30, 9], [18, 6.5]]), SH.coat);
+    });
+    line(L(M, [[37.6, 42], [34.4, 30], [31.8, 17.5], [32.4, 12.4]], false), LW3);
+    line(L(M, [[8, 3.2], [18.6, 4.8], [18.2, 11.2], [9.6, 10.2]], false), LW3);
+    line(L(M, [[4.8, 12], [-1.2, 22.6]], false), LW3);
+    // head (with neck) then the crew neck of her top, then the coat collar
+    const HE = [42.6, 63.2], HT = -22;
+    headA(sub(M, HE[0], HE[1], HT, 1.07));
+    const hp = q => { const r = rotPt([q[0] * 1.07, q[1] * 1.07], HT); return [r[0] + HE[0], r[1] + HE[1]]; };
+    const nf = hp([4.4, -13.9]), nb = hp([-4.8, -12.6]), mid = lerp2(nb, nf, 0.5);
+    // the lab coat's standing collar wraps the base of the neck
+    shape(L(M, [[nb[0] - 1.6, nb[1] + 2.0], [mid[0], mid[1] + 0.4], [nf[0] + 0.5, nf[1] + 1.2, 1], [nf[0] + 2.4, nf[1] - 1.8, 1], [mid[0] + 0.5, mid[1] - 2.2], [nb[0] - 2.8, nb[1] - 0.6]]), C.coat, LW);
+    line(L(M, [[nb[0] - 2.0, nb[1] + 0.7], [mid[0] + 0.2, mid[1] - 0.9], [nf[0] + 1.4, nf[1] - 0.4]], false), LW3);
+    fill(Lc(M, nf[0] + 1.0, nf[1] - 3.6, 0.55), C.coatBtn);
+    line(Lc(M, nf[0] + 1.0, nf[1] - 3.6, 0.55), LW3 * 0.8);
+    // near arm sleeve: shoulder -> elbow on the bench -> cuff
+    const cuffEnd = [wrist[0] - 1.6, wrist[1] - 0.6];
+    const sleeve = tube([shoulder, [35.5, 38], [elbow[0] - 1, elbow[1] + 1.2], [elbow[0] + 4, elbow[1] + 0.8], lerp2(elbow, cuffEnd, 0.62), cuffEnd], [6.6, 5.8, 5.3, 5.1, 4.8, 4.6], 'round', 'flat');
+    shape(L(M, sleeve), C.coat, LW);
+    clipped(L(M, sleeve), () => fill(L(M, [[elbow[0] - 9, 20], [elbow[0] + 22, 20], [cuffEnd[0] + 3, cuffEnd[1] - 5], [elbow[0] + 6, 27.2], [elbow[0] - 6, 26.4]]), SH.coat));
+    line(L(M, [[shoulder[0] + 3.4, shoulder[1] - 8], [elbow[0] - 3, elbow[1] + 8]], false), LW3);
+    line(L(M, [[elbow[0] + 3, elbow[1] + 4.6], [elbow[0] + 6.5, elbow[1] + 3.8]], false), LW3);
+    A_state = { MH };
+  } else {
+    const Mh2 = A_state.MH;
+    // far hand flat on the bench, fingertips on the disc rim
+    const Mf = sub(M, farW[0], farW[1], -4);
+    const farHand = [[-0.4, 2.5], [3.8, 3.4], [7.6, 3.8], [10.2, 3.3], [12.3, 2.2], [13.8, 0.6], [14.6, -1.2], [14.4, -2.4], [13.4, -2.6], [12.2, -1.6], [10.6, -1.4], [8.4, -2.0], [5.8, -2.5], [2.4, -2.5], [-0.4, -2.4]];
+    shape(L(Mf, farHand), C.skinA, LW);
+    clipped(L(Mf, farHand), () => fill(L(Mf, [[1, -1.0], [6, -0.9], [8.4, -2.0], [10.6, -1.4], [12.2, -1.6], [13, -3], [0, -3]]), SH.skinA));
+    line(L(Mf, [[9.0, 2.6], [11.6, 1.2], [12.9, -0.8], [12.8, -2.2]], false), LW3);
+    line(L(Mf, [[13.7, -0.9], [14.3, -1.9]], false), LW3 * 0.8);
+    const thumbF = [[3.2, -0.3], [6.0, -0.2], [8.6, -0.8], [10.2, -1.6], [10.6, -2.4], [9.6, -2.8], [6.8, -2.7], [4.0, -2.5], [2.6, -1.7]];
+    shape(L(Mf, thumbF), C.skinA, LW3 * 1.5);
+    line(L(Mf, [[9.5, -1.4], [10.2, -2.2]], false), LW3 * 0.8);
+    // stylus: back end rests in the web of the thumb, tip on the rib collar
+    const sty = [[3.5, 7.0], [20.5, -4.0]];
+    tubeLine(xf(poly(sty, false), Mh2), 0.95 * S(AF.z), C.steel, LW2);
+    const knurl = new Path2D();
+    for (let i = 0; i < 5; i++) { const a = lerp2(sty[0], sty[1], 0.05 + i * 0.04); knurl.moveTo(a[0] - 0.35, a[1] - 0.55); knurl.lineTo(a[0] + 0.35, a[1] + 0.55); }
+    line(xf(knurl, Mh2), LW3 * 0.7);
+    line(xf(poly([lerp2(sty[0], sty[1], 0.88), sty[1]], false), Mh2), LW3 * 1.3);
+    // near hand: pencil grip seen from the little-finger side; thumb tip peeks on the far side
+    shape(L(Mh2, [[10.6, 2.3], [11.8, 3.3], [13.2, 3.1], [13.9, 2.0], [13.2, 1.1], [11.4, 1.4]]), SH.skinA, LW);
+    const hand = [[-0.4, 2.7], [3.8, 3.3], [7.6, 3.2], [10.2, 2.5], [12.4, 1.4], [14.2, 0.3], [15.4, -0.3], [15.8, -1.0], [15.2, -1.5], [13.6, -1.3], [12.9, -2.0], [12.4, -3.1], [11.2, -3.7], [10.2, -4.3], [8.9, -4.9], [7.8, -5.0], [6.4, -4.6], [4.6, -4.2], [2.0, -3.4], [-0.4, -2.7]];
+    shape(L(Mh2, hand), C.skinA, LW);
+    clipped(L(Mh2, hand), () => fill(L(Mh2, [[1.0, -2.3], [4.6, -2.7], [8.2, -2.6], [10.8, -2.2], [12.9, -2.0], [12.4, -3.1], [11.2, -3.7], [10.2, -4.3], [8.9, -4.9], [7.8, -5.0], [6.4, -4.6], [4.6, -4.2], [2.0, -3.4]]), SH.skinA));
+    line(L(Mh2, [[9.6, 1.2], [12.0, 0.1], [13.6, -1.3]], false), LW3);
+    line(L(Mh2, [[8.6, 0.0], [10.6, -1.6], [12.2, -2.6]], false), LW3);
+    line(L(Mh2, [[7.6, -1.4], [9.2, -2.9], [10.2, -4.2]], false), LW3);
+    line(L(Mh2, [[6.6, -2.6], [7.4, -3.8], [7.8, -4.9]], false), LW3);
+    line(L(Mh2, [[14.6, 0.05], [15.35, -0.55]], false), LW3 * 0.8);
+    line(L(Mh2, [[7.0, 3.25], [7.8, 2.9]], false), LW3 * 0.8);
+    shape(L(Mh2, tube([[-3.8, 0.1], [-0.2, 0.1]], [4.7, 4.5], 'flat', 'flat')), C.coat, LW);
+  }
+}
+
+// ------------------------------------------------------------------ researcher B (standing at the monitor)
+function headB(M) {
+  // head-local: origin at the ear, u toward the face, v up, centimetres
+  const skin = [
+    [-1.5, 12.0], [4.4, 11.6], [8.1, 9.4], [9.8, 6.2], [10.3, 3.4], [9.8, 2.1], [10.9, 0.0],
+    [12.2, -2.3], [11.8, -3.1], [10.7, -3.4, 1], [10.9, -4.5], [10.35, -5.2, 1], [10.6, -6.0],
+    [9.9, -7.1], [10.3, -8.7], [9.4, -10.4], [6.8, -10.9], [4.6, -11.6], [4.3, -17.0],
+    [-4.6, -16.0], [-5.3, -11.5], [-6.9, -7.2], [-10.2, -1.0], [-9.8, 6.0], [-6.4, 10.8],
+  ];
+  shape(L(M, skin), C.skinB, LW);
+  // flat shade on the neck under the jaw
+  clipped(L(M, skin), () => fill(L(M, [[7.4, -11.4], [3.6, -10.8], [0.6, -8.6], [-3.4, -7.6], [-6.4, -9.6], [-6.4, -18], [5.0, -18], [5.2, -12.2]]), C.skinBSh));
+  const beard = [
+    [0.9, 1.6], [1.6, -1.6], [3.6, -3.3], [6.6, -3.8], [8.8, -3.5], [10.4, -3.45], [11.25, -4.2],
+    [10.7, -4.85, 1], [9.2, -4.9], [8.7, -5.5], [9.4, -6.35], [10.4, -6.85], [10.95, -8.7], [10.3, -11.0],
+    [7.2, -12.0], [3.8, -11.7], [1.2, -9.3], [-0.4, -5.5], [-0.3, -1.4],
+  ];
+  shape(L(M, beard), C.hairB, LW);
+  line(L(M, [[3.0, -5.6], [4.6, -7.4]], false), LW3 * 0.8, C.hairBln);
+  line(L(M, [[6.0, -8.6], [7.6, -10.0]], false), LW3 * 0.8, C.hairBln);
+  line(L(M, [[9.25, -5.5], [10.3, -5.45]], false), LW3);
+  const hair = [
+    [7.2, 10.2], [5.0, 12.2], [0.4, 13.2], [-4.6, 12.6], [-8.8, 9.4], [-10.7, 4.4], [-10.6, -0.8],
+    [-9.3, -5.0], [-7.4, -6.9], [-5.8, -5.6], [-4.0, -2.6], [-2.9, 1.6], [-1.0, 3.8], [1.0, 4.6],
+    [1.8, 6.2], [4.2, 7.8], [6.0, 8.6],
+  ];
+  shape(L(M, hair), C.hairB, LW);
+  for (const q of [[[4.6, 10.8], [1.2, 11.9], [-2.6, 11.6]], [[2.6, 8.9], [-1.8, 9.9], [-6.2, 8.2]], [[-3.6, 6.2], [-7.6, 4.4], [-9.0, 0.6]], [[-6.2, -1.8], [-8.0, -4.2]]])
+    line(L(M, q, false), LW3 * 0.8, C.hairBln);
+  const ear = [[0.7, 2.4], [-0.5, 3.2], [-2.0, 2.6], [-2.5, 0.4], [-2.0, -1.7], [-0.9, -3.0], [0.4, -3.1], [0.9, -2.0], [0.9, 0.5]];
+  shape(L(M, ear), C.skinB, LW);
+  line(L(M, [[-0.3, 1.7], [-1.3, 1.2], [-1.3, -0.6], [-0.4, -1.4]], false), LW3);
+  // eye (looking down at the screen), brow, round glasses
+  clipped(L(M, [[7.1, 2.0], [8.1, 2.2], [9.0, 1.8], [8.8, 0.9], [7.8, 0.6], [7.1, 1.1]]), () => fill(Le(M, 8.35, 1.3, 0.48, 0.58), INK));
+  line(L(M, [[7.05, 2.0], [8.05, 2.2], [8.95, 1.8]], false), LW * 0.95);
+  line(L(M, [[7.5, 0.75], [8.3, 0.7]], false), LW3 * 0.8);
+  line(L(M, [[6.5, 3.9], [8.0, 4.4], [9.4, 4.1]], false), LW * 1.1);
+  line(L(M, [[8.3, 2.7], [4.6, 2.9], [0.8, 2.5], [-0.6, 1.2]], false), LW3 * 1.2);
+  line(Lc(M, 9.35, 1.1, 1.85), LW2);
+  line(L(M, [[10.45, -2.35], [10.85, -2.75], [11.25, -2.65]], false), LW3);
+  // smile crease at the eye
+  line(L(M, [[6.6, 0.7], [6.9, 0.1]], false), LW3 * 0.7);
+}
+function drawB() {
+  const M = figM(BF.x, BF.y, BF.z, -1);
+  const legF = [[-8, 96], [-10, 84], [-7, 66], [-3.5, 50], [-4.5, 36], [-1.5, 18], [1.5, 8], [15, 8], [14.5, 20], [15.5, 36], [15.5, 50], [14.5, 68], [12.5, 88], [11.5, 97]];
+  shape(L(M, legF), C.trouBFar, LW);
+  const shoe = [[-7.6, 0.2, 1], [-8.4, 5.4], [-5.2, 9.2], [7.6, 9.4], [15.4, 6.6], [22.4, 4.0], [23.6, 1.2], [21.8, 0.0, 1]];
+  shape(L(M, shoe.map(([u, v]) => [u + 8, v])), INK, LW);
+  const leg = [[-11, 97], [-12.6, 84], [-10.2, 66], [-7.6, 50], [-9.2, 36], [-7.2, 18], [-5.6, 8.5], [9.4, 8.5], [8.2, 20], [9.2, 36], [10.6, 50], [11.6, 68], [12.2, 88], [11.8, 97]];
+  shape(L(M, leg), C.trouB, LW);
+  line(L(M, [[9.8, 54], [7.2, 50], [8.6, 46]], false), LW3);
+  shape(L(M, shoe), C.shoeB, LW);
+  line(L(M, [[6.4, 9.2], [9.4, 5.0], [15.6, 6.4]], false), LW3);
+  shape(L(M, tube([[2, 142], [3, 118], [14, 124.5], [18.5, 127.4]], [5.4, 4.6, 4.2, 4.0], 'round', 'flat')), C.cardBSh, LW);
+  const card = [[-4.6, 151.2], [-9.4, 147.6], [-12, 138], [-11.6, 122], [-12.6, 105], [-13.2, 91.4, 1], [12.6, 91, 1], [12.9, 104], [13.3, 118], [13.6, 132], [11.4, 143.6], [8.6, 148.2]];
+  shape(L(M, card), C.cardB, LW);
+  clipped(L(M, card), () => fill(L(M, [[-13, 90], [-12.6, 105], [-11.6, 122], [-12, 138], [-9, 148.4], [-6.5, 146], [-7.4, 120], [-6.2, 100], [-7, 90]]), C.cardBSh));
+  line(L(M, [[9.6, 148], [11.8, 132], [12.2, 110], [11.6, 92]], false), LW3);
+  for (const v of [140, 128, 116, 104]) { const u = 12.4 - (148 - v) * 0.01; shape(Lc(M, u - 1.2, v, 0.7), C.cardBSh, LW3); }
+  line(L(M, [[-12.8, 95.5], [12.6, 95]], false), LW3);
+  const Mm = sub(M, 24.5, 126.5, 0);
+  shape(L(Mm, [[-4.2, 5, 1], [4.2, 5, 1], [4.0, -4.6, 1], [-4.0, -4.6, 1]]), C.mug, LW);
+  shape(Le(Mm, 0, 5, 4.2, 0.9), C.mugIn, LW3);
+  const fingers = new Path2D();
+  for (let i = 0; i < 4; i++) { const v = 3.0 - i * 2.0, e = i === 3 ? 0.5 : 0; fingers.addPath(cr([[-4.4, v + 0.85], [-2.0 - e, v + 0.8], [-1.1 - e, v], [-2.0 - e, v - 0.8], [-4.4, v - 0.85]])); }
+  shape(xf(fingers, Mm), C.skinB, LW3 * 1.3);
+  for (const [dx, ph] of [[-1.5, 0], [1.6, 1.4]]) {
+    const st = [];
+    for (let i = 0; i <= 12; i++) { const t = i / 12; st.push([dx + 1.1 * Math.sin(t * 6.3 + ph), 7 + t * 9]); }
+    line(L(Mm, st, false), LW3, C.steam);
+  }
+  headB(sub(M, 2.2, 165.6, -15, 1.08));
+  // shirt collar: a band at the back, a pointed tip folding onto the chest
+  shape(L(M, [[-7.8, 153.4], [-2.4, 152.2], [3.2, 150.6, 1], [7.8, 146.4, 1], [5.2, 146.6], [0.6, 148.2], [-4.6, 149.6], [-8.2, 150.6]]), C.shirtB, LW);
+  line(L(M, [[3.2, 150.6], [2.6, 148.0]], false), LW3);
+  const wr = [31.5, 100.5];
+  const sleeve = tube([[0.4, 145], [5.8, 128], [8, 118], [20, 108.5], [wr[0] - 2, wr[1] + 1.4]], [5.8, 5.0, 4.6, 4.2, 3.9], 'round', 'flat');
+  shape(L(M, sleeve), C.cardB, LW);
+  clipped(L(M, sleeve), () => fill(L(M, [[-6, 128], [2.6, 128], [4.6, 116], [18, 104], [30, 96], [30, 90], [0, 100]]), C.cardBSh));
+  line(L(M, [[6.2, 122], [9.4, 119.4]], false), LW3);
+  const Mk = sub(M, wr[0] - 0.8, wr[1] + 0.2, -22);
+  shape(L(Mk, [[-0.6, 2.4], [4.2, 3.0], [8.4, 2.6], [11.4, 1.4], [13.2, -0.6], [13.6, -2.4], [12.2, -3.0], [10.6, -2.0], [7.2, -2.6], [3.2, -2.4], [-0.6, -2.3]]), C.skinB, LW);
+  line(L(Mk, [[8.6, 1.4], [11.4, -0.4], [12.2, -2.0]], false), LW3);
+  line(L(Mk, [[7.6, -0.2], [10.4, -1.8]], false), LW3);
+  shape(L(Mk, tube([[-3.2, 0], [0.4, 0]], [4.2, 4.0], 'flat', 'flat')), C.cardB, LW);
+  line(L(Mk, [[-1.8, 3.9], [-1.8, -3.9]], false), LW3);
+}
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,989 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Shelter MV 11: paper lab</title>
+<style>html,body{margin:0;padding:0;background:#000;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="out" width="1920" height="1080"></canvas>
+<pre id="log" style="display:none"></pre><pre id="png" style="display:none"></pre>
+<script>
+'use strict';
+// ============================================================================
+// Shelter MV, style frame 11: the outside world as backlit cut paper.
+// A scene is a stack of flat paper layers at depths z (px units, wall = 0,
+// +z toward the camera). Canvas2D cuts each layer's shapes (hand-cut edges)
+// into a mask: R = opaque card, G = self-lit vellum, B = pinhole emission.
+// One WebGL2 pass lights the stack: Claude's warm light is an area light with
+// projective soft shadows through every layer between (so the harness ribs
+// throw magnified shadows on the wall), moonlight enters only through the
+// window, cut edges get rims, backlit thin paper glows near its edges, and the
+// air between layers carries haze. Then bloom, soft focus, grain, vignette,
+// and Clawd composited last on exact cells.
+//   frame.html?shot=lab      S08, the night lab (default)
+//   frame.html?shot=hands    S09, hands lift Clawd toward the harness
+//   render: python3 render.py out.png "shot=lab"
+// ============================================================================
+const T0 = performance.now();
+const Q = new URLSearchParams(location.search);
+const SHOT = Q.get('shot') || 'lab';
+const W = 1920, H = 1080;
+const LOG = [];
+const log = s => { LOG.push(String(s)); document.getElementById('log').textContent = LOG.join('\n'); };
+window.addEventListener('error', e => log('ERROR ' + e.message + ' @' + e.lineno));
+const TIMES = {};
+const qn = (k, d) => (Q.has(k) ? +Q.get(k) : d);
+
+// ---------------------------------------------------------------- utilities
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const bump = (t, c, w) => Math.exp(-(((t - c) / w) ** 2));
+const lin = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(c => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }); };
+function vnoise1(seed) {
+  const r = mulberry32(seed), T = new Float32Array(1024);
+  for (let i = 0; i < 1024; i++) T[i] = r() * 2 - 1;
+  return x => { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); return T[i & 1023] + (T[(i + 1) & 1023] - T[i & 1023]) * u; };
+}
+
+// ---------------------------------------------------------------- shapes
+// Every shape is a closed polygon: an array of [x, y] in screen px (y down).
+const S2 = {
+  rect: (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+  rrect(x, y, w, h, r, n = 6) {
+    const o = [], cs = [[x + w - r, y + r, -Math.PI / 2], [x + w - r, y + h - r, 0], [x + r, y + h - r, Math.PI / 2], [x + r, y + r, Math.PI]];
+    for (const [cx, cy, a0] of cs) for (let k = 0; k <= n; k++) { const a = a0 + Math.PI / 2 * k / n; o.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); }
+    return o;
+  },
+  ellipse(cx, cy, rx, ry, rot = 0, n = 72) {
+    const o = [], c = Math.cos(rot), s = Math.sin(rot);
+    for (let i = 0; i < n; i++) { const a = 2 * Math.PI * i / n, x = Math.cos(a) * rx, y = Math.sin(a) * ry; o.push([cx + x * c - y * s, cy + x * s + y * c]); }
+    return o;
+  },
+  bez(p0, p1, p2, p3, n = 48) {
+    const o = [];
+    for (let i = 0; i <= n; i++) {
+      const t = i / n, u = 1 - t, a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
+      o.push([a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0], a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1]]);
+    }
+    return o;
+  },
+  // Catmull-Rom through control points (closed outline or open centreline)
+  cat(ctrl, closed = true, seg = 14) {
+    const o = [], n = ctrl.length, get = i => closed ? ctrl[(i + n) % n] : ctrl[clamp(i, 0, n - 1)];
+    const last = closed ? n : n - 1;
+    for (let i = 0; i < last; i++) {
+      const p0 = get(i - 1), p1 = get(i), p2 = get(i + 1), p3 = get(i + 2);
+      for (let k = 0; k < seg; k++) {
+        const t = k / seg, t2 = t * t, t3 = t2 * t;
+        o.push([0, 1].map(j => 0.5 * (2 * p1[j] + (-p0[j] + p2[j]) * t + (2 * p0[j] - 5 * p1[j] + 4 * p2[j] - p3[j]) * t2 + (-p0[j] + 3 * p1[j] - 3 * p2[j] + p3[j]) * t3)));
+      }
+    }
+    if (!closed) o.push(ctrl[n - 1].slice());
+    return o;
+  },
+  // tapered ribbon along a centreline, width wf(t), round caps
+  ribbon(cl, wf, caps = [true, true]) {
+    const n = cl.length, L = [], R = [];
+    for (let i = 0; i < n; i++) {
+      const a = cl[Math.max(0, i - 1)], b = cl[Math.min(n - 1, i + 1)];
+      let tx = b[0] - a[0], ty = b[1] - a[1]; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
+      const w = wf(i / (n - 1)) / 2;
+      L.push([cl[i][0] - ty * w, cl[i][1] + tx * w]); R.push([cl[i][0] + ty * w, cl[i][1] - tx * w]);
+    }
+    const cap = (c, from, w) => { const o = [], a0 = Math.atan2(from[1] - c[1], from[0] - c[0]); for (let k = 1; k < 12; k++) { const a = a0 - Math.PI * k / 12; o.push([c[0] + Math.cos(a) * w, c[1] + Math.sin(a) * w]); } return o; };
+    const out = L.slice();
+    if (caps[1]) out.push(...cap(cl[n - 1], L[n - 1], wf(1) / 2));
+    out.push(...R.slice().reverse());
+    if (caps[0]) out.push(...cap(cl[0], R[0], wf(0) / 2));
+    return out;
+  },
+  line: (a, b, n = 24) => { const o = []; for (let i = 0; i <= n; i++) o.push([lerp(a[0], b[0], i / n), lerp(a[1], b[1], i / n)]); return o; },
+};
+function resample(pts, step = 2) {
+  const out = [], n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i], b = pts[(i + 1) % n], d = Math.hypot(b[0] - a[0], b[1] - a[1]), k = Math.max(1, Math.ceil(d / step));
+    for (let j = 0; j < k; j++) out.push([a[0] + (b[0] - a[0]) * j / k, a[1] + (b[1] - a[1]) * j / k]);
+  }
+  return out;
+}
+// Hand-cut edge: sub-pixel wobble along the normal, and the occasional notch.
+function rough(pts, rnd, amp = 0.6, notch = 1 / 380) {
+  if (amp <= 0) return pts;
+  const d = resample(pts, 2.0), N = d.length;
+  const n1 = vnoise1((rnd() * 1e9) | 0), n2 = vnoise1((rnd() * 1e9) | 0);
+  const out = []; let s = 0, nAt = -1, nLen = 0, nDep = 0;
+  for (let i = 0; i < N; i++) {
+    const p = d[i], a = d[(i - 1 + N) % N], b = d[(i + 1) % N];
+    let tx = b[0] - a[0], ty = b[1] - a[1]; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
+    if (i > 0) s += Math.hypot(p[0] - d[i - 1][0], p[1] - d[i - 1][1]);
+    let off = amp * (0.62 * n1(s / 21) + 0.38 * n2(s / 5.3));
+    if (nAt < 0 && rnd() < notch * 2) { nAt = s; nLen = 2.5 + rnd() * 4; nDep = (0.7 + rnd() * 1.1) * (rnd() < 0.5 ? 1 : -1); }
+    if (nAt >= 0) { const u = (s - nAt) / nLen; if (u > 1) nAt = -1; else off += nDep * (1 - Math.abs(2 * u - 1)); }
+    out.push([p[0] + ty * off, p[1] - tx * off]);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- masks
+// A mask is an opaque black canvas; 'lighter' adds coverage per channel.
+function newMask() {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, W, H); x.globalCompositeOperation = 'lighter';
+  return { c, x };
+}
+function path(x, pts) { x.beginPath(); pts.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath(); }
+function Mk(m, rnd) {   // drawing helpers bound to one mask + rng
+  const put = (pts, col, amp) => { path(m.x, rough(pts, rnd, amp)); m.x.fillStyle = col; m.x.fill(); };
+  return {
+    card: (pts, amp = 0.6) => put(pts, '#ff0000', amp),
+    vel: (pts, v = 1, amp = 0.6) => put(pts, `rgb(0,${Math.round(255 * v)},0)`, amp),
+    emit: (pts, v = 1, amp = 0) => put(pts, `rgb(0,0,${Math.round(255 * v)})`, amp),
+    cut: (pts, amp = 0.6) => { m.x.globalCompositeOperation = 'source-over'; put(pts, '#000', amp); m.x.globalCompositeOperation = 'lighter'; },
+  };
+}
+
+// ---------------------------------------------------------------- fibre texture
+// 1024^2 tiling: R = fine anisotropic fibres, G = long fibres, B = speckle.
+function makeFibre() {
+  const S = 1024, rnd = mulberry32(4242);
+  const layer = (count, lenA, lenB, wA, wB, aA, aB, aniso) => {
+    const c = document.createElement('canvas'); c.width = c.height = S;
+    const x = c.getContext('2d'); x.fillStyle = 'rgb(128,128,128)'; x.fillRect(0, 0, S, S); x.lineCap = 'round';
+    for (let i = 0; i < count; i++) {
+      const px = rnd() * S, py = rnd() * S;
+      const ang = rnd() < aniso ? (rnd() - 0.5) * 0.8 : rnd() * Math.PI;
+      const len = lenA + (lenB - lenA) * rnd() * rnd();
+      const bend = (rnd() - 0.5) * len * 0.45;
+      const dx = Math.cos(ang) * len / 2, dy = Math.sin(ang) * len / 2, nx = -Math.sin(ang) * bend, ny = Math.cos(ang) * bend;
+      const a = aA + (aB - aA) * rnd();
+      x.strokeStyle = rnd() < 0.5 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`;
+      x.lineWidth = wA + (wB - wA) * rnd();
+      for (const ox of [0, -S, S]) for (const oy of [0, -S, S]) {
+        const X = px + ox, Y = py + oy;
+        if (X + len < 0 || X - len > S || Y + len < 0 || Y - len > S) continue;
+        x.beginPath(); x.moveTo(X - dx, Y - dy); x.quadraticCurveTo(X + nx, Y + ny, X + dx, Y + dy); x.stroke();
+      }
+    }
+    return x.getImageData(0, 0, S, S).data;
+  };
+  const f1 = layer(26000, 4, 32, 0.45, 1.1, 0.05, 0.2, 0.62);
+  const f2 = layer(2400, 30, 120, 0.6, 1.4, 0.05, 0.13, 0.62);
+  const r2 = mulberry32(777), data = new Uint8Array(S * S * 4);
+  for (let i = 0; i < S * S; i++) { data[i * 4] = f1[i * 4]; data[i * 4 + 1] = f2[i * 4]; data[i * 4 + 2] = (r2() * 255) | 0; data[i * 4 + 3] = 255; }
+  return { S, data };
+}
+
+// ================================================================ SCENES
+// Clawd, decoded from the Claude Code terminal glyph (18 x 5, cells 1 x 2).
+const GLYPH = [
+  '...############...',
+  '...##.######.##...',
+  '.################.',
+  '...############...',
+  '....#.#....#.#....',
+];
+const PAPER = { ink: '#10131F', deep: '#171C30', slate: '#212843', dusk: '#2D3656', far: '#3B4668' };
+
+function sceneLab() {
+  const S = { name: 'lab' };
+  const cx = 1000, CELL = 7, gw = 18 * CELL, gh = 10 * CELL, feetY = 727;
+  S.clawd = { x0: cx - gw / 2, y0: feetY - gh, cell: CELL };
+  S.light = { x: cx, y: feetY - gh / 2, z: 600, r: qn('lr', 5.5), I: qn('li', 4.3e5), a: qn('la', 210), f: qn('lf', 560) };
+  S.moon = { dir: [0.3, 0.52, 1], I: qn('mi', 0.55), disc: [372, 330, 21] };
+  S.sky = { top: '#1B2138', hor: '#34406A', horY: 640 };
+  S.mon = { x: 1525, y: 519, z: 212, I: 1.0 };
+  S.eyes = Q.get('eyes') || 'dark';
+  const L = S.layers = [];
+  const add = o => L.push(Object.assign({ alb: 0.7, kind: 0, thin: 0, def: 0, ao: 0.45, cast: 0, rimk: 1, vel: [0, 0, 0], em: [0, 0, 0] }, o));
+
+  // ---- the city through the window (two layers of far card)
+  const city = (m, rnd, top0, top1, winP, x0, x1, big) => {
+    let x = x0;
+    while (x < x1) {
+      const w = (big ? 24 : 14) + rnd() * (big ? 40 : 30), top = top0 + rnd() * (top1 - top0), base = 700;
+      m.card(S2.rect(x, top, w, base - top), 0.45);
+      const r = rnd();
+      if (r < 0.18) m.card(S2.rect(x + w * 0.28, top - 7 - rnd() * 7, w * 0.44, 12), 0.4);
+      else if (r < 0.27) m.card([[x + w * 0.5 - 3, top + 2], [x + w * 0.5, top - 16 - rnd() * 14], [x + w * 0.5 + 3, top + 2]], 0.3);
+      else if (r < 0.35) { m.card(S2.rrect(x + w * 0.3, top - 15, 13, 10, 3), 0.3); m.card(S2.rect(x + w * 0.3 + 2, top - 6, 2, 7), 0.2); m.card(S2.rect(x + w * 0.3 + 9, top - 6, 2, 7), 0.2); }
+      else if (r < 0.42) m.card(S2.rect(x + w * 0.7, top - 22, 1.6, 23), 0.2);
+      for (let wy = top + 6; wy < base - 60; wy += big ? 10 : 8) for (let wx = x + 4; wx < x + w - 5; wx += big ? 8 : 6) {
+        if (rnd() < winP) { const h = S2.rect(wx, wy, big ? 2.6 : 2, big ? 3.6 : 2.8); m.cut(h, 0); m.emit(h, 0.3 + rnd() * 0.7); }
+      }
+      x += w + (rnd() < 0.35 ? 2 + rnd() * 5 : -rnd() * 3);
+    }
+  };
+  add({ name: 'cityFar', z: -560, col: PAPER.far, ao: 0.25, em: lin('#9FB3D9').map(v => v * 0.55),
+    draw: (m, rnd) => city(m, rnd, 478, 560, 0.1, 90, 520, false) });
+  add({ name: 'cityNear', z: -320, col: PAPER.dusk, ao: 0.35, em: lin('#9FB3D9').map(v => v * 0.7),
+    draw: (m, rnd) => city(m, rnd, 528, 606, 0.07, 70, 540, true) });
+
+  // ---- the back wall with its tall window
+  const WIN = S.win = [150, 62, 440, 640];
+  add({ name: 'wall', z: 0, col: PAPER.slate, alb: 0.78, ao: 0, draw: (m, rnd) => {
+    m.card(S2.rect(-40, -40, W + 80, H + 80), 0);
+    m.cut(S2.rect(WIN[0], WIN[1], WIN[2] - WIN[0], WIN[3] - WIN[1]), 0.6);
+    m.card(S2.rect(292, WIN[1] - 2, 6, WIN[3] - WIN[1] + 4), 0.5);
+    m.card(S2.rect(WIN[0] - 2, 252, WIN[2] - WIN[0] + 4, 6), 0.5);
+    m.card(S2.rect(WIN[0] - 2, 448, WIN[2] - WIN[0] + 4, 6), 0.5);
+  } });
+  // ---- things just off the wall: tissue blind, sill, shelves
+  add({ name: 'wallFront', z: 22, col: PAPER.slate, alb: 0.74, ao: 0.5, vel: [0.036, 0.045, 0.085], draw: (m, rnd) => {
+    for (let k = 0, y = WIN[1] - 6; y < 150; k++, y += 9) m.vel(S2.rect(WIN[0] - 4, y, WIN[2] - WIN[0] + 8, 9.4), k % 2 ? 0.62 : 0.9, 0.35);
+    m.card(S2.rrect(WIN[0] - 9, 148, WIN[2] - WIN[0] + 18, 9, 3), 0.5);
+    m.card(S2.ribbon(S2.line([414, 156], [416, 222]), () => 1.8), 0.2);
+    m.card(S2.ellipse(416, 227, 4.6, 5.4), 0.3); m.cut(S2.ellipse(416, 227, 2.2, 2.9), 0.2);
+    m.card(S2.rect(WIN[0] - 22, WIN[3] - 2, WIN[2] - WIN[0] + 44, 13), 0.6);
+    // shelves on the right wall
+    for (const [sy, sx0, sx1] of [[268, 1470, 1860], [392, 1520, 1860]]) {
+      m.card(S2.rect(sx0, sy, sx1 - sx0, 8), 0.5);
+      m.card([[sx0 + 30, sy + 8], [sx0 + 44, sy + 8], [sx0 + 34, sy + 28]], 0.4);
+      m.card([[sx1 - 44, sy + 8], [sx1 - 30, sy + 8], [sx1 - 34, sy + 28]], 0.4);
+    }
+    // shelf 1: books, a jar, a flask
+    let bx = 1492; for (const [bw, bh, lean] of [[13, 58, 0], [10, 50, 0], [15, 62, 0], [11, 46, 0.22]]) {
+      if (lean) m.card([[bx, 268], [bx + bw, 268], [bx + bw + bh * Math.sin(lean), 268 - bh * Math.cos(lean)], [bx + bh * Math.sin(lean), 268 - bh * Math.cos(lean)]], 0.5);
+      else m.card(S2.rect(bx, 268 - bh, bw, bh), 0.5);
+      bx += bw + 1.5;
+    }
+    m.card(S2.rrect(1600, 232, 30, 36, 5), 0.5); m.card(S2.rect(1604, 225, 22, 9), 0.4);
+    m.card(S2.ellipse(1690, 250, 17, 17), 0.5); m.card(S2.rect(1685, 212, 10, 26), 0.4);
+    m.card(S2.rrect(1760, 238, 58, 30, 3), 0.5);
+    // shelf 2: a plant, boxes
+    m.card([[1560, 392], [1586, 392], [1590, 366], [1556, 366]], 0.5);
+    for (const [a, l] of [[-2.2, 34], [-1.75, 42], [-1.3, 38], [-0.9, 30], [-2.6, 24]]) {
+      const bx0 = 1573, by0 = 366, tip = [bx0 + Math.cos(a) * l, by0 + Math.sin(a) * l];
+      m.card(S2.ribbon(S2.bez([bx0, by0], [bx0 + Math.cos(a) * l * 0.4, by0 + Math.sin(a) * l * 0.5 - 4], [tip[0] - Math.cos(a) * 6, tip[1] - 8], tip, 16), t => 7 * Math.sin(Math.PI * Math.min(1, t * 1.1 + 0.05)) + 0.8), 0.3);
+    }
+    m.card(S2.rect(1660, 350, 70, 42), 0.5); m.card(S2.rect(1740, 362, 48, 30), 0.5);
+  } });
+
+  // ---- floor (only seen beyond the bench end)
+  add({ name: 'floor', z: 100, col: PAPER.deep, kind: 1, alb: 0.55, ao: 0.3, draw: (m, rnd) => {
+    m.card(S2.rect(1200, 902, W, 240), 0.3);
+  } });
+
+  // ---- researcher B at the monitor, the monitor on its pole
+  add({ name: 'B', z: 200, col: PAPER.deep, alb: 0.3, rimk: 1.6, ao: 0.55, cast: 1, vel: [0.044, 0.05, 0.066], draw: (m, rnd) => {
+    // monitor
+    m.card(S2.rrect(1449, 465, 152, 106, 5), 0.5);
+    m.cut(S2.rect(1457, 473, 136, 90), 0.4);
+    m.vel(S2.rect(1457, 473, 136, 90), 0.55, 0.3);
+    const gx = 1457, gy = 473, cw = 136 / 6, ch = 90 / 4;
+    const floorCells = [0, 1, 2, 3, 5, 7, 8, 9, 11, 12, 14, 15, 17, 18, 19, 20, 21, 23];
+    for (const c of floorCells) m.vel(S2.rect(gx + (c % 6) * cw + 1, gy + Math.floor(c / 6) * ch + 1, cw - 2, ch - 2), 0.45, 0);
+    for (let i = 1; i < 6; i++) m.card(S2.rect(gx + i * cw - 0.9, gy, 1.8, 90), 0);
+    for (let j = 1; j < 4; j++) m.card(S2.rect(gx, gy + j * ch - 0.9, 136, 1.8), 0);
+    m.card(S2.ribbon(S2.line([1525, 568], [1525, 918]), () => 7), 0.4);
+    m.card([[1486, 932], [1564, 932], [1548, 916], [1502, 916]], 0.4);
+    // B: standing in a lab coat, facing the monitor, both hands around a mug
+    m.card(S2.ellipse(1687, 481, 25, 31, -0.26), 0.5);                // head, bowed toward the screen
+    m.card(S2.ellipse(1697, 471, 25, 26, -0.34), 0.5);                // short hair, back of the head
+    m.card(S2.cat([[1706, 492], [1716, 500], [1712, 510], [1702, 506]]), 0.3);   // nape
+    m.card(S2.ribbon(S2.line([1692, 500], [1700, 540]), t => 22 + 5 * t), 0.4);  // neck
+    m.card(S2.cat([[1665, 553], [1688, 538], [1718, 539], [1736, 556], [1742, 612], [1738, 690], [1744, 770], [1750, 836], [1702, 842], [1660, 834], [1664, 760], [1662, 690], [1657, 618], [1656, 580]]), 0.6);  // coat
+    m.cut(S2.cat([[1703, 845], [1700, 800], [1697, 845]]), 0.3);                   // coat vent
+    m.card(S2.ribbon(S2.cat([[1716, 830], [1720, 880], [1723, 922]], false, 10), t => 23 - 4 * t), 0.5);   // far leg
+    m.card(S2.ribbon(S2.cat([[1684, 830], [1681, 880], [1679, 920]], false, 10), t => 23 - 4 * t), 0.5);   // near leg
+    m.card(S2.cat([[1662, 931], [1667, 915], [1690, 913], [1694, 931]]), 0.4);
+    m.card(S2.cat([[1703, 934], [1708, 918], [1732, 917], [1735, 934]]), 0.4);
+    m.card(S2.ribbon(S2.cat([[1678, 560], [1684, 610], [1687, 640]], false, 10), t => 21 - 3 * t), 0.5);   // upper arm
+    m.card(S2.ribbon(S2.cat([[1687, 640], [1668, 622], [1648, 604]], false, 10), t => 18 - 4 * t), 0.5);   // forearm
+    m.card(S2.rrect(1626, 578, 23, 27, 4), 0.5);                       // mug
+    m.card(S2.ellipse(1621, 591, 7.5, 8.5), 0.3); m.cut(S2.ellipse(1621, 591, 3.5, 4.5), 0.2);
+    m.card(S2.ellipse(1650, 598, 11, 9, 0.3), 0.4);                    // hands
+  } });
+
+  // ---- the bench: its top (up-facing) and its body
+  add({ name: 'benchTop', z: 380, col: PAPER.slate, kind: 1, alb: 0.3, ao: 0.35, draw: (m, rnd) => {
+    m.card([[-30, 713], [1348, 712], [1348, 1100], [-30, 1100]], 0.5);
+  } });
+
+  // ---- the harness: a cage of ribs curving up like cupped fingers, open at the top
+  const HC = { cx, poleY: 738, Rh: 118, Rv: 116 };
+  const rib = (side, k, th1, w0, w1) => {
+    const cyc = HC.poleY - HC.Rv, pts = [];
+    for (let i = 0; i <= 64; i++) {
+      const th = 0.3 + (th1 - 0.3) * i / 64, hook = smooth(th1 - 0.6, th1, th);
+      pts.push([HC.cx + side * (Math.sin(th) * HC.Rh * k - hook * hook * 17 * k), cyc + Math.cos(th) * HC.Rv + hook * hook * 7]);
+    }
+    return S2.ribbon(pts, t => lerp(w0, w1, t) + 1.7 * bump(t, 0.47, 0.03) + 1.4 * bump(t, 0.76, 0.026));
+  };
+  add({ name: 'ribsBack', z: 420, col: PAPER.deep, alb: qn('ralb', 0.07), ao: 0, cast: 1, draw: (m, rnd) => {
+    // four fingers per side, held together: the gaps are narrower than the light's penumbra,
+    // so on the wall they blur into faint slits and each side reads as one hand
+    const ks = [1.0, 0.885, 0.77, 0.655], th = [2.16, 2.3, 2.25, 2.06];
+    for (const s of [-1, 1]) ks.forEach((k, i) => m.card(rib(s, k, th[i] + (s > 0 ? 0.02 : 0), 12.5, 8.5), 0.5));
+    // the palms: a dark plate where the fingers meet, behind Clawd's lower half (keeps his legs legible)
+    m.card(S2.cat([[cx - 84, 742], [cx - 80, 708], [cx - 58, 684], [cx, 676], [cx + 58, 684], [cx + 80, 708], [cx + 84, 742]]), 0.5);
+  } });
+  add({ name: 'ribsFront', z: 680, col: PAPER.ink, alb: 0.5, thin: 0.05, ao: 0.4, cast: 1, em: lin('#9FB3D9').map(v => v * 1.3), draw: (m, rnd) => {
+    for (const s of [-1, 1]) {
+      const pts = S2.bez([cx + s * 100, 736], [cx + s * 137, 702], [cx + s * 133, 630], [cx + s * 97, 598], 48);
+      m.card(S2.ribbon(pts, t => lerp(12, 8, t) + 1.8 * bump(t, 0.55, 0.035)), 0.5);
+    }
+    m.card(S2.rrect(cx - 112, 727, 224, 20, 8), 0.5);
+    for (let k = -6; k <= 6; k++) if (Math.abs(k) > 1) m.cut(S2.ellipse(cx + k * 14.5, 732.2, 1.7, 1.7, 0, 14), 0);
+    for (const lx of [cx + 70, cx + 79]) { m.cut(S2.ellipse(lx, 733.5, 1.7, 1.7, 0, 16), 0); m.emit(S2.ellipse(lx, 733.5, 1.7, 1.7, 0, 16), 1); }
+    const cab = S2.cat([[cx + 106, 734], [1180, 733], [1290, 731.5], [1330, 734], [1343, 752], [1348, 830], [1356, 892], [1400, 918], [1488, 926]], false, 16);
+    m.card(S2.ribbon(cab, () => 4.2, [false, true]), 0.3);
+    const cab2 = S2.cat([[cx + 100, 739], [1160, 738], [1300, 736], [1336, 742], [1352, 790], [1368, 860], [1420, 900], [1500, 912]], false, 16);
+    m.card(S2.ribbon(cab2, () => 3.2, [false, true]), 0.3);
+  } });
+
+  // ---- bench front, and its lip and cabinet trim
+  add({ name: 'benchFront', z: 720, col: PAPER.deep, alb: 0.55, ao: 0.45, draw: (m, rnd) => {
+    m.card(S2.rect(-30, 736, 1362, 400), 0.5);
+  } });
+  add({ name: 'benchLip', z: 726, col: PAPER.slate, alb: 0.7, ao: 0.5, draw: (m, rnd) => {
+    m.card(S2.rect(-30, 735, 1364, 12), 0.5);
+    for (const x of [300, 640, 980]) m.card(S2.rect(x, 747, 3, 330), 0.3);
+    for (const x of [270, 330, 610, 670, 950, 1010]) m.card(S2.rrect(x - 9, 800, 18, 4, 2), 0.3);
+  } });
+
+  // ---- researcher A: seated, leaning in with a fine tool
+  add({ name: 'A', z: 860, col: PAPER.ink, alb: 0.5, thin: 0.3, def: 0.22, ao: 0.6, rimk: 2.4, draw: (m, rnd) => {
+    const hx = 604, hy = 614;
+    m.card(S2.ellipse(hx, hy, 40, 50, 0.56), 0.5);                         // head, bowed toward the harness
+    m.card(S2.ellipse(hx - 9, hy - 7, 40, 45, 0.62), 0.5);                 // hair volume at the back
+    m.card(S2.ellipse(hx - 30, hy - 45, 19, 18), 0.5);                     // bun
+    m.card(S2.ribbon(S2.cat([[hx - 38, hy - 22], [hx - 50, hy + 8], [hx - 47, hy + 40]], false, 10), t => 3.2 - 2.2 * t), 0.2);   // loose strand
+    m.card(S2.ribbon(S2.line([hx - 14, hy + 34], [hx - 40, hy + 62]), () => 34), 0.4);            // neck
+    m.card(S2.cat([[566, 652], [520, 674], [486, 736], [460, 824], [448, 900], [458, 948], [522, 962], [588, 942], [618, 885], [636, 805], [636, 742], [620, 700], [598, 674]]), 0.6);
+    m.card(S2.ribbon(S2.cat([[552, 942], [640, 928], [712, 922]], false, 10), t => 72 - 14 * t), 0.5);   // thigh
+    m.card(S2.ribbon(S2.cat([[712, 930], [716, 1000], [712, 1110]], false, 10), t => 52 - 10 * t), 0.5);  // shin
+    m.card(S2.ribbon(S2.cat([[574, 690], [612, 722], [660, 741]], false, 12), t => 36 - 8 * t), 0.5);   // upper arm
+    m.card(S2.ribbon(S2.cat([[660, 741], [740, 718], [806, 694]], false, 12), t => 29 - 9 * t), 0.5);   // forearm
+    m.card(S2.ellipse(818, 688, 21, 13, -0.42), 0.5);                        // hand, pinch grip
+    m.card(S2.ribbon(S2.cat([[806, 684], [822, 675], [836, 674]], false, 8), t => 9 - 3 * t), 0.4);   // finger along the tool
+    m.card(S2.ribbon(S2.line([826, 684], [874, 655]), t => 3.4 - 1.6 * t), 0.2);                         // the tool
+    // stool
+    m.card(S2.ellipse(484, 968, 74, 11), 0.5);
+    m.card(S2.ribbon(S2.line([484, 972], [484, 1100]), () => 20), 0.4);
+    m.card(S2.ribbon(S2.line([430, 1050], [540, 1050]), () => 7), 0.3);
+  } });
+  add({ name: 'fg', z: 1080, col: PAPER.ink, alb: 0.4, thin: 0.3, def: 1.0, ao: 0.35, rimk: 1.2, draw: (m, rnd) => {
+    const leaves = [[1890, 1110, 1728, 900, 50], [1930, 1110, 1846, 838, 44], [1860, 1110, 1640, 1000, 40], [1960, 1110, 1930, 880, 46]];
+    for (const [x0, y0, x1, y1, w] of leaves) {
+      const cl = S2.bez([x0, y0], [x0 - (x0 - x1) * 0.1, y0 - (y0 - y1) * 0.75], [x1 + (x0 - x1) * 0.3, y1 - 26], [x1, y1], 48);
+      m.card(S2.ribbon(cl, t => w * Math.pow(Math.sin(Math.PI * Math.min(1, 0.1 + t * 0.92)), 0.7) + 1.0), 0.7);
+      m.cut(S2.ribbon(cl.slice(6, 40), t => 1.4 - t), 0.2);
+    }
+  } });
+  return S;
+}
+
+// A hand as a 2D rig: palm, four fingers of three phalanges, and a thumb, driven by joint
+// angles. Screen space: wrist (wx, wy); pa = palm axis angle (wrist -> middle knuckle);
+// side = +1 puts index and thumb clockwise of the axis, -1 counterclockwise; fa = forearm
+// angle (the wrist bends); flex > 0 curls a finger toward the little-finger side.
+function handShapes(o) {
+  const Lf = o.Lf, Lp = 0.94 * Lf, Wp = 0.84 * Lf, parts = [];
+  const ax = [Math.cos(o.pa), Math.sin(o.pa)], px = [-ax[1] * o.side, ax[0] * o.side];
+  const P = (u, v) => [o.wx + ax[0] * u + px[0] * v, o.wy + ax[1] * u + px[1] * v];
+  const F = [[0.95, 0.35, 0.92, 0.2], [1.0, 0.11, 1.0, 0.207], [0.97, -0.14, 0.95, 0.193], [0.87, -0.38, 0.77, 0.17]];
+  const tips = [], chains = [];
+  F.forEach(([mu, mv, len, bw], i) => {
+    const b = P(mu * Lp, mv * Wp);
+    let a = o.pa + o.side * o.spread[i];
+    let p = [b[0] - Math.cos(a) * 0.12 * Lf, b[1] - Math.sin(a) * 0.12 * Lf];
+    const pts = [p.slice()], seg = [0.12 + 0.47, 0.29, 0.24];
+    for (let k = 0; k < 3; k++) { if (k) a -= o.side * o.flex[i][k]; else a -= o.side * o.flex[i][0]; p = [p[0] + Math.cos(a) * seg[k] * len * Lf, p[1] + Math.sin(a) * seg[k] * len * Lf]; pts.push(p.slice()); }
+    const tot = 1.12, t1 = 0.59 / tot, t2 = 0.88 / tot;
+    parts.push(S2.ribbon(S2.cat(pts, false, 10), t => bw * Lf * (1 - 0.28 * t) * (1 + 0.075 * bump(t, t1, 0.05) + 0.05 * bump(t, t2, 0.04)), [false, true]));
+    tips.push(p); chains.push(pts);
+  });
+  parts.push(S2.cat([[0.0, 0.34], [0.3, 0.5], [0.72, 0.52], [0.95, 0.44], [1.03, 0.12], [1.0, -0.16], [0.9, -0.44], [0.62, -0.53], [0.25, -0.5], [-0.02, -0.33]].map(([u, v]) => P(u * Lp, v * Wp))));
+  { let p = P(0.16 * Lp, 0.3 * Wp), a = o.pa + o.side * o.thumb.spread;
+    const pts = [p.slice()], seg = [0.46 * Lp, 0.36 * Lf, 0.3 * Lf];
+    for (let k = 0; k < 3; k++) { a -= o.side * o.thumb.flex[k]; p = [p[0] + Math.cos(a) * seg[k], p[1] + Math.sin(a) * seg[k]]; pts.push(p.slice()); }
+    parts.push(S2.ribbon(S2.cat(pts, false, 10), t => Lf * (0.29 - 0.1 * t) * (1 + 0.06 * bump(t, 0.64, 0.05)), [false, true]));
+    tips.push(p); }
+  const w0 = P(0.04 * Lp, 0), fd = [Math.cos(o.fa), Math.sin(o.fa)];
+  const fore = S2.cat([w0, [o.wx + fd[0] * o.fore * 0.5, o.wy + fd[1] * o.fore * 0.5], [o.wx + fd[0] * o.fore, o.wy + fd[1] * o.fore]], false, 12);
+  parts.push(S2.ribbon(fore, t => Wp * (0.68 + 0.22 * t), [true, false]));
+  const c0 = [o.wx + fd[0] * o.cuff, o.wy + fd[1] * o.cuff];
+  return { parts, tips, chains, sleeve: S2.line(c0, [o.wx + fd[0] * (o.fore + 80), o.wy + fd[1] * (o.fore + 80)], 16), sleeveW: Wp * 1.2 };
+}
+
+function sceneHands() {
+  const S = { name: 'hands' };
+  const CELL = 13, gw = 18 * CELL, gh = 10 * CELL, xc = 790, feetY = 632;
+  const cxw = xc + 30;
+  S.clawd = { x0: cxw - gw / 2, y0: feetY - gh, cell: CELL };
+  S.light = { x: cxw, y: feetY - gh / 2, z: 520, r: qn('lr', 10), I: qn('li', 2.3e5), a: qn('la', 230), f: qn('lf', 600) };
+  S.moon = { dir: [0.34, 0.5, 1], I: qn('mi', 0.5), disc: [0, 0, 0] };
+  S.sky = { top: '#1B2138', hor: '#34406A', horY: 900 };
+  S.eyes = Q.get('eyes') || 'dark';
+  S.hazeW = 1.15e-4;
+  const L = S.layers = [];
+  const add = o => L.push(Object.assign({ alb: 0.7, kind: 0, thin: 0, def: 0, ao: 0.45, cast: 0, rimk: 1, vel: [0, 0, 0], em: [0, 0, 0] }, o));
+  add({ name: 'cityNear', z: -300, col: PAPER.dusk, ao: 0.3, em: lin('#9FB3D9').map(v => v * 0.6), def: 0.6, draw: (m, rnd) => {
+    let x = -40; while (x < 330) { const w = 50 + rnd() * 60, top = 300 + rnd() * 110; m.card(S2.rect(x, top, w, 600), 0.5);
+      for (let wy = top + 12; wy < 470; wy += 18) for (let wx = x + 8; wx < x + w - 8; wx += 14) if (rnd() < 0.09) { const h = S2.rect(wx, wy, 4.5, 6.5); m.cut(h, 0); m.emit(h, 0.4 + rnd() * 0.6); }
+      x += w + 3; }
+  } });
+  add({ name: 'wall', z: 0, col: PAPER.slate, alb: 0.78, ao: 0, def: 0.5, draw: (m, rnd) => {
+    m.card(S2.rect(-40, -40, W + 80, H + 80), 0);
+    m.cut(S2.rect(-60, -60, 360, 520), 0.6);
+    m.card(S2.rect(118, -60, 12, 520), 0.5); m.card(S2.rect(-60, 214, 360, 12), 0.5);
+  } });
+  add({ name: 'wallFront', z: 26, col: PAPER.slate, alb: 0.74, ao: 0.5, def: 0.5, draw: (m, rnd) => {
+    m.card(S2.rect(-80, 454, 420, 26), 0.6);
+  } });
+  // the harness waiting on the bench, right of frame
+  add({ name: 'benchTop', z: 240, col: PAPER.slate, kind: 1, alb: 0.3, ao: 0.35, def: 0.35, draw: (m, rnd) => {
+    m.card([[1060, 968], [W + 40, 964], [W + 40, 1200], [1060, 1200]], 0.5);
+  } });
+  const HC = { cx: 1540, poleY: 1000, Rh: 226, Rv: 222 };
+  const rib = (side, k, th1, w0, w1) => {
+    const cyc = HC.poleY - HC.Rv, pts = [];
+    for (let i = 0; i <= 64; i++) {
+      const th = 0.3 + (th1 - 0.3) * i / 64, hook = smooth(th1 - 0.6, th1, th);
+      pts.push([HC.cx + side * (Math.sin(th) * HC.Rh * k - hook * hook * 36 * k), cyc + Math.cos(th) * HC.Rv + hook * hook * 15]);
+    }
+    return S2.ribbon(pts, t => lerp(w0, w1, t) + 3.6 * bump(t, 0.47, 0.03) + 3 * bump(t, 0.76, 0.026));
+  };
+  add({ name: 'harness', z: 300, col: PAPER.deep, alb: 0.14, ao: 0.4, cast: 1, def: 0.35, rimk: 2.2, draw: (m, rnd) => {
+    const ks = [1.0, 0.885, 0.77, 0.655], th = [2.16, 2.3, 2.25, 2.06];
+    for (const s of [-1, 1]) ks.forEach((k, i) => m.card(rib(s, k, th[i], 26, 18), 0.6));
+    m.card(S2.rrect(HC.cx - 228, 982, 456, 36, 14), 0.6);
+    for (let k = -7; k <= 7; k++) if (Math.abs(k) > 1) m.cut(S2.ellipse(HC.cx + k * 29, 993, 3.4, 3.4, 0, 16), 0);
+  } });
+  // the hands: left one slightly behind the right, both backlit by Clawd
+  const tilt = 0.1;   // the cup leans toward the harness
+  const pose = {
+    L: { wx: xc - 44, wy: 862, pa: -2.36 + tilt, side: -1, fa: 1.9 + tilt, Lf: 182, fore: 440, cuff: 250,
+         spread: [0.1, 0.03, -0.03, -0.1], flex: [[0.16, 0.3, 0.26], [0.18, 0.33, 0.28], [0.2, 0.35, 0.28], [0.24, 0.36, 0.28]],
+         thumb: { spread: 0.2, flex: [0.08, 0.2, 0.2] } },
+    R: { wx: xc + 62, wy: 850, pa: -0.8 + tilt, side: 1, fa: 1.24 + tilt, Lf: 182, fore: 440, cuff: 250,
+         spread: [0.1, 0.03, -0.03, -0.1], flex: [[0.16, 0.3, 0.26], [0.18, 0.33, 0.28], [0.2, 0.35, 0.28], [0.24, 0.36, 0.28]],
+         thumb: { spread: 0.2, flex: [0.08, 0.2, 0.2] } },
+  };
+  const hand = (key, z) => add({ name: 'hand' + key, z, col: PAPER.ink, alb: 0.45, thin: qn('thin', 2.8), ao: 0.5, rimk: 2.2, draw: (m, rnd) => {
+    const h = handShapes(pose[key]);
+    for (const pt of h.parts) m.card(pt, 0.55);
+    S['tips' + key] = h.tips;
+  } });
+  hand('L', 580); hand('R', 600);
+  add({ name: 'sleeves', z: 640, col: PAPER.deep, alb: 0.4, thin: 0.2, ao: 0.5, def: 0.7, draw: (m, rnd) => {
+    for (const key of ['L', 'R']) { const h = handShapes(pose[key]); m.card(S2.ribbon(h.sleeve, t => h.sleeveW * (1 + 0.1 * t), [false, false]), 0.7); }
+  } });
+  return S;
+}
+
+// ================================================================ WEBGL
+const cvs = document.getElementById('out');
+const gl = cvs.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true, premultipliedAlpha: false, alpha: false });
+if (!gl) throw new Error('no webgl2');
+if (!gl.getExtension('EXT_color_buffer_float')) log('WARNING: no EXT_color_buffer_float');
+gl.getExtension('OES_texture_float_linear');
+const VS = `#version 300 es
+in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+function compile(fs, label) {
+  const mk = (type, src) => {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(s), mm = /ERROR: 0:(\d+)/.exec(info), ln = mm ? +mm[1] : 0;
+      log('SHADER ERROR ' + label + ': ' + info + '\n' + src.split('\n').slice(Math.max(0, ln - 4), ln + 2).map((l, i) => (Math.max(0, ln - 4) + i + 1) + ': ' + l).join('\n'));
+      throw new Error('shader ' + label);
+    }
+    return s;
+  };
+  const t0 = performance.now(), p = gl.createProgram();
+  gl.attachShader(p, mk(gl.VERTEX_SHADER, VS)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(p, 0, 'aP'); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { log('LINK ERROR ' + label + ': ' + gl.getProgramInfoLog(p)); throw new Error('link'); }
+  TIMES.compile = (TIMES.compile || 0) + performance.now() - t0;
+  return p;
+}
+function setU(prog, u) {
+  if (!prog.info) {
+    prog.info = {};
+    const n = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) { const a = gl.getActiveUniform(prog, i); prog.info[a.name.replace(/\[0\]$/, '')] = { type: a.type, loc: gl.getUniformLocation(prog, a.name) }; }
+  }
+  for (const [k, v] of Object.entries(u)) {
+    const f = prog.info[k]; if (!f) continue;
+    const a = (Array.isArray(v) || ArrayBuffer.isView(v)) ? v : [v];
+    switch (f.type) {
+      case gl.FLOAT: gl.uniform1fv(f.loc, new Float32Array(a)); break;
+      case gl.FLOAT_VEC2: gl.uniform2fv(f.loc, new Float32Array(a)); break;
+      case gl.FLOAT_VEC3: gl.uniform3fv(f.loc, new Float32Array(a)); break;
+      case gl.FLOAT_VEC4: gl.uniform4fv(f.loc, new Float32Array(a)); break;
+      case gl.INT: case gl.BOOL: gl.uniform1iv(f.loc, new Int32Array(a)); break;
+    }
+  }
+}
+function target2(w, h) {
+  const a = target(w, h), t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, w, h);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, a.fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, t, 0);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+  a.aux = t; return a;
+}
+function target(w, h) {
+  const fb = gl.createFramebuffer(), t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, w, h);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  return { fb, t, w, h };
+}
+const _px = new Uint8Array(4);
+function gpuSync() { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, _px); }
+function run(prog, tgt, uni, texs, bands = 1) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, tgt ? tgt.fb : null);
+  const w = tgt ? tgt.w : W, h = tgt ? tgt.h : H;
+  gl.viewport(0, 0, w, h); gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  let unit = 0;
+  for (const [name, t] of Object.entries(texs || {})) {
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(t.arr ? gl.TEXTURE_2D_ARRAY : gl.TEXTURE_2D, t.arr ? t.arr : (t.t || t));
+    gl.uniform1i(gl.getUniformLocation(prog, name), unit); unit++;
+  }
+  setU(prog, Object.assign({ uRes: [w, h] }, uni));
+  if (bands > 1) {
+    gl.enable(gl.SCISSOR_TEST);
+    for (let b = 0; b < bands; b++) { const y0 = Math.floor(h * b / bands), y1 = Math.floor(h * (b + 1) / bands); gl.scissor(0, y0, w, y1 - y0); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.finish(); }
+    gl.disable(gl.SCISSOR_TEST);
+  } else gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+// ================================================================ SHADERS
+const LIB = `
+float h12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float vnoise(vec2 p) { vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h12(i), h12(i + vec2(1.0, 0.0)), u.x), mix(h12(i + vec2(0.0, 1.0)), h12(i + vec2(1.0, 1.0)), u.x), u.y); }
+float fbm(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 4; i++) { s += a * vnoise(p); p = p * 2.07 + 17.1; a *= 0.5; } return s; }
+// Claude's light: #8A3A24 #C4603F #D97757 #F0A070 #FFD9B8 #FFF3E6 (linear)
+vec3 warmRamp(float x) {
+  const vec3 c1 = vec3(0.2542, 0.0423, 0.0176), c2 = vec3(0.5520, 0.1170, 0.0497), c3 = vec3(0.6939, 0.1845, 0.0953);
+  const vec3 c4 = vec3(0.8714, 0.3515, 0.1620), c5 = vec3(1.0, 0.6939, 0.4793), c6 = vec3(1.0, 0.8963, 0.7913);
+  if (x <= 0.0) return vec3(0.0);
+  if (x < 0.25) return c1 * pow(x / 0.25, 2.2);
+  if (x < 0.5) return mix(c1, c2, (x - 0.25) / 0.25);
+  if (x < 0.7) return mix(c2, c3, (x - 0.5) / 0.2);
+  if (x < 1.0) return mix(c3, c4, (x - 0.7) / 0.3);
+  if (x < 1.5) return mix(c4, c5, (x - 1.0) / 0.5);
+  return mix(c5, c6, clamp((x - 1.5) / 0.9, 0.0, 1.0));
+}
+// the humans' light: around #9FB3D9, never above #D8E2F5
+vec3 coolRamp(float x) {
+  const vec3 k1 = vec3(0.3467, 0.4508, 0.6939), k2 = vec3(0.6867, 0.7605, 0.9131);
+  if (x <= 0.0) return vec3(0.0);
+  if (x < 1.0) return k1 * x;
+  return mix(k1, k2, clamp(x - 1.0, 0.0, 1.0));
+}
+`;
+
+const MAIN_FS = `#version 300 es
+precision highp float; precision highp int; precision highp sampler2DArray;
+uniform sampler2DArray uM; uniform sampler2D uFib;
+uniform vec2 uRes; uniform int uN;
+uniform float uZ[16]; uniform vec3 uCol[16]; uniform float uAlb[16]; uniform int uKind[16]; uniform float uThin[16];
+uniform float uDef[16]; uniform vec3 uVel[16]; uniform vec3 uEm[16]; uniform float uAO[16]; uniform int uCast[16]; uniform float uRimK[16];
+uniform vec3 uLP; uniform float uLR, uLI, uLA, uRim, uLF;
+uniform vec3 uMD; uniform float uMI, uMoonRim; uniform int uWallIdx, uWallFIdx;
+uniform vec3 uMP; uniform float uMonI, uHazeMon;
+uniform float uHazeW, uHazeM, uHazeA; uniform vec3 uHazeCol; uniform float uZ0, uZCam;
+uniform vec3 uSkyTop, uSkyHor, uMoon; uniform float uHorY, uSkyOn;
+uniform vec2 uUpN; uniform float uAmbRim;
+layout(location = 0) out vec4 oCol;
+layout(location = 1) out vec4 oAux;
+${LIB}
+vec4 M(int i, vec2 P, float lod) { return textureLod(uM, vec3(P / uRes, float(i)), lod); }
+float opac(vec4 m) { return clamp(m.r + 0.55 * m.g, 0.0, 1.0); }
+vec4 paper(vec2 P, float seed) {
+  float a = seed * 2.399; mat2 R = mat2(cos(a), sin(a), -sin(a), cos(a));
+  vec2 q = R * P + seed * vec2(137.1, 71.3);
+  vec4 t = texture(uFib, q / 1024.0);
+  float fl = fbm(q / 34.0) * 0.62 + fbm(q / 9.0) * 0.38;
+  return vec4(t.r * 2.0 - 1.0, (fl - 0.5) * 2.6, t.g * 2.0 - 1.0, t.b * 2.0 - 1.0);
+}
+// fraction of a disc of radius r around q that layer j covers
+float softOcc(int j, vec2 q, float r) {
+  if (r < 0.9) return opac(M(j, q, 0.0));
+  float lod = log2(r) + 0.2;
+  vec2 a = vec2(0.55, 0.2) * r, b = vec2(-0.2, 0.55) * r;
+  return 0.36 * opac(M(j, q, lod)) + 0.16 * (opac(M(j, q + a, lod)) + opac(M(j, q - a, lod)) + opac(M(j, q + b, lod)) + opac(M(j, q - b, lod)));
+}
+float softOcc3(int j, vec2 q, float r) {
+  float lod = log2(max(r, 1.0)) + 0.5;
+  vec2 a = vec2(0.45, 0.25) * r;
+  return 0.5 * opac(M(j, q, lod)) + 0.25 * (opac(M(j, q + a, lod)) + opac(M(j, q - a, lod)));
+}
+// visibility of Claude's area light from p, through every layer between
+float visL(vec3 p, int self) {
+  float v = 1.0, lo = min(p.z, uLP.z) + 0.5, hi = max(p.z, uLP.z) - 0.5;
+  for (int j = 0; j < 16; j++) {
+    if (j >= uN) break;
+    float zj = uZ[j];
+    if (j == self || zj <= lo || zj >= hi) continue;
+    float t = (zj - p.z) / (uLP.z - p.z);
+    v *= 1.0 - softOcc(j, mix(p.xy, uLP.xy, t), uLR * t);
+    if (v < 0.004) return 0.0;
+  }
+  return v;
+}
+// cheaper version for haze samples: only layers flagged as casters
+float visLh(vec3 p) {
+  float v = 1.0, lo = min(p.z, uLP.z) + 0.5, hi = max(p.z, uLP.z) - 0.5;
+  for (int j = 0; j < 16; j++) {
+    if (j >= uN) break;
+    float zj = uZ[j];
+    if (uCast[j] == 0 || zj <= lo || zj >= hi) continue;
+    float t = (zj - p.z) / (uLP.z - p.z);
+    v *= 1.0 - softOcc3(j, mix(p.xy, uLP.xy, t), max(uLR * t, 1.0));
+    if (v < 0.004) return 0.0;
+  }
+  return v;
+}
+// moonlight reaches the room only through the window (holes in the wall layer)
+float moonAperture(vec3 s) {
+  vec2 k = uMD.xy / uMD.z;
+  float v = 1.0 - softOcc3(uWallIdx, s.xy - s.z * k, 1.0 + s.z * 0.012);
+  if (v < 0.01) return 0.0;
+  if (uWallFIdx >= 0) { float zf = uZ[uWallFIdx]; if (s.z > zf) v *= 1.0 - 0.85 * softOcc3(uWallFIdx, s.xy - (s.z - zf) * k, 1.0 + (s.z - zf) * 0.012); }
+  return v;
+}
+float visMoon(vec3 p, int self) {
+  if (p.z < -0.5) return 1.0;
+  vec2 k = uMD.xy / uMD.z; float v = 1.0;
+  for (int j = 0; j < 16; j++) {
+    if (j >= uN) break;
+    float zj = uZ[j];
+    if (j == self || zj < -0.5 || zj >= p.z - 0.5) continue;
+    v *= 1.0 - softOcc(j, p.xy - (p.z - zj) * k, 0.8 + (p.z - zj) * 0.012);
+    if (v < 0.004) return 0.0;
+  }
+  return v;
+}
+// ambient occlusion from the layers in front, offset away from the dominant light
+float aoFront(int i, vec2 P) {
+  float zi = uZ[i], keep = 1.0;
+  vec2 away = zi > -0.5 ? P - uLP.xy : uMD.xy;
+  away = away / max(length(away), 1e-3);
+  for (int j = 0; j < 16; j++) {
+    if (j >= uN) break;
+    if (j <= i) continue;
+    float gap = uZ[j] - zi;
+    if (gap > 560.0) break;
+    float s = uAO[j] * (1.0 - gap / 560.0);
+    if (s <= 0.0) continue;
+    float r = 1.5 + gap * 0.06;
+    keep *= 1.0 - s * opac(M(j, P - away * (1.5 + gap * 0.04), log2(r) + 0.6));
+  }
+  return 1.0 - keep;
+}
+vec2 gradC(int i, vec2 P) {
+  float l = M(i, P - vec2(1.0, 0.0), 0.0).r, r = M(i, P + vec2(1.0, 0.0), 0.0).r;
+  float u = M(i, P - vec2(0.0, 1.0), 0.0).r, d = M(i, P + vec2(0.0, 1.0), 0.0).r;
+  return vec2(r - l, d - u) * 0.5;
+}
+vec3 sky(vec2 P) {
+  if (uSkyOn < 0.5) return uSkyTop;
+  vec4 pa = paper(P, 7.7);
+  float t = clamp(P.y / uHorY, 0.0, 1.0);
+  vec3 c = mix(uSkyTop, uSkyHor, mix(t, t * t * (3.0 - 2.0 * t), 0.4));
+  c *= 1.0 + 0.13 * pa.y + 0.08 * pa.x + 0.05 * pa.z;          // backlit tissue: mottled
+  if (uMoon.z > 0.0) {
+    vec2 d = P - uMoon.xy; float r = length(d), ang = atan(d.y, d.x);
+    float rr = uMoon.z + 0.3 * sin(ang * 5.0 + 1.3) + 0.2 * sin(ang * 13.0 + 0.4);
+    float disc = clamp(rr - r + 0.5, 0.0, 1.0), o = max(r - rr, 0.0);
+    float hal = 0.2 * exp(-o / 60.0) + 0.16 * exp(-o / 13.0);
+    c += coolRamp(hal * (1.0 + 0.7 * pa.y + 0.35 * pa.x)) * (1.0 - disc);
+    c = mix(c, mix(vec3(0.52, 0.6, 0.8), vec3(0.6867, 0.7605, 0.9131), smoothstep(rr, rr * 0.2, r)), disc);
+  }
+  vec2 cell = floor(P / 27.0); float h = h12(cell + 11.3);
+  if (h > 0.85) {
+    vec2 sp = (cell + 0.2 + 0.6 * vec2(h12(cell + 3.7), h12(cell + 8.1))) * 27.0;
+    c += coolRamp(clamp(1.25 - length(P - sp), 0.0, 1.0) * (0.25 + 0.6 * h12(cell + 5.5)));
+  }
+  return c;
+}
+void haze(vec2 P, float z0, float z1, float jit, inout vec3 col, inout float hW, inout float hC) {
+  float len = z1 - z0;
+  if (len <= 0.5) return;
+  float tr = exp(-len * uHazeA);
+  col = col * tr + uHazeCol * (1.0 - tr); hW *= tr; hC *= tr;
+  if (uMonI > 0.0 && z0 <= uMP.z && uMP.z < z1) {
+    float dm = length(P - uMP.xy);
+    hC += uHazeMon * (exp(-dm / 26.0) + 0.25 * exp(-dm / 90.0));
+  }
+  float n = clamp(floor(len / 55.0) + 1.0, 1.0, 8.0), dz = len / n;
+  for (int k = 0; k < 8; k++) {
+    if (float(k) >= n) break;
+    float z = z0 + (float(k) + jit) * dz;
+    if (z < 0.0 && uWallIdx >= 0) continue;
+    vec3 s = vec3(P, z), d = uLP - s;
+    float dd = dot(d, d), e = uLI / (dd + uLA * uLA) * exp(-sqrt(dd) / uLF) * uHazeW * dz;
+    if (e > 1.5e-4) e *= visLh(s);
+    hW += e;
+    if (uMI > 0.0 && uWallIdx >= 0) hC += uHazeM * dz * moonAperture(s);
+  }
+}
+void main() {
+  vec2 P = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  float jit = h12(P * 1.37 + 0.71);
+  vec3 col = sky(P);
+  float hW = 0.0, hC = 0.0, defo = 0.0, zPrev = uZ0, front = 0.0;
+  for (int i = 0; i < 16; i++) {
+    if (i >= uN) break;
+    float zi = uZ[i];
+    haze(P, zPrev, zi, jit, col, hW, hC);
+    zPrev = zi;
+    vec4 m = M(i, P, 0.0);
+    float card = m.r, vel = m.g, em = m.b;
+    if (card + vel + em < 0.003) continue;
+    vec4 pa = paper(P, float(i) * 1.618 + 0.3);
+    vec3 p = vec3(P, zi);
+    bool inside = zi > -0.5 || uWallIdx < 0;
+    if (vel > 0.003) {                       // self-lit vellum: screens, blinds
+      float fib = max(1.0 + 0.36 * pa.y + 0.22 * pa.x + 0.14 * pa.z, 0.2);
+      float cv = clamp(vel * 3.0, 0.0, 1.0);
+      col = mix(col, uVel[i] * vel * fib, cv * (1.0 - card));
+      hW *= 1.0 - cv; hC *= 1.0 - cv;
+    }
+    if (card > 0.003) {
+      float ao = aoFront(i, P);
+      vec3 base = uCol[i] * (1.0 - 0.55 * ao) * (1.0 + 0.03 * pa.y + 0.02 * pa.x);
+      vec3 n = uKind[i] == 1 ? normalize(vec3(0.0, uUpN.x, uUpN.y)) : vec3(0.0, 0.0, 1.0);
+      vec3 dL = uLP - p; float dist = length(dL); vec3 l = dL / dist;
+      float irr = uLI / (dist * dist + uLA * uLA) * exp(-dist / uLF);
+      float warm = 0.0, cool = 0.0, vis = -1.0, cf = dot(n, l);
+      if (inside && cf > 0.0) {             // the face sees Claude's light: raking light shows the fibre
+        vis = visL(p, i);
+        warm += irr * cf * vis * uAlb[i] * (1.0 + 0.13 * pa.x + 0.09 * pa.y + 0.06 * pa.z);
+      }
+      vec2 g = gradC(i, P); float gl0 = length(g), e = clamp(gl0 * 2.0, 0.0, 1.0);
+      float facing = 0.0;
+      if (e > 0.02) {                        // cut edges: bright facing a light, dark otherwise
+        vec2 en = -g / gl0;
+        if (inside) {
+          float f = dot(en, l.xy / max(length(l.xy), 1e-3)) * length(l.xy);
+          facing = dot(en, normalize(uLP.xy - P + 1e-3));
+          if (vis < 0.0) vis = visL(p, i);
+          float dk = e * clamp(-f * 2.5, 0.0, 1.0);
+          warm *= 1.0 - 0.6 * dk;
+          warm += min(e * max(f, 0.0) * irr * vis * uRim * uRimK[i], 1.35) * (0.8 + 0.35 * pa.x + 0.25 * pa.y);
+          base *= 1.0 - 0.45 * dk;
+        }
+        if (uMI > 0.0) {
+          float fm = dot(en, -normalize(uMD.xy));
+          if (fm > 0.0) cool += e * fm * uMI * uMoonRim * visMoon(p + vec3(en * 2.0, 0.0), i);
+        }
+        cool += e * max(-en.y, 0.0) * uAmbRim * (0.7 + 0.3 * pa.y);
+        if (uMonI > 0.0) {
+          vec3 dm = uMP - p; float dmm = length(dm), fmn = dot(en, dm.xy / dmm);
+          if (fmn > 0.0) cool += e * fmn * uMonI / (1.0 + dmm * dmm / 5000.0);
+        }
+      }
+      if (inside && zi > uLP.z && uThin[i] > 0.0) {   // backlit thin paper glows near its edges
+        if (vis < 0.0) vis = visL(p, i);
+        // light entering the lit edge travels through the paper toward P: glow = exp(-thickness)
+        vec2 dl = normalize(uLP.xy - P + 1e-3);
+        float thick = 0.0;
+        for (int k = 1; k <= 12; k++) thick += M(i, P + dl * (float(k) * 2.2 - 1.0), 0.6).r * 2.2;
+        float tr = exp(-thick / 6.0) + 0.14 * exp(-thick / 15.0);
+        // transmitted light stays deep: it never goes past #F0A070
+        warm += min(irr * ((zi - uLP.z) / dist) * vis * uThin[i] * tr, 1.0) * (1.0 + 0.4 * pa.y + 0.2 * pa.x);
+      }
+      if (uKind[i] == 1 && uMI > 0.0) {       // up-facing surfaces catch the moonlight
+        float cm = max(dot(n, -uMD), 0.0);
+        if (cm > 0.0) cool += cm * uMI * visMoon(p, i) * (1.0 + 0.25 * pa.y);
+      }
+      vec3 c = base * (1.0 - 0.62 * smoothstep(0.0, 0.7, warm)) + warmRamp(warm) + coolRamp(cool);
+      col = mix(col, c, card);
+      hW *= 1.0 - card; hC *= 1.0 - card;
+      defo = mix(defo, uDef[i], card);
+      if (zi > uLP.z) front += (1.0 - front) * card;
+    }
+    if (em > 0.003) col += uEm[i] * em;
+  }
+  haze(P, zPrev, uZCam, jit, col, hW, hC);
+  col += warmRamp(hW) + coolRamp(hC);
+  oCol = vec4(col, defo);
+  oAux = vec4(front, 0.0, 0.0, 1.0);
+}`;
+
+// separable gaussian (also used to downsample): uDir in source pixels
+const BLUR_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uRes, uDir; uniform float uSigma;
+out vec4 o;
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes, px = uDir / vec2(textureSize(uSrc, 0));
+  vec4 s = texture(uSrc, uv); float wsum = 1.0;
+  for (int i = 1; i <= 24; i++) {
+    float x = float(i); if (x > uSigma * 3.0) break;
+    float w = exp(-0.5 * x * x / (uSigma * uSigma));
+    s += w * (texture(uSrc, uv + px * x) + texture(uSrc, uv - px * x)); wsum += 2.0 * w;
+  }
+  o = s / wsum;
+}`;
+const BRIGHT_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uRes; uniform float uTh;
+out vec4 o;
+void main() {
+  vec3 c = texture(uSrc, gl_FragCoord.xy / uRes).rgb;
+  float L = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  o = vec4(c * max(L - uTh, 0.0) / max(L, 1e-4), 1.0);
+}`;
+const FINAL_FS = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uHdr, uSoft, uB1, uB2, uB3, uFib, uAux;
+uniform vec2 uRes; uniform float uBloom, uGrain, uVig;
+uniform vec4 uClawd; uniform int uGlyph[5]; uniform int uEyes;
+out vec4 o;
+${LIB}
+vec3 tm(vec3 x) { vec3 k = vec3(0.8); return min(x, k) + 0.2 * (1.0 - exp(-max(x - k, 0.0) / 0.2)); }
+vec3 srgb(vec3 c) { c = clamp(c, 0.0, 1.0); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec2 P = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  vec4 sh = texture(uHdr, uv), so = texture(uSoft, uv);
+  float w = clamp(max(sh.a, so.a) * 1.6, 0.0, 1.0);
+  vec3 c = mix(sh.rgb, so.rgb, w);
+  c += uBloom * (0.5 * texture(uB1, uv).rgb + 0.32 * texture(uB2, uv).rgb + 0.18 * texture(uB3, uv).rgb);
+  c = tm(c);
+  vec2 q = (uv - 0.5) * vec2(1.0, 0.82); c *= 1.0 - uVig * smoothstep(0.28, 0.78, length(q));
+  vec3 s = srgb(c);
+  float n = (h12(P + 0.5) + h12(P * 1.31 + 7.7) - 1.0);
+  s += uGrain * n * (0.35 + 0.65 * sqrt(max(dot(s, vec3(0.333)), 0.0)));
+  // Clawd: exact cells, composited last
+  float fc = texture(uAux, uv).r;
+  if (uClawd.w > 0.5 && fc < 0.999) {
+    vec3 s0 = s;
+    vec2 g = (P - uClawd.xy) / vec2(uClawd.z, 2.0 * uClawd.z);
+    if (g.x >= 0.0 && g.y >= 0.0 && g.x < 18.0 && g.y < 5.0) {
+      int gx = int(g.x), gy = int(g.y);
+      bool body = ((uGlyph[gy] >> (17 - gx)) & 1) == 1;
+      bool eye = gy == 1 && (gx == 5 || gx == 12);
+      if (body) {
+        vec2 fq = P * 0.9;
+        float f = texture(uFib, fq / 1024.0).r - 0.5 + (fbm(P / 7.0) - 0.5) * 0.8;
+        s = vec3(217.0, 119.0, 87.0) / 255.0 + f * 3.0 / 255.0 + n * 1.2 / 255.0;
+      } else if (eye) {
+        if (uEyes == 1) s = mix(vec3(1.0, 0.953, 0.902), vec3(1.0, 0.851, 0.722), smoothstep(0.1, 0.5, abs(fract(g.x) - 0.5)));
+        else s = vec3(0.105, 0.066, 0.07) + n * 1.5 / 255.0;
+      }
+      s = mix(s, s0, fc);
+    }
+  }
+  o = vec4(s, 1.0);
+}`;
+
+// ================================================================ RENDER
+function render() {
+  const t0 = performance.now();
+  const SC = SHOT === 'hands' ? sceneHands() : sceneLab();
+  SC.layers.sort((a, b) => a.z - b.z);
+  const N = SC.layers.length;
+  if (N > 16) throw new Error('too many layers');
+  // ---- masks -> texture array with mipmaps
+  const arr = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, arr);
+  const levels = Math.floor(Math.log2(W)) + 1;
+  gl.texStorage3D(gl.TEXTURE_2D_ARRAY, levels, gl.RGBA8, W, H, N);
+  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  SC.layers.forEach((ly, i) => {
+    const m = newMask();
+    ly.draw(Mk(m, mulberry32(1000 + i * 7919 + (ly.seed || 0))), mulberry32(77 + i));
+    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, W, H, 1, gl.RGBA, gl.UNSIGNED_BYTE, m.c);
+  });
+  gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  // ---- fibre texture
+  const fb = makeFibre();
+  const fib = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, fib);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, fb.S, fb.S, 0, gl.RGBA, gl.UNSIGNED_BYTE, fb.data);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gpuSync(); TIMES.masks = performance.now() - t0;
+
+  // ---- uniforms
+  const Ls = SC.layers, pack = (f, n = 1) => { const a = []; Ls.forEach(l => { const v = f(l); if (n === 1) a.push(v); else a.push(...v); }); return a; };
+  const idx = name => Ls.findIndex(l => l.name === name);
+  const li = SC.light, mo = SC.moon || { dir: [0.3, 0.5, 1], I: 0, disc: [0, 0, 0] };
+  const sky = SC.sky || { top: '#07080E', hor: '#0E1120', horY: 1080 };
+  const U = {
+    uN: N, uZ: pack(l => l.z), uCol: pack(l => lin(l.col), 3), uAlb: pack(l => l.alb), uKind: pack(l => l.kind),
+    uThin: pack(l => l.thin), uDef: pack(l => l.def), uVel: pack(l => l.vel, 3), uEm: pack(l => l.em, 3), uAO: pack(l => l.ao), uCast: pack(l => l.cast), uRimK: pack(l => l.rimk),
+    uLP: [li.x, li.y, li.z], uLR: li.r, uLI: li.I, uLA: li.a, uLF: li.f, uRim: qn('rim', 1.3),
+    uMD: mo.dir, uMI: mo.I, uMoonRim: qn('mrim', 0.45), uWallIdx: idx('wall'), uWallFIdx: idx('wallFront'),
+    uMP: SC.mon ? [SC.mon.x, SC.mon.y, SC.mon.z] : [0, 0, 0], uMonI: SC.mon ? SC.mon.I : 0, uHazeMon: SC.mon ? qn('hmon', 0.1) : 0,
+    uHazeW: qn('hw', SC.hazeW || 6.0e-5), uHazeM: qn('hm', 1.15e-4), uHazeA: qn('ha', 0.00012), uHazeCol: lin('#2A3150'),
+    uZ0: Ls[0].z - 240, uZCam: Ls[N - 1].z + 160,
+    uSkyTop: lin(sky.top), uSkyHor: lin(sky.hor), uHorY: sky.horY, uSkyOn: SC.sky ? 1 : 0,
+    uMoon: mo.disc, uUpN: [-0.93, 0.37], uAmbRim: qn('arim', 0.12),
+  };
+  const mainP = compile(MAIN_FS, 'main'), blurP = compile(BLUR_FS, 'blur'), brightP = compile(BRIGHT_FS, 'bright'), finP = compile(FINAL_FS, 'final');
+  const hdr = target2(W, H);
+  const t1 = performance.now();
+  run(mainP, hdr, U, { uM: { arr }, uFib: fib }, 12);
+  gpuSync(); TIMES.main = performance.now() - t1;
+  const t2 = performance.now();
+  // soft focus source
+  const sA = target(W, H), sB = target(W, H);
+  run(blurP, sA, { uDir: [1, 0], uSigma: 2.2 }, { uSrc: hdr });
+  run(blurP, sB, { uDir: [0, 1], uSigma: 2.2 }, { uSrc: sA });
+  // bloom: bright pass at half res, three blur scales
+  const b0 = target(W / 2, H / 2), bA = target(W / 2, H / 2), bB = target(W / 2, H / 2);
+  run(brightP, b0, { uTh: qn('bth', 0.5) }, { uSrc: hdr });
+  run(blurP, bA, { uDir: [1, 0], uSigma: 3 }, { uSrc: b0 }); run(blurP, bB, { uDir: [0, 1], uSigma: 3 }, { uSrc: bA });
+  const q0 = target(W / 4, H / 4), qA = target(W / 4, H / 4), qB = target(W / 4, H / 4);
+  run(blurP, q0, { uDir: [0, 0], uSigma: 0.1 }, { uSrc: bB });
+  run(blurP, qA, { uDir: [1, 0], uSigma: 5 }, { uSrc: q0 }); run(blurP, qB, { uDir: [0, 1], uSigma: 5 }, { uSrc: qA });
+  const e0 = target(W / 8, H / 8), eA = target(W / 8, H / 8), eB = target(W / 8, H / 8);
+  run(blurP, e0, { uDir: [0, 0], uSigma: 0.1 }, { uSrc: qB });
+  run(blurP, eA, { uDir: [1, 0], uSigma: 7 }, { uSrc: e0 }); run(blurP, eB, { uDir: [0, 1], uSigma: 7 }, { uSrc: eA });
+  const glyph = GLYPH.map(r => parseInt(r.replace(/#/g, '1').replace(/\./g, '0'), 2));
+  const cl = SC.clawd;
+  run(finP, null, {
+    uBloom: qn('bloom', 0.55), uGrain: qn('grain', 0.03), uVig: qn('vig', 0.2),
+    uClawd: cl ? [cl.x0, cl.y0, cl.cell, 1] : [0, 0, 1, 0], uGlyph: glyph, uEyes: SC.eyes === 'hot' ? 1 : 0,
+  }, { uHdr: hdr, uSoft: sB, uB1: bB, uB2: qB, uB3: eB, uFib: fib, uAux: hdr.aux });
+  gpuSync(); TIMES.post = performance.now() - t2;
+  TIMES.total = performance.now() - T0;
+  // ?bench=N: re-run the per-frame work (main pass + post) N times in this page; report min / median
+  const nb = qn('bench', 0);
+  if (nb > 0) {
+    const tm = [], tp = [];
+    for (let k = 0; k < nb; k++) {
+      gpuSync(); let a = performance.now();
+      run(mainP, hdr, U, { uM: { arr }, uFib: fib }, 1); gpuSync(); tm.push(performance.now() - a);
+      a = performance.now();
+      run(blurP, sA, { uDir: [1, 0], uSigma: 2.2 }, { uSrc: hdr }); run(blurP, sB, { uDir: [0, 1], uSigma: 2.2 }, { uSrc: sA });
+      run(brightP, b0, { uTh: qn('bth', 0.5) }, { uSrc: hdr });
+      run(blurP, bA, { uDir: [1, 0], uSigma: 3 }, { uSrc: b0 }); run(blurP, bB, { uDir: [0, 1], uSigma: 3 }, { uSrc: bA });
+      gpuSync(); tp.push(performance.now() - a);
+    }
+    const st = a => { a = a.slice().sort((x, y) => x - y); return 'min ' + a[0].toFixed(0) + ' / median ' + a[a.length >> 1].toFixed(0); };
+    log('bench x' + nb + ': main ' + st(tm) + ' ms, post ' + st(tp) + ' ms');
+  }
+  log(SHOT + ' layers=' + N + ' times(ms): ' + Object.entries(TIMES).map(([k, v]) => k + '=' + v.toFixed(0)).join(' '));
+  if (Q.get('dump') === '1') document.getElementById('png').textContent = cvs.toDataURL('image/png');
+}
+try { render(); } catch (e) { log('EXC ' + e.message + '\n' + e.stack); }
+</script>
+</body></html>

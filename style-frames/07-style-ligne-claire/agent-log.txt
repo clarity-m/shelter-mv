@@ -1,0 +1,13 @@
+You've hit your session limit · resets 4am (America/New_York)
+I've finished the ligne claire frame. It's a dusk lab where a green enamel lamp drops a flat cream beam onto a bench. There, the harness (two cupped hands of finger-ribs, one finger still waiting on the bench) curls over a crisp pixel Clawd, the only saturated thing on screen. Researcher A braces her elbow to adjust a rib collar with a stylus, lit by Clawd's warm glow, while B stands back in the blue dusk with a mug at a monitor showing the waiting gridworld and a rising eval curve. It reads in one second and uses the full value range. It draws in 0.1–0.5 s per frame in plain Canvas2D, with byte-identical re-renders.
+
+On whether humans hold up: in `detail.png` (and `detail-b.png` for B) the faces and hands read as warm and human at 2x, but they're competent rather than masterful. I only drew profiles; three-quarter faces would need traced reference. Two weaknesses remain: the dark cabinet makes the lower third heavy, and Clawd's glow lighting A's face is a deliberate cheat of the lighting logic. My candid opinion is that this is the most legible, "authored" direction so far. Its risk is coldness, and its tenderness depends entirely on the lighting design.
+
+Everything is in `07-style-ligne-claire`:
+- frame.png
+- frame.html
+- detail.png
+- detail-b.png
+- pass1.png to pass9.png
+- NOTES.md
+- render.sh

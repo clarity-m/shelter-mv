@@ -1,0 +1,135 @@
+
+// ================================================================ RUNG 4: brushstrokes
+// Each stroke is an instanced quad on a jittered grid. It samples the
+// underpainting at its centre, lies along the surface's isophotes (perpendicular
+// to the projected normal; horizontal in the sky), shortens where it would cross
+// into another object, and never starts on Clawd.
+const STROKE_VS = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uUnder, uAux;
+uniform vec2 uRes, uGrid, uSize;
+uniform float uLayer, uSkip;
+out vec2 vUV; out vec3 vCol; out float vSeed; out float vA;
+float h1(float n) { return fract(sin(n * 12.9898 + uLayer * 78.233) * 43758.5453); }
+int matAt(vec2 p) { return int(floor(texelFetch(uAux, ivec2(clamp(p, vec2(0.0), uRes - 1.0)), 0).x)); }
+void main() {
+  int id = gl_InstanceID;
+  int gx = int(uGrid.x);
+  vec2 cell = vec2(float(id % gx), float(id / gx));
+  vec2 cs = uRes / uGrid;
+  float fid = float(id);
+  vec2 p = (cell + vec2(h1(fid * 1.37), h1(fid * 2.71 + 5.0))) * cs;
+  vec4 ax = texelFetch(uAux, ivec2(p), 0);
+  int mat = int(floor(ax.x));
+  vec2 dir;
+  if (mat == 0) {
+    dir = vec2(1.0, (h1(fid * 9.1) - 0.5) * 0.12);
+  } else {
+    vec2 n2 = ax.zw;
+    dir = length(n2) > 0.08 ? normalize(vec2(-n2.y, n2.x)) : vec2(1.0, 0.0);
+    if (mat == 11) dir = normalize(mix(dir, vec2(1.0, 0.0), 0.45));
+    if (mat == 2 || mat == 1) dir = normalize(mix(dir, vec2(1.0, 0.0), 0.3));
+  }
+  float ang = (h1(fid * 3.3) - 0.5) * (mat == 0 ? 0.08 : 0.5);
+  dir = vec2(dir.x * cos(ang) - dir.y * sin(ang), dir.x * sin(ang) + dir.y * cos(ang));
+  vec2 nrm = vec2(-dir.y, dir.x);
+  float len = uSize.x * (0.7 + 0.6 * h1(fid * 5.1)), wid = uSize.y * (0.75 + 0.5 * h1(fid * 6.3));
+  if (mat == 0) len *= 1.8;
+  if (mat == 4 || (mat >= 5 && mat <= 9)) { len *= 0.55; wid *= 0.8; }
+  // do not drag paint across silhouettes
+  int ma = matAt(p + dir * len * 0.5), mb = matAt(p - dir * len * 0.5);
+  if (ma != mat || mb != mat) { len *= 0.35; wid *= 0.8; }
+  float alive = 1.0;
+  if (mat == 10 || ma == 10 || mb == 10) alive = 0.0;
+  if (h1(fid * 8.8) < uSkip && mat == 0) alive = 0.0;
+  vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;
+  vec2 pos = p + dir * corner.x * len * 0.5 + nrm * corner.y * wid * 0.5;
+  vec3 col = texelFetch(uUnder, ivec2(p), 0).rgb;
+  // paint is mixed a little on the palette: tiny value and temperature drift
+  float v = (h1(fid * 4.4) - 0.5);
+  col *= 1.0 + v * 0.07;
+  col = mix(col, col * vec3(1.03, 1.0, 0.97), h1(fid * 7.2) - 0.5);
+  vCol = col; vUV = corner * 0.5 + 0.5; vSeed = h1(fid * 7.7); vA = alive;
+  gl_Position = vec4(pos / uRes * 2.0 - 1.0, 0.0, 1.0);
+}`;
+const STROKE_FS = `#version 300 es
+precision highp float;
+in vec2 vUV; in vec3 vCol; in float vSeed; in float vA;
+out vec4 o;
+float hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float vn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y); }
+void main() {
+  if (vA < 0.5) discard;
+  vec2 q = vUV;
+  float across = abs(q.y - 0.5) * 2.0;
+  float wob = 0.22 * (vn(vec2(q.x * 5.0, vSeed * 13.0)) - 0.5);
+  float edge = 1.0 - smoothstep(0.55, 0.95, across + wob);
+  float taper = smoothstep(0.0, 0.22 + 0.1 * vSeed, q.x) * (1.0 - smoothstep(0.7, 1.0, q.x + 0.1 * vn(vec2(q.y * 7.0, vSeed * 3.0))));
+  float bristle = 0.62 + 0.38 * vn(vec2(q.y * 16.0 + vSeed * 37.0, q.x * 1.5));
+  float a = clamp(edge * taper * bristle * 1.15, 0.0, 1.0);
+  vec3 c = vCol * (0.95 + 0.1 * vn(vec2(q.y * 11.0 + vSeed * 9.0, q.x * 3.0)));
+  o = vec4(c * a, a);
+}`;
+const COPY_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uRes;
+out vec4 o;
+void main() { o = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); }`;
+const PAINT_COMP_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uPaint, uClawd; uniform vec2 uRes;
+out vec4 o;
+void main() {
+  ivec2 ij = ivec2(gl_FragCoord.xy);
+  vec3 c = texelFetch(uPaint, ij, 0).rgb;
+  vec4 k = texelFetch(uClawd, ij, 0);
+  o = vec4(mix(c, k.rgb, k.a), 1.0);
+}`;
+const PAINT_FINISH_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uCol, uB1, uB2; uniform vec2 uRes;
+uniform float uBloom1, uBloom2, uVig, uGrain, uWeave;
+out vec4 o;
+${POST_LIB}
+float vn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1, 0)), f.x), mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), f.x), f.y); }
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec3 c = texture(uCol, uv).rgb;
+  c += texture(uB1, uv).rgb * uBloom1 + texture(uB2, uv).rgb * uBloom2;
+  c = tonemapHP(c);
+  vec2 q = uv - 0.5; q.x *= 1.25;
+  c *= 1.0 - uVig * smoothstep(0.3, 0.95, length(q));
+  vec3 s = toSRGB(c);
+  // canvas weave and paper tooth
+  vec2 f = gl_FragCoord.xy;
+  float weave = sin(f.x * 1.9) * sin(f.y * 1.7) * 0.5 + 0.5;
+  float thread = vn(f * vec2(0.9, 0.12)) * 0.5 + vn(f * vec2(0.12, 0.9)) * 0.5;
+  s *= 1.0 + uWeave * ((weave - 0.5) * 0.6 + (thread - 0.5) * 0.9);
+  s += (hash12(f) - 0.5) * uGrain;
+  o = vec4(s, 1.0);
+}`;
+
+function paintStrokes(under, aux, layers) {
+  const vsProg = compile(STROKE_FS, 'stroke', STROKE_VS);
+  const paint = tex(W, H, 'f16'), fp = fbo([paint]);
+  run(compile(COPY_FS, 'copy'), fp, {}, { uSrc: under });
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fp);
+  gl.viewport(0, 0, W, H);
+  gl.useProgram(vsProg);
+  gl.disableVertexAttribArray(0);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  let n = 0;
+  for (const L of layers) {
+    const gx = Math.round(W / L.cell), gy = Math.round(H / L.cell);
+    bindUniforms(vsProg, { uRes: [W, H], uGrid: [gx, gy], uSize: [L.len, L.wid], uLayer: L.seed, uSkip: L.skip || 0 }, { uUnder: under, uAux: aux });
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, gx * gy);
+    n += gx * gy;
+  }
+  gl.disable(gl.BLEND);
+  gl.enableVertexAttribArray(0);
+  TIMES.strokes = n;
+  return paint;
+}

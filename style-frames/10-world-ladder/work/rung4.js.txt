@@ -1,0 +1,39 @@
+function clawdScissorRun(prog, target, uniforms, textures) {
+  const cs = project([CLAWD.x, CLAWD.y, CLAWD.z]);
+  const x0 = Math.floor(cs[0] - 110), x1 = Math.ceil(cs[0] + 110), y0 = Math.floor(cs[1] - 130), y1 = Math.ceil(cs[1] + 30);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+  gl.viewport(0, 0, W, H);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  bindUniforms(prog, Object.assign({ uRes: [W, H] }, uniforms), textures);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(x0, H - y1, x1 - x0, y1 - y0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disable(gl.SCISSOR_TEST);
+}
+function rung4() {
+  const opt = { lowpoly: false, clawd3d: true, leafNoise: true, pal: 4, gridAlpha: 0.3, floorGrid: 0.4, fog: 0.02, clawdEmit: 0.8, auraK: 0.22, auraS: 0.5, eyesRecess: true, lumClawd: true };
+  const col = tex(W, H, 'f16'), aux = tex(W, H, 'f32');
+  const fb = fbo([col, aux]);
+  const prog = compile(LIT_FS(opt), 'lit4');
+  timed('scene', () => runTiled(prog, fb, { uSS: +(Q.get('ss') || 2) }, { uPl: plTex, uPm: pmTex }, 12));
+  // Clawd alone, supersampled, with coverage: he is composited crisp over the paint
+  const kc = tex(W, H, 'f16'), kx = tex(W, H, 'f16'), fk = fbo([kc, kx]);
+  const kprog = compile(LIT_FS(Object.assign({}, opt, { clawdOnly: true })), 'clawd4');
+  timed('clawd', () => clawdScissorRun(kprog, fk, { uSS: 4 }, { uPl: plTex, uPm: pmTex }));
+  let paint = col;
+  if (Q.get('paint') !== '0') paint = timed('paint', () => paintStrokes(col, aux, [
+    { cell: 13, len: 52, wid: 14, seed: 1 },
+    { cell: 7, len: 28, wid: 8, seed: 2 },
+    { cell: 4, len: 14, wid: 4.5, seed: 3, skip: 0.6 },
+  ]));
+  const comp = tex(W, H, 'f16'), fc = fbo([comp]);
+  run(compile(PAINT_COMP_FS, 'pcomp'), fc, {}, { uPaint: paint, uClawd: kc });
+  const bl = timed('bloom', () => bloomChain(comp, 0.8, [[4, 6], [16, 9]]));
+  const fin = compile(PAINT_FINISH_FS, 'pfinish');
+  run(fin, null, { uBloom1: 0.4, uBloom2: 0.5, uVig: 0.25, uGrain: 0.03, uWeave: 0.035 }, { uCol: comp, uB1: bl[0], uB2: bl[1] });
+  gl.finish();
+  blitToCanvas();
+}

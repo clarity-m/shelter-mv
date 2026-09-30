@@ -1,0 +1,85 @@
+
+// tiled draw: heavy ray-casting shaders are split into bands so no single GPU
+// command runs long enough to trip the Windows GPU watchdog.
+function runTiled(prog, target, uniforms, textures, bands) {
+  bands = bands || 8;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+  const w = target ? target.w : W, h = target ? target.h : H;
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  bindUniforms(prog, Object.assign({ uRes: [w, h] }, uniforms), textures);
+  gl.enable(gl.SCISSOR_TEST);
+  for (let b = 0; b < bands; b++) {
+    const y0 = Math.floor(h * b / bands), y1 = Math.floor(h * (b + 1) / bands);
+    gl.scissor(0, y0, w, y1 - y0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.finish();
+  }
+  gl.disable(gl.SCISSOR_TEST);
+}
+
+const POST_LIB = `
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+vec3 tonemapHP(vec3 c) {
+  float m = max(max(c.r, c.g), c.b);
+  if (m > 0.72) { float mm = 0.72 + 0.28 * (1.0 - exp(-(m - 0.72) / 0.28)); c *= mm / m; }
+  float w = smoothstep(1.2, 4.0, m);
+  return mix(c, vec3(max(max(c.r, c.g), c.b)), w * 0.5);
+}
+vec3 toSRGB(vec3 c) { c = max(c, 0.0); return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+`;
+const FINISH_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uCol, uB1, uB2; uniform vec2 uRes;
+uniform float uBloom1, uBloom2, uVig, uGrain, uExposure;
+out vec4 o;
+${POST_LIB}
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec3 c = texture(uCol, uv).rgb * uExposure;
+  c += texture(uB1, uv).rgb * uBloom1 + texture(uB2, uv).rgb * uBloom2;
+  c = tonemapHP(c);
+  vec2 q = uv - 0.5; q.x *= 1.25;
+  c *= 1.0 - uVig * smoothstep(0.3, 0.9, length(q));
+  vec3 s = toSRGB(c);
+  s += (hash12(gl_FragCoord.xy) - 0.5) * uGrain;
+  o = vec4(s, 1.0);
+}`;
+
+// ================================================================ RUNGS
+function rung3() {
+  const opt = { lowpoly: true, clawd3d: true, pal: 3, gridAlpha: 0.4, floorGrid: 0.55, fog: 0.016, clawdEmit: 0.3 };
+  const col = tex(W, H, 'f16'), aux = tex(W, H, 'f32');
+  const fb = fbo([col, aux]);
+  const prog = compile(LIT_FS(opt), 'lit3');
+  timed('scene', () => runTiled(prog, fb, { uSS: +(Q.get('ss') || 3) }, { uPl: plTex, uPm: pmTex }, 12));
+  const bl = timed('bloom', () => bloomChain(col, 0.85, [[4, 5], [16, 7]]));
+  const fin = compile(FINISH_FS, 'finish');
+  run(fin, null, { uBloom1: 0.22, uBloom2: 0.3, uVig: 0.22, uGrain: 0.012, uExposure: 1.0 }, { uCol: col, uB1: bl[0], uB2: bl[1] });
+  gl.finish();
+  blitToCanvas();
+}
+function rung4() {
+  const opt = { lowpoly: false, clawd3d: true, leafNoise: true, pal: 4, gridAlpha: 0.3, floorGrid: 0.4, fog: 0.02, clawdEmit: 0.45 };
+  const col = tex(W, H, 'f16'), aux = tex(W, H, 'f32');
+  const fb = fbo([col, aux]);
+  const prog = compile(LIT_FS(opt), 'lit4');
+  timed('scene', () => runTiled(prog, fb, { uSS: +(Q.get('ss') || 2) }, { uPl: plTex, uPm: pmTex }, 12));
+  const bl = timed('bloom', () => bloomChain(col, 0.8, [[4, 6], [16, 9]]));
+  const fin = compile(FINISH_FS, 'finish');
+  run(fin, null, { uBloom1: 0.35, uBloom2: 0.45, uVig: 0.25, uGrain: 0.02, uExposure: 1.0 }, { uCol: col, uB1: bl[0], uB2: bl[1] });
+  gl.finish();
+  blitToCanvas();
+}
+
+const RUNGS = { 3: rung3, 4: rung4 };
+try {
+  RUNGS[RUNG]();
+} catch (e) {
+  log('ERROR ' + e.message + '\n' + e.stack);
+}
+finish();
+</script>
+</body></html>

@@ -1,0 +1,10 @@
+Frame 12 renders the fusion shot as an eight-layer backlit shadow box: a ring of plasma made of stacked tissue with a slit of pure light along its hottest line, caged by 12 dark ribs under a lantern cap, on a cryostat base with a row of glowing punched ports. The light from it becomes cut-paper fans on the deck and stripes on the wall of a dark indigo hall, with a moon in the high windows. The reactor ends up looking like a lantern (punched base, ribs, cap, fire inside), which ties it to the film's title image. It reads instantly at 320×180 and looks nothing like the pastel inside rungs; warm light covers about 23% of the frame, and the darkest pixel is (9,12,22), so nothing is pure black. The weakest parts are the shafts, which from this camera angle are vertical light sheets that blend into the wall stripes rather than the long radial shafts the brief asked for, and the deck fans, which pull the eye down. I also used 12 open C-shaped coils rather than a real 18 closed ones, because the merged inner legs read as a lump. It renders in about 2 s from a fresh page and 116 ms per frame in a persistent page. The stretch goal is done: `ignite.mp4` is dark until the kick on frame 10, then the light sweeps out over the deck and walls while the camera pushes in with layer parallax.
+
+Files are in `style-frames/12-paper-fusion/`:
+- `frame.png`
+- `thumb.png`
+- `frame.html` (the source)
+- `pass1.png`–`pass10.png`
+- `NOTES.md`
+- `ignite.mp4`
+- `anim_strip.png` (key frames of the ignition)

@@ -1,0 +1,29 @@
+# The song is not part of this repository. Bring your own copy (see README).
+*.mp3
+*.wav
+*.flac
+*.m4a
+analysis/stems/
+# the vocal melody's pitch contour is left out as well
+analysis/vocal_f0.*
+# the animatic carries the song's audio
+animatic/animatic.mp4
+animatic/check/
+
+# renders, stills and backups: large, and regenerable from the code
+out/
+backups/
+
+# look development: keep the code, notes and each study's final frame
+style-frames/**/*.png
+!style-frames/**/frame.png
+!style-frames/**/frame-v2.png
+!style-frames/10-world-ladder/ladder-strip.png
+style-frames/**/*.mp4
+
+# local environments and settings
+.venv/
+.claude/
+__pycache__/
+node_modules/
+*.log

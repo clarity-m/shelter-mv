@@ -1,0 +1,14 @@
+The pretraining frame is done: a quiet gray, Sugimoto-like seascape where the horizon is the token stream, a thin line of light made of tiny letter-like glyphs with motion trails. One token has stopped and become Clawd, crisp in exact #D97757 and backlit by an irregular 11-ray burst, and it is the only saturated thing in the frame. Faint attention arcs reach toward it from earlier tokens, their dim reflection makes a cupped bowl in the floor, and the floor is a faint weight-matrix heatmap in perspective, with the step/loss HUD in the bottom-left corner.
+
+**How it went:** it took 13 render-and-critique passes. I cut two ideas: pixel fragments around Clawd looked like it was shattering, and an orange trail looked like a wire.
+
+**Weak spots:** I showed the moment the burst becomes Clawd rather than the full square → burst → Clawd morph. The upper third is deliberately empty and may feel too austere. The brushwork is barely visible at full size.
+
+**Strength:** it reads at a glance, and all the parts of the video's visual grammar come through without any on-screen text.
+
+Everything is in `C:\Users\USER\Projects\shelter-mv\style-frames\01-pretrain\`. I left `agent-log.txt`, which was already there, untouched.
+- `frame.png` — final image
+- `frame.html` — source; re-rendering it gives an identical image, about 10 s in headless Chrome
+- `pass1.png` … `pass13.png` — every critique pass
+- `NOTES.md`
+- `render.sh` — re-renders the frame

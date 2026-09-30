@@ -1,0 +1,587 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Shelter MV / 01b pretrain (tokens)</title>
+<style>
+html,body{margin:0;padding:0;background:#141413;overflow:hidden;}
+canvas{display:block;}
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<!--
+  Shelter MV style frame 01b: pretraining, with a legible token stream (revision of 01).
+  A gray, nearly one-dimensional world: the horizon is the token stream; attention arcs reach from earlier
+  positions to the one token that has taken colour; the field below is a weight matrix in perspective.
+  Pipeline: linear float buffers -> underpainting -> horizontal brush strokes sampled from it -> weight-matrix
+  field -> light layers (halo, token stream + trails, arcs, spark) -> multi-scale bloom + horizontal flare ->
+  HUD -> vignette, soft shoulder, weave, grain, dither -> Clawd stamped last, pixel-exact #D97757.
+  Deterministic (mulberry32 / integer hash); renders in ~10 s in headless Chrome (see render.sh).
+-->
+<script>
+"use strict";
+(function(){
+const W = 1920, H = 1080, N = W * H;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d', { willReadFrequently: true });
+
+// ---------------------------------------------------------------- utilities
+function mulberry32(a){ return function(){ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
+function hash2(i,j,s){ let h=(Math.imul(i,374761393)+Math.imul(j,668265263)+Math.imul(s,1442695041))|0; h=Math.imul(h^(h>>>13),1274126177); h^=h>>>16; return (h>>>0)/4294967296; }
+function vnoise(x,y,s){ const xi=Math.floor(x), yi=Math.floor(y), xf=x-xi, yf=y-yi; const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf); const a=hash2(xi,yi,s), b=hash2(xi+1,yi,s), c=hash2(xi,yi+1,s), d=hash2(xi+1,yi+1,s); return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v; }
+function fbm(x,y,s,oct){ let a=0, amp=0.5, f=1, nrm=0; for(let o=0;o<oct;o++){ a+=amp*vnoise(x*f,y*f,s+o*101); nrm+=amp; f*=2.03; amp*=0.5; } return a/nrm; }
+const sq=v=>v*v;
+const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
+const smooth=(e0,e1,x)=>{ const t=clamp((x-e0)/(e1-e0),0,1); return t*t*(3-2*t); };
+const lin=v=>Math.pow(Math.max(0,v),2.2);
+function gauss(r){ let u=r(); if(u<1e-9) u=1e-9; return Math.sqrt(-2*Math.log(u))*Math.cos(6.283185307*r()); }
+
+// separable gaussian (3x box) on a single-channel buffer
+function boxR(s){ if(s<0.5) return 0; const wi=Math.sqrt(12*s*s/3+1); return Math.max(1,Math.round((wi-1)/2)); }
+function box1(src,dst,w,h,r,horiz){
+  const inv=1/(2*r+1);
+  if(horiz){
+    for(let y=0;y<h;y++){ const o=y*w; let acc=0;
+      for(let i=-r;i<=r;i++) acc+=src[o+clamp(i,0,w-1)];
+      for(let x=0;x<w;x++){ dst[o+x]=acc*inv; acc+=src[o+Math.min(w-1,x+r+1)]-src[o+Math.max(0,x-r)]; } }
+  } else {
+    for(let x=0;x<w;x++){ let acc=0;
+      for(let i=-r;i<=r;i++) acc+=src[clamp(i,0,h-1)*w+x];
+      for(let y=0;y<h;y++){ dst[y*w+x]=acc*inv; acc+=src[Math.min(h-1,y+r+1)*w+x]-src[Math.max(0,y-r)*w+x]; } }
+  }
+}
+function gblur(buf,w,h,sx,sy){
+  const tmp=new Float32Array(w*h), rx=boxR(sx), ry=boxR(sy);
+  for(let p=0;p<3;p++){
+    if(rx>0){ box1(buf,tmp,w,h,rx,true); buf.set(tmp); }
+    if(ry>0){ box1(buf,tmp,w,h,ry,false); buf.set(tmp); }
+  }
+}
+
+try { main(); } catch(e) {
+  ctx.setTransform(1,0,0,1,0,0); ctx.fillStyle='#f33'; ctx.font='22px monospace';
+  String(e && e.stack || e).split('\n').slice(0,8).forEach((l,i)=>ctx.fillText(l,30,50+i*28));
+}
+
+function main(){
+  const T0=performance.now(), TM=[]; const mark=n=>TM.push(n+' '+(performance.now()-T0).toFixed(0));
+  // ------------------------------------------------------------ layout
+  const HZ = 664;          // horizon = the token stream
+  const SX = 1188;         // the spark sits on the stream near the golden section
+  const CELLW = 3, CELLH = 6;
+  const CLAWD = [
+    "...############...",
+    "...##.######.##...",
+    ".################.",
+    "...############...",
+    "....#.#....#.#....",
+  ];
+  const CW = 18*CELLW, CH = 5*CELLH;
+  const CLX = SX - CW/2, CLY = HZ - 1 - CH;      // Clawd stands on the line
+  const CX = SX, CY = CLY + CH/2;                // burst centre
+
+  const R = new Float32Array(N), G = new Float32Array(N), B = new Float32Array(N);
+  function addPx(x,y,I,cr,cg,cb){ x=Math.round(x); y=Math.round(y); if(x<0||x>=W||y<0||y>=H) return; const k=y*W+x; R[k]+=I*cr; G[k]+=I*cg; B[k]+=I*cb; }
+  const edge = x => 0.55 + 0.45*smooth(0,640,x)*smooth(W,W-640,x);
+
+  // ------------------------------------------------------------ 1. underpainting: luminous sky, mirror field
+  const F = 1100;
+  for(let y=0;y<H;y++){
+    const row=y*W;
+    if(y<HZ){
+      const u=(HZ-y)/HZ;
+      const g=0.30*Math.exp(-u/0.04)+0.45*Math.exp(-u/0.22)+0.25*Math.exp(-u/1.2);
+      const hz=smooth(0.03,0.4,u)*(1-0.5*smooth(0.6,1,u));
+      for(let x=0;x<W;x++){
+        const dxs=(x-SX)/1000;
+        let L=0.27+0.42*g+0.08*Math.exp(-dxs*dxs)*Math.exp(-u/0.55);
+        L*=1+0.12*(fbm(x/2200+2.1,y/70,21,4)-0.5)*hz;          // haze strata
+        const k=row+x;
+        R[k]=lin(L*(0.952+0.068*g)); G[k]=lin(L*(0.986+0.02*g)); B[k]=lin(L*(1.07-0.095*g));
+      }
+    } else {
+      const v=(y-HZ)/(H-HZ);
+      const g=0.40*Math.exp(-v/0.02)+0.30*Math.exp(-v/0.14)+0.30*Math.exp(-v/0.9);
+      for(let x=0;x<W;x++){
+        const dxs=(x-SX)/560;
+        let L=0.12+0.43*g+0.06*Math.exp(-dxs*dxs)*Math.exp(-v/0.35);
+        L*=1+0.06*(fbm(x/1700+7.7,(y-HZ)/(3+0.09*(y-HZ)),33,3)-0.5);
+        const k=row+x;
+        R[k]=lin(L*(0.985+0.02*g)); G[k]=lin(L*0.998); B[k]=lin(L*(1.025-0.035*g));
+      }
+    }
+  }
+
+  mark('underpaint');
+  // ------------------------------------------------------------ 2. painterly surface: long horizontal strokes sampled from the underpainting
+  {
+    const R0=new Float32Array(R), G0=new Float32Array(G), B0=new Float32Array(B);
+    const rp=mulberry32(8080);
+    function stroke(xc,yc,len,wid,alpha,jit,tint){
+      tint=tint||0;
+      const sx=clamp(Math.round(xc),0,W-1), sy=clamp(Math.round(yc),0,H-1), sk=sy*W+sx;
+      const cr=R0[sk]*jit*(1+tint), cg=G0[sk]*jit, cb=B0[sk]*jit*(1-tint);
+      const x0=Math.floor(xc-len/2), x1=Math.ceil(xc+len/2), tp=Math.min(len*0.3,40);
+      const y0=Math.floor(yc-wid/2-1), y1=Math.ceil(yc+wid/2+1);
+      const bseed=(rp()*1e6)|0;
+      for(let yy=y0;yy<=y1;yy++){
+        if(yy<0||yy>=H) continue;
+        const cvv=clamp(wid/2+0.5-Math.abs(yy+0.5-yc),0,1); if(cvv<=0) continue;
+        const bseed2=(bseed%997)+yy*0.9;
+        for(let xx=x0;xx<=x1;xx++){
+          if(xx<0||xx>=W) continue;
+          const p=smooth(x0,x0+tp,xx)*smooth(x1,x1-tp,xx);
+          const bristle=0.3+0.7*vnoise(xx/26+bseed%577,bseed2,9);
+          const a=alpha*cvv*p*bristle; if(a<=0) continue;
+          const k=yy*W+xx;
+          R[k]+=(cr-R[k])*a; G[k]+=(cg-G[k])*a; B[k]+=(cb-B[k])*a;
+        }
+      }
+    }
+    for(let n=0;n<600;n++){              // sky: broad soft washes
+      const y=Math.pow(rp(),0.9)*(HZ-30), x=rp()*(W+400)-200, u=(HZ-y)/HZ;
+      stroke(x,y,300+rp()*600,7+rp()*16*(0.5+u),0.05+rp()*0.08,1+(rp()-0.5)*0.16,(rp()-0.5)*0.03);
+    }
+    for(let n=0;n<11000;n++){            // sky: finer horizontal brushwork
+      const y=Math.pow(rp(),0.8)*(HZ-8), x=rp()*(W+200)-100;
+      const u=(HZ-y)/HZ;
+      stroke(x,y,50+rp()*240*(0.5+u),1.4+rp()*3.2*(0.4+u),0.08+rp()*0.2,1+(rp()-0.5)*0.22*(0.4+0.6*smooth(0.03,0.25,u)),(rp()-0.5)*0.03);
+    }
+    for(let n=0;n<11000;n++){            // field
+      const dv=Math.pow(rp(),1.4)*(H-HZ-6), y=HZ+6+dv, x=rp()*(W+300)-150;
+      const sc=0.25+dv/(H-HZ);
+      stroke(x,y,(60+rp()*320)*sc*1.4,(0.9+rp()*2.2)*sc*1.3,0.10+rp()*0.24,1+(rp()-0.5)*0.26,(rp()-0.5)*0.02);
+    }
+  }
+
+  mark('strokes');
+  // ------------------------------------------------------------ 2b. the field is a weight matrix: perspective cells converging on the spark,
+  //                                                                revealed where the field reflects the light of the stream
+  {
+    const CG=0.20, base=lin(0.12);
+    for(let y=HZ+2;y<H;y++){
+      const dyp=y-HZ, Z=F/dyp;
+      const fpz=F/(dyp*dyp)/CG;                    // cell rows per pixel
+      if(fpz>1.1) continue;
+      const cz=Z/CG, j=Math.floor(cz), fz=cz-j;
+      const fpx=Z/(F*CG);                          // cell columns per pixel
+      const vis=(1-smooth(0.25,0.9,fpz))*(1-0.55*smooth(0.25,1.0,dyp/(H-HZ)));
+      const ez=Math.min(fz,1-fz)/fpz, gapOn=1-smooth(0.12,0.3,fpz);
+      const rowW=0.22*(hash2(3,j,5)-0.5);
+      for(let x=0;x<W;x++){
+        const cu=(x-SX)*Z/(F*CG), i=Math.floor(cu), fx=cu-i;
+        const ex=Math.min(fx,1-fx)/fpx;
+        const gap=(1-smooth(0.2,1.1,Math.min(ex,ez)))*gapOn;
+        const wv=0.62*(hash2(i,j,19)-0.5)+0.24*(hash2(i,9,8)-0.5)+rowW;
+        const k=y*W+x;
+        const m=1+vis*(0.78*wv-0.22*gap);
+        R[k]=base+(R[k]-base)*m; G[k]=base+(G[k]-base)*m; B[k]=base+(B[k]-base)*m;
+      }
+    }
+  }
+
+  mark('field');
+  // ------------------------------------------------------------ 3. horizon halo (sky side + mirrored in the field)
+  for(let y=HZ-280;y<=HZ+240;y++){
+    const dy=y-HZ, ady=Math.abs(dy)*(dy>0?1.25:1);
+    const vp=0.09*Math.exp(-sq(ady/1.6))+0.05*Math.exp(-sq(ady/6))+0.05*Math.exp(-sq(ady/24))+0.04*Math.exp(-sq(ady/95));
+    const row=y*W;
+    for(let x=0;x<W;x++){
+      const I=vp*(0.6+0.4*Math.exp(-sq((x-SX)/700)))*edge(x);
+      R[row+x]+=I; G[row+x]+=I*0.985; B[row+x]+=I*0.955;
+    }
+  }
+
+  // ------------------------------------------------------------ 4. token stream: tokenizer output standing on the line.
+  //   Tokens are largest and nearly still beside the spark, then shrink and smear with distance, so only a short
+  //   stretch reads. Token boundaries show as alternating warm/cool tints plus hairline ticks.
+  const FONT='Consolas, "Cascadia Mono", "Courier New", monospace', CAPR=0.64;   // Consolas cap height / em
+  const BASE=HZ-1;                                     // shared baseline: Clawd stands on it too
+  const capAt=x=>{ const d=Math.abs(x-SX)/(x<SX?350:255); return 3.4+15.1*Math.exp(-Math.pow(d,1.6)); };   // the context (left) stays legible longer
+  const gapAt=fs=>1+0.2*fs;
+  const NL='\n', EOT='<|endoftext|>';
+  const isWS=t=>/^ +$/.test(t);
+  const show=t=>t===NL?'\\n':(isWS(t)?'\u00B7'.repeat(t.length):t);    // as a tokenizer viewer prints it
+  const DOCS=[
+    ['for',' i',' in',' range','(n','):',NL,'   ',' acc',' +=',' w','[i',']',' *',' x','[i',']',NL],
+    ['The',' Mar','iana',' Trench',' is',' about',' 10',',','994',' m',' deep','.'],
+    ['$$','\\','frac','{','1','}{','\\','sqrt','{d','_k','}}','$$'],
+    ['{"','id','":',' 409','6',',',' "','lang','":',' "','en','"}'],
+    ['Water',' boils',' at',' 100',' \u00B0','C',' at',' sea',' level','.'],
+    ['https','://','en','.','wik','ipedia','.org','/wiki','/','Rain','bow'],
+    ['int',' main','(void',')',' {',NL,'   ',' return',' 0',';',NL,'}'],
+    ['3','.','141','592','653','589','793'],
+    ['Photos','ynthesis',' converts',' light',' into',' chemical',' energy','.'],
+    ['##',' Install','ation',NL,'```','bash',NL,'pip',' install',' numpy'],
+    ['e','^{','i','\\','pi','}',' +',' 1',' =',' 0'],
+    ['La',' ville',' de',' Paris',' compte',' 20',' arr','ond','isse','ments','.'],
+  ];
+  // the stretch beside the spark, in reading order: NEAR_L ends at Clawd, NEAR_R starts right after it
+  const NEAR_L=[EOT,'def',' glow','(px','):',NL,'   ',' px','.color',' =',' "#','d','977','57','"'];
+  const NEAR_R=[NL,'   ',' return',' px',NL,EOT,'Sea','-level',' pressure',' is',' 101','.','325',' k','Pa','.'];
+  function outward(near,dir){                          // token order walking away from Clawd; documents joined by EOT
+    const seq=dir<0?near.slice().reverse():near.slice();
+    for(let k=0;k<40;k++){
+      const d=DOCS[(k+(dir<0?0:6))%DOCS.length];
+      if(dir<0) seq.push(...d.slice().reverse(),EOT); else seq.push(EOT,...d);
+    }
+    return seq;
+  }
+  const mc=document.createElement('canvas').getContext('2d');
+  function measure(t,cap){ const fs=cap/CAPR; mc.font=fs.toFixed(2)+'px '+FONT; return [fs,mc.measureText(show(t)).width]; }
+  const toks=[];
+  for(const dir of [-1,1]){
+    const seq=outward(dir<0?NEAR_L:NEAR_R,dir);
+    let x=dir<0?CLX-gapAt(capAt(CLX)/CAPR):CLX+CW+gapAt(capAt(CLX+CW)/CAPR), n=0;
+    for(const t of seq){
+      let cap=capAt(x), fs=0, w=0;
+      for(let it=0;it<4;it++){ [fs,w]=measure(t,cap); cap=capAt(x+dir*w*0.5); }
+      [fs,w]=measure(t,cap);
+      const x0=dir<0?x-w:x;
+      toks.push({t,x0,x1:x0+w,cx:x0+w/2,cap,fs,pos:dir*(++n),attn:0});
+      x=dir<0?x0-gapAt(fs):x0+w+gapAt(fs);
+      if(x<-80||x>W+80) break;
+    }
+  }
+  toks.sort((a,b)=>a.x0-b.x0);
+
+  // attention: generated here (same draw order as before) so attended tokens can glow; drawn in section 5
+  const ra=mulberry32(99);
+  const topAt=x=>BASE-capAt(x)-3, topOf=k=>BASE-k.cap-3;
+  const nearest=(x,side)=>{ let best=null; for(const k of toks){ if(isWS(k.t)||k.t===NL||Math.sign(k.pos)!==side) continue; if(!best||Math.abs(k.cx-x)<Math.abs(best.cx-x)) best=k; } return best; };
+  const ARCS=[];                                       // [x0,y0,x1,y1,h,q,a0,a1,lw]
+  for(let n=0;n<150;n++){                              // background attention: faint lace all along the stream
+    const x0=ra()*W, s=6+Math.pow(ra(),2.4)*300;
+    const a=0.015+0.05*Math.pow(ra(),2);
+    ARCS.push([x0,topAt(x0),x0+s,topAt(x0+s),s*(0.14+0.26*ra()),0.9,a*0.7,a,0.8]);
+  }
+  const sparkArcs=[];
+  for(let n=0;n<34;n++) sparkArcs.push({s:14+Math.pow(ra(),1.5)*(SX-60), w:Math.pow(ra(),3)*0.22});
+  sparkArcs.push({s:64,w:0.8},{s:23,w:0.45},{s:221,w:0.5},{s:612,w:0.9},{s:1052,w:0.46},{s:392,w:0.2},{s:840,w:0.24});
+  for(const A of sparkArcs){
+    const k=nearest(SX-A.s,-1), s=SX-k.cx;
+    const hr=(0.12+0.27*Math.pow(s/SX,0.7))*(0.88+0.24*ra());
+    const a=0.02+0.5*A.w;
+    ARCS.push([k.cx,topOf(k),SX,HZ-3,s*hr,0.8,a*(A.w>0.3?0.32:0.12),a,1.0]);
+    if(A.w>0.3) ARCS.push([k.cx,topOf(k),SX,HZ-3,s*hr,0.8,a*0.02,a*0.09,5]);
+    k.attn=Math.max(k.attn,A.w);
+  }
+  for(let n=0;n<9;n++){                                // later positions attending back to it
+    const s=24+Math.pow(ra(),1.4)*560, w=Math.pow(ra(),2.5)*0.35;
+    const k=nearest(SX+s,1);
+    const hr=0.11+0.30*Math.pow((k.cx-SX)/SX,0.7);
+    const a=0.02+0.35*w;
+    ARCS.push([SX,HZ-3,k.cx,topOf(k),(k.cx-SX)*hr,0.8,a,a*0.12,0.9]);
+    k.attn=Math.max(k.attn,w*0.6);
+  }
+  // long-range attention from context beyond the frame edges: a few very faint, high arcs in the upper third
+  for(const [x0,peak,a] of [[-170,150,0.13],[-430,104,0.09],[-820,66,0.06]]){
+    const y0=topAt(x0), y1=HZ-3;
+    ARCS.push([x0,y0,SX,y1,(y0+y1)/2-peak,0.8,a*0.1,a,1.0]);
+  }
+  for(const [x1,peak,a] of [[2260,262,0.13],[2700,196,0.08]]){
+    const y0=HZ-3, y1=topAt(x1);
+    ARCS.push([SX,y0,x1,y1,(y0+y1)/2-peak,0.8,a,a*0.1,0.9]);
+  }
+
+  // per-column token properties (tokens never overlap, so a column belongs to one token)
+  const TA=[1,0.985,0.955], TB=[0.88,0.925,1.0];      // alternating tints: warm white / cool silver
+  const colI=new Float32Array(W), colB=new Uint8Array(W), colK=new Float32Array(W), colG=new Float32Array(W), colW=new Float32Array(W);
+  for(const k of toks){
+    const d=Math.abs(k.cx-SX);
+    let I=0.66*edge(k.cx)*(0.55+0.45*hash2(k.pos,3,71))*(k.pos>0?0.82:1)*(1+0.5*smooth(250,700,d));   // tiny far tokens glint
+    if(k.pos&1) I*=0.66;
+    if(k.t===NL||k.t===EOT||isWS(k.t)) I*=0.55;
+    I*=1+0.5*k.attn;                                   // attended tokens glow a little
+    const L=26+210*(1-Math.exp(-Math.pow(d/450,1.5)));  // trail length: short near the spark, long far out
+    const kk=Math.exp(-1/L), g=0.24+0.5*smooth(40,650,d), gw=1;
+    const g2=gapAt(k.fs)/2;
+    for(let x=Math.floor(k.x0-g2);x<=Math.ceil(k.x1+g2);x++){ if(x<0||x>=W) continue; colI[x]=I; colB[x]=k.pos&1; colK[x]=kk; colG[x]=g; colW[x]=gw; }
+  }
+  // rasterize the text, then rear-curtain trails: each row is smeared leftwards (flow is left to right)
+  const BY0=HZ-64, BH=84;
+  const tb=document.createElement('canvas'); tb.width=W; tb.height=BH;
+  const tbc=tb.getContext('2d',{willReadFrequently:true});
+  tbc.fillStyle='#fff'; tbc.textBaseline='alphabetic';
+  for(const k of toks){ tbc.font=k.fs.toFixed(2)+'px '+FONT; tbc.fillText(show(k.t),k.x0,BASE-BY0); }
+  const ta=tbc.getImageData(0,0,W,BH).data;
+  const LR=new Float32Array(W*BH), LG=new Float32Array(W*BH), LB=new Float32Array(W*BH);
+  for(let y=0;y<BH;y++){
+    let tr=0,tg=0,tq=0;
+    for(let x=W-1;x>=0;x--){
+      const q=y*W+x, a=ta[q*4+3]*(1/255)*colI[x], tn=colB[x]?TB:TA, k=colK[x], g=colG[x], gw=colW[x];
+      const r=a*tn[0], gg=a*tn[1], b=a*tn[2];
+      tr=tr*k+r*(1-k); tg=tg*k+gg*(1-k); tq=tq*k+b*(1-k);
+      LR[q]=r*gw+tr*g; LG[q]=gg*gw+tg*g; LB[q]=b*gw+tq*g;
+    }
+  }
+  // boundary ticks (not smeared): hairlines rising from the line between tokens, and either side of Clawd
+  {
+    const bnd=[];
+    for(let i=0;i+1<toks.length;i++){ const a=toks[i], b=toks[i+1]; if(a.pos<0&&b.pos>0) continue; bnd.push([(a.x1+b.x0)/2,Math.min(a.cap,b.cap)]); }
+    for(const k of toks){ if(k.pos===-1) bnd.push([(k.x1+CLX)/2,k.cap]); if(k.pos===1) bnd.push([(CLX+CW+k.x0)/2,k.cap]); }
+    for(const [xb,cap] of bnd){
+      const x=Math.round(xb); if(x<0||x>=W) continue;
+      const h=Math.max(1,Math.round(cap*0.42)), I=0.30*edge(x);          // hanging below the line, like a ruler
+      for(let yy=0;yy<h;yy++){ const q=(HZ+2+yy-BY0)*W+x, v=I*(1-0.7*yy/h); LR[q]+=v*TA[0]; LG[q]+=v*TA[1]; LB[q]+=v*TA[2]; }
+    }
+  }
+  // add the band, plus its reflection: mirrored about the line, smeared vertically and dim; the tiny far
+  // tokens also get a crisp mirror image right under the line (the glitter of the long-exposure stream)
+  {
+    const RH=70, rr=new Float32Array(W*RH), rg2=new Float32Array(W*RH), rb=new Float32Array(W*RH);
+    const cr=new Float32Array(W*RH), cg=new Float32Array(W*RH), cb=new Float32Array(W*RH);
+    const farW=new Float32Array(W); for(let x=0;x<W;x++) farW[x]=smooth(120,450,Math.abs(x-SX));
+    for(let y=0;y<BH;y++){
+      const Y=BY0+y, my=HZ-Y, mc=HZ-Y-2;            // mirrored rows, relative to HZ+2
+      for(let x=0;x<W;x++){
+        const q=y*W+x, k=Y*W+x;
+        R[k]+=LR[q]; G[k]+=LG[q]; B[k]+=LB[q];
+        if(Y>=HZ-1) continue;
+        if(my<RH){ const m=my*W+x; rr[m]+=LR[q]; rg2[m]+=LG[q]; rb[m]+=LB[q]; }
+        const fw=farW[x]; if(fw>0&&mc<RH){ const m=mc*W+x; cr[m]+=LR[q]*fw; cg[m]+=LG[q]*fw; cb[m]+=LB[q]*fw; }
+      }
+    }
+    for(const c of [rr,rg2,rb]) gblur(c,W,RH,0.8,3.2);
+    for(const c of [cr,cg,cb]) gblur(c,W,RH,0.5,0.6);
+    for(let y=0;y<RH;y++){
+      const Y=HZ+2+y, f=0.12*Math.exp(-y/34), f2=0.22*Math.exp(-y/6);
+      for(let x=0;x<W;x++){ const m=y*W+x, k=Y*W+x; R[k]+=rr[m]*f+cr[m]*f2; G[k]+=rg2[m]*f+cg[m]*f2; B[k]+=rb[m]*f+cb[m]*f2; }
+    }
+  }
+  // other sequences in the batch: far, faint pseudo-glyph lanes that give way where the stream is large
+  const rt=mulberry32(31337);
+  function makeGlyph(r){
+    const u=r();
+    if(u<0.06) return {cells:[[1,4]]};
+    if(u<0.10) return {cells:[[0,3],[1,3],[2,3]]};
+    const tall=r()<0.3, top=tall?0:2, bits=new Set();
+    const put=(x,y)=>{ if(y>=top) bits.add(x+','+y); };
+    const stem=r()<0.5?0:2;
+    for(let y=top;y<5;y++) put(stem,y);
+    if(r()<0.35) for(let y=2;y<5;y++) put(2-stem,y);
+    const nb=1+Math.floor(r()*2);
+    for(let b=0;b<nb;b++){ const y=2+2*Math.floor(r()*2); for(let x=0;x<3;x++) put(x,y); }
+    if(r()<0.25) put(1,top+Math.floor(r()*(5-top)));
+    return {cells:[...bits].map(t=>t.split(',').map(Number))};
+  }
+  const glyphs=[]; for(let g=0;g<160;g++) glyphs.push(makeGlyph(rt));
+  const WC=[1,0.99,0.965];
+  function lane(baseY,bright,dens,trail,fade){
+    let x=-300+rt()*20;
+    while(x<W+10){
+      const nTok=1+Math.floor(rt()*3);                  // a word = 1..3 tokens
+      for(let t=0;t<nTok;t++){
+        const nGl=1+Math.floor(rt()*3);                 // a token = 1..3 glyphs
+        const vis=rt()<dens;
+        const e=edge(x)*fade(x), head=(0.35+0.55*rt())*bright*e;
+        const len=Math.floor(8+Math.pow(rt(),1.8)*140);
+        for(let q=0;q<nGl;q++){
+          if(vis){
+            const gl=glyphs[Math.floor(rt()*glyphs.length)];
+            const rows=new Set(gl.cells.map(c=>c[1]));
+            for(const yy of rows) for(let s=1;s<=len;s++) addPx(x-s,baseY-4+yy,head*trail*Math.pow(1-s/len,1.7),WC[0],WC[1],WC[2]);
+            for(const c of gl.cells) addPx(x+c[0],baseY-4+c[1],head,WC[0],WC[1],WC[2]);
+          }
+          x+=4;
+        }
+        x+=1;
+      }
+      x+=3+Math.floor(rt()*3);
+    }
+  }
+  lane(HZ-12,0.13,0.55,0.05,x=>1-smooth(5,9,capAt(x)));
+  lane(HZ+15,0.08,0.45,0.05,x=>1-0.6*smooth(6,14,capAt(x)));
+  lane(HZ-22,0.06,0.35,0.05,x=>1-smooth(9,13,capAt(x)));
+  // long-exposure light trails: thin lanes hugging the line, each dash brightening toward its head (flow is left to right)
+  {
+    const rl=mulberry32(2024);
+    for(const dy of [-3,-4,-6,-8,-10,-13,-16,-20,-25, 3,4,6,8,11,14,18,23]){
+      const ady=Math.abs(dy), base=0.30*Math.exp(-ady/6.5);
+      const fade=dy<0?(x=>1-0.62*smooth(ady*0.6,ady*1.1+1,capAt(x))):(x=>1-0.35*smooth(8,16,capAt(x)));
+      let x=-200+rl()*120;
+      while(x<W){
+        const len=16+Math.pow(rl(),1.5)*520, gap=8+Math.pow(rl(),2)*260, I=base*(0.25+0.75*rl());
+        for(let s2=0;s2<len;s2++){
+          const t=s2/len, prof=Math.pow(t,1.6)*(1-smooth(0.95,1.0,t));
+          addPx(x+s2,HZ+dy,I*prof*edge(x+s2)*fade(x+s2),WC[0],WC[1],WC[2]);
+        }
+        addPx(x+len,HZ+dy,I*1.2*edge(x+len)*fade(x+len),WC[0],WC[1],WC[2]);
+        x+=len+gap;
+      }
+    }
+  }
+  for(let x=0;x<W;x++){
+    const e=edge(x), fl=0.85+0.15*vnoise(x*0.05,0.5,77);
+    addPx(x,HZ,0.30*e*fl,WC[0],WC[1],WC[2]);
+    addPx(x,HZ-1,0.05*e,WC[0],WC[1],WC[2]);
+    addPx(x,HZ+1,0.09*e,WC[0],WC[1],WC[2]);
+  }
+  mark('tokens');
+
+  // ------------------------------------------------------------ 5. attention arcs (offscreen canvas, added as light + faint reflection)
+  const lay=document.createElement('canvas'); lay.width=W; lay.height=H;
+  const lc=lay.getContext('2d',{willReadFrequently:true});
+  lc.globalCompositeOperation='lighter'; lc.lineCap='round'; lc.lineJoin='round';
+  function arc(x0,y0,x1,y1,h,q,a0,a1,lw){
+    const g=lc.createLinearGradient(x0,0,x1,0);
+    g.addColorStop(0,'rgba(255,255,255,'+a0.toFixed(4)+')');
+    g.addColorStop(1,'rgba(255,255,255,'+a1.toFixed(4)+')');
+    lc.strokeStyle=g; lc.lineWidth=lw; lc.beginPath();
+    const n=Math.max(24,Math.ceil(Math.abs(x1-x0)/3));
+    for(let s=0;s<=n;s++){ const t=s/n; const x=x0+(x1-x0)*t; const y=y0+(y1-y0)*t-h*Math.pow(Math.sin(Math.PI*t),q); if(s===0) lc.moveTo(x,y); else lc.lineTo(x,y); }
+    lc.stroke();
+  }
+  for(const A of ARCS) arc(...A);
+  {
+    const d=lc.getImageData(0,0,W,HZ).data;
+    const gain=0.42, rgain=0.16;
+    for(let y=0;y<HZ;y++) for(let x=0;x<W;x++){
+      const k=y*W+x, a=d[k*4+3]; if(!a) continue;
+      const I=a/255*gain; R[k]+=I; G[k]+=I*0.985; B[k]+=I*0.96;
+      const ry=2*HZ-y+3;                         // mirror in the field, slightly smeared
+      if(ry<H-2){ const Ir=a/255*rgain*Math.exp(-(ry-HZ)/220); const k2=ry*W+x; R[k2]+=Ir*0.45; G[k2]+=Ir*0.44; B[k2]+=Ir*0.44; R[k2+W]+=Ir*0.35; G[k2+W]+=Ir*0.34; B[k2+W]+=Ir*0.34; R[k2+2*W]+=Ir*0.2; G[k2+2*W]+=Ir*0.2; B[k2+2*W]+=Ir*0.2; }
+    }
+  }
+  mark('arcs');
+  console.log('near tokens: '+toks.filter(k=>Math.abs(k.cx-SX)<420).map(k=>show(k.t)+'@'+Math.round(k.cx)+'/'+k.cap.toFixed(1)).join(' | '));
+
+  // ------------------------------------------------------------ 6. the spark: warm glow + irregular starburst (added as light)
+  lc.globalCompositeOperation='source-over'; lc.clearRect(0,0,W,H); lc.globalCompositeOperation='lighter';
+  let gr=lc.createRadialGradient(CX,CY,0,CX,CY,260);
+  gr.addColorStop(0,'rgba(217,119,87,0.42)'); gr.addColorStop(0.18,'rgba(217,119,87,0.17)');
+  gr.addColorStop(0.5,'rgba(217,119,87,0.045)'); gr.addColorStop(1,'rgba(217,119,87,0)');
+  lc.fillStyle=gr; lc.fillRect(CX-270,CY-270,540,540);
+  gr=lc.createRadialGradient(CX,CY,0,CX,CY,30);
+  gr.addColorStop(0,'rgba(255,226,206,0.85)'); gr.addColorStop(0.55,'rgba(240,168,132,0.4)'); gr.addColorStop(1,'rgba(217,119,87,0)');
+  lc.fillStyle=gr; lc.fillRect(CX-34,CY-34,68,68);
+  const rr=mulberry32(1111);
+  gr=lc.createRadialGradient(CX,CY,0,CX,CY,112);
+  gr.addColorStop(0,'rgba(255,208,182,1)'); gr.addColorStop(0.3,'rgba(238,150,114,0.92)');
+  gr.addColorStop(0.72,'rgba(217,119,87,0.42)'); gr.addColorStop(1,'rgba(217,119,87,0)');
+  lc.fillStyle=gr;
+  const NR=11, rot=-0.24;
+  const rays=[];
+  for(let i=0;i<NR;i++){
+    const th=rot+i*2*Math.PI/NR+(rr()-0.5)*0.26, Lr=40+rr()*66, hw=1.9+rr()*1.8;
+    rays.push([th,Lr]);
+    const dx=Math.cos(th), dy=Math.sin(th), px=-dy, py=dx;
+    lc.beginPath(); lc.moveTo(CX+px*hw,CY+py*hw); lc.lineTo(CX+dx*Lr,CY+dy*Lr); lc.lineTo(CX-px*hw,CY-py*hw); lc.closePath(); lc.fill();
+  }
+  {
+    const x0=CX-280, y0=CY-280, ww=560, hh=560;
+    const d=lc.getImageData(x0,y0,ww,hh).data;
+    for(let yy=0;yy<hh;yy++) for(let xx=0;xx<ww;xx++){
+      const q=(yy*ww+xx)*4, a=d[q+3]; if(!a) continue;
+      const k=(y0+yy)*W+(x0+xx), A=a/255;
+      R[k]+=lin(d[q]/255)*A; G[k]+=lin(d[q+1]/255)*A; B[k]+=lin(d[q+2]/255)*A;
+    }
+  }
+  {
+    const OCL=[lin(217/255),lin(119/255),lin(87/255)];
+    for(let y=Math.max(0,CY-620);y<H;y++) for(let x=Math.max(0,CX-900);x<Math.min(W,CX+900);x++){
+      const dx=x-CX, dy=y-CY;
+      const I = y<HZ ? 0.030*Math.exp(-(dx*dx+dy*dy*2.2)/(2*330*330))
+                     : 0.030*Math.exp(-sq(dx/55))*Math.exp(-(y-HZ)/150);
+      const k=y*W+x; R[k]+=I*OCL[0]; G[k]+=I*OCL[1]; B[k]+=I*OCL[2];
+    }
+  }
+  // reflection: a narrow glitter path of warm glints on the long-exposure field
+  const OC=[lin(217/255),lin(119/255),lin(87/255)];
+  const rg=mulberry32(555);
+  for(let n=0;n<230;n++){
+    const dv=Math.pow(rg(),1.9)*(H-HZ-20), y=Math.floor(HZ+4+dv);
+    const x=SX+gauss(rg)*(3+dv*0.085), len=3+rg()*(5+dv*0.07);
+    const I=(0.25+0.75*rg())*0.5*Math.exp(-dv/140);
+    for(let s=0;s<len;s++){ const e=Math.sin(Math.PI*s/len); addPx(x-len/2+s,y,I*e,OC[0],OC[1],OC[2]); }
+  }
+  // Clawd itself (exact brand orange) so the bloom sees it; re-stamped crisp after post
+  const CL=[lin(0xD9/255),lin(0x77/255),lin(0x57/255)];
+  const clawdCells=[];
+  for(let r=0;r<5;r++) for(let c=0;c<18;c++) if(CLAWD[r][c]==='#') clawdCells.push([CLX+c*CELLW,CLY+r*CELLH,1]);
+  for(const [px0,py0,al] of clawdCells){
+    for(let yy=0;yy<CELLH;yy++) for(let xx=0;xx<CELLW;xx++){ const k=(py0+yy)*W+(px0+xx); R[k]+=(CL[0]-R[k])*al; G[k]+=(CL[1]-G[k])*al; B[k]+=(CL[2]-B[k])*al; }
+  }
+
+  mark('spark');
+  // ------------------------------------------------------------ 7. bloom (multi-scale) + horizontal flare
+  const S=4, w4=W/S, h4=H/S;
+  const bR=new Float32Array(w4*h4), bG=new Float32Array(w4*h4), bB=new Float32Array(w4*h4);
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    const k=y*W+x, l=0.2126*R[k]+0.7152*G[k]+0.0722*B[k];
+    const wgt=smooth(0.45,1.4,l)/(S*S), q=((y/S)|0)*w4+((x/S)|0);
+    bR[q]+=R[k]*wgt; bG[q]+=G[k]*wgt; bB[q]+=B[k]*wgt;
+  }
+  const layers=[[1.2,1.2,0.20],[4.5,4.5,0.16],[15,15,0.15],[70,0.6,0.09]];
+  const acc=[new Float32Array(w4*h4),new Float32Array(w4*h4),new Float32Array(w4*h4)];
+  for(const [sx,sy,wt] of layers){
+    for(const [src,dst] of [[bR,acc[0]],[bG,acc[1]],[bB,acc[2]]]){
+      const t=new Float32Array(src); gblur(t,w4,h4,sx,sy);
+      for(let i=0;i<t.length;i++) dst[i]+=t[i]*wt;
+    }
+  }
+  for(let y=0;y<H;y++){
+    const fy=clamp((y+0.5)/S-0.5,0,h4-1), y0=Math.floor(fy), y1=Math.min(h4-1,y0+1), ty=fy-y0;
+    for(let x=0;x<W;x++){
+      const fx=clamp((x+0.5)/S-0.5,0,w4-1), x0=Math.floor(fx), x1=Math.min(w4-1,x0+1), tx=fx-x0;
+      const a=y0*w4+x0, b=y0*w4+x1, c=y1*w4+x0, d=y1*w4+x1, k=y*W+x;
+      const w00=(1-tx)*(1-ty), w10=tx*(1-ty), w01=(1-tx)*ty, w11=tx*ty;
+      R[k]+=acc[0][a]*w00+acc[0][b]*w10+acc[0][c]*w01+acc[0][d]*w11;
+      G[k]+=acc[1][a]*w00+acc[1][b]*w10+acc[1][c]*w01+acc[1][d]*w11;
+      B[k]+=acc[2][a]*w00+acc[2][b]*w10+acc[2][c]*w01+acc[2][d]*w11;
+    }
+  }
+
+  mark('bloom');
+  // ------------------------------------------------------------ 8. HUD (diegetic, composited before grain)
+  lc.globalCompositeOperation='source-over'; lc.clearRect(0,0,W,H);
+  lc.font='13px Consolas, "Courier New", monospace'; lc.textBaseline='alphabetic';
+  try{ lc.letterSpacing='1.6px'; }catch(e){}
+  const hx=66, hy=H-96;
+  lc.fillStyle='rgba(255,255,255,0.36)'; lc.fillText('STEP',hx,hy); lc.fillText('LOSS',hx,hy+22);
+  lc.fillStyle='rgba(255,255,255,0.66)'; lc.fillText('131 072',hx+62,hy); lc.fillText('2.8416',hx+62,hy+22);
+  lc.strokeStyle='rgba(255,255,255,0.40)'; lc.lineWidth=1; lc.beginPath();
+  for(let i=0;i<=140;i++){
+    const t=i/140;
+    const L=2.2+8.4*Math.exp(-t*7.5)+0.18*Math.exp(-sq((t-0.9)/0.022))-0.24*smooth(0.915,0.95,t);
+    const x=hx+168+i, y=hy+19-(L-2.0)/8.8*30;
+    if(i===0) lc.moveTo(x,y); else lc.lineTo(x,y);
+  }
+  lc.stroke();
+  {
+    const d=lc.getImageData(0,H-170,520,170).data;
+    for(let yy=0;yy<170;yy++) for(let xx=0;xx<520;xx++){
+      const a=d[(yy*520+xx)*4+3]/255; if(!a) continue;
+      const k=(H-170+yy)*W+xx, c=0.80;
+      R[k]=R[k]*(1-a)+c*a; G[k]=G[k]*(1-a)+c*0.99*a; B[k]=B[k]*(1-a)+c*0.97*a;
+    }
+  }
+
+  // ------------------------------------------------------------ 9. vignette, shoulder, grain, dither -> 8 bit
+  const img=ctx.createImageData(W,H), o=img.data, rn=mulberry32(4242);
+  const sh=v=>v<0.8?v:0.8+0.2*(1-Math.exp(-(v-0.8)/0.2));
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    const k=y*W+x;
+    const vx=(x-W*0.57)/(W*0.62), vy=(y-H*0.58)/(H*0.80), vr=Math.sqrt(vx*vx+vy*vy);
+    const vig=1-0.38*smooth(0.35,1.3,vr);
+    const n=gauss(rn)*0.013, dt=(rn()-0.5)/255;
+    const wv=1+0.009*Math.sin(x*1.428)*Math.sin(y*1.428)+0.010*(vnoise(x/2.1,y/11,5)-0.5)+0.010*(vnoise(x/11,y/2.1,6)-0.5);
+    o[k*4]  =clamp(Math.round((Math.pow(sh(R[k]*vig),1/2.2)*wv+n+dt)*255),0,255);
+    o[k*4+1]=clamp(Math.round((Math.pow(sh(G[k]*vig),1/2.2)*wv+n+dt)*255),0,255);
+    o[k*4+2]=clamp(Math.round((Math.pow(sh(B[k]*vig),1/2.2)*wv+n+dt)*255),0,255);
+    o[k*4+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+
+  mark('final');
+  // ------------------------------------------------------------ 10. Clawd, pixel-crisp, last
+  ctx.fillStyle='#D97757';
+  for(const [px0,py0,al] of clawdCells){ ctx.globalAlpha=al; ctx.fillRect(px0,py0,CELLW,CELLH); }
+  ctx.globalAlpha=1;
+  mark('clawd'); console.log('timing ms: '+TM.join(', '));
+}
+})();
+</script>
+</body>
+</html>

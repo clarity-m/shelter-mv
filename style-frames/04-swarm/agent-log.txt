@@ -1,0 +1,10 @@
+The swarm style frame is done: a Dyson swarm around Alpha Centauri B, with Alpha Centauri A as a brighter yellow-white star upper-left in a blue nebula, and sunset-lit nebula clouds cradling it from below. The swarm is 21 inclined orange bands; most pass under the star, so the lower half reads as a basket holding the light. Light escaping through 11 lanes forms an irregular spark that you notice on a second look, not the first. It is one seeded WebGL2 HTML file: about 80k brushstrokes for the painted sky, about 276k crisp 1–2 px points as the individual AI instances, and a tonemap that keeps Claude orange saturated. I iterated through 12 critique passes. It renders in about 15 s, and re-rendering reproduces the final frame pixel-for-pixel. I'd call it strong on warmth, value structure and the spark bookend. Its weakness is scale: at thumbnail size the swarm reads more as a glowing armillary ball than as millions of instances. The cloud bank is also worth a decision, since it sells the Shinkai look but costs some deep-space feel.
+
+I also added a faint `EP 000001 / STEP 000000` counter in the lower-left corner, which the brief allowed but didn't ask for. It frames the shelter as a new episode for humans. It's easy to change or drop, but it's a story call for you.
+
+Files are in `C:/Users/USER/Projects/shelter-mv/style-frames/04-swarm/`:
+- frame.png
+- frame.html
+- pass1.png–pass12.png
+- NOTES.md
+- render.sh

@@ -1,0 +1,11 @@
+The backlit cut-paper lab (S08) and the hands close-up (S09) are both finished, and I'd recommend this style for the whole outside world. The lab is 13 paper layers with Clawd as the only warm light: the harness ribs are four "fingers" per side, and his light throws them onto the wall as two giant soft hands cupping a glow, which reads in one second even at 320×180. In the close-up, the hands have the right fingers and joints and look graceful, with warm light glowing through their paper edges, so they do hold up. Clawd measures #D97757 in both shots, he has dark eyes (glowing eyes made him look blank), re-renders are byte-identical, and a frame renders in about 85 ms in a persistent page, well under the 1–3 s budget. The weak spots: at thumbnail size it reads more as silhouette illustration than paper, B is a little stiff, and the hands are a flattened 2D cheat rather than true anatomy.
+
+Files are in `style-frames/11-paper-lab`:
+- frame.png
+- detail.png
+- thumb.png
+- frame.html
+- render.py
+- NOTES.md
+- pass1–8.png
+- detail_pass1–6.png

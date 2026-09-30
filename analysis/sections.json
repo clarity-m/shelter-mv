@@ -1,0 +1,197 @@
+[
+ {
+  "id": "intro-a",
+  "name": "Intro A",
+  "bars": [
+   1,
+   4
+  ],
+  "t0": 0.0,
+  "t1": 9.98,
+  "f0": 0,
+  "f1": 299,
+  "music": "Chop motif alone, soft; sustained bass pad; no drums. A 2-bar melodic cell repeats."
+ },
+ {
+  "id": "intro-b",
+  "name": "Intro B",
+  "bars": [
+   5,
+   8
+  ],
+  "t0": 9.98,
+  "t1": 19.58,
+  "f0": 299,
+  "f1": 587,
+  "music": "Kick on bar 5, light percussion and a riser build in; chops sparse."
+ },
+ {
+  "id": "hook-1",
+  "name": "Hook 1",
+  "bars": [
+   9,
+   16
+  ],
+  "t0": 19.58,
+  "t1": 38.78,
+  "f0": 587,
+  "f1": 1163,
+  "music": "First drop: full drums, pumping bass, chop lead. Bass stops on beat 4 of bars 9, 13, 14."
+ },
+ {
+  "id": "verse-1",
+  "name": "Verse 1",
+  "bars": [
+   17,
+   24
+  ],
+  "t0": 38.78,
+  "t1": 57.98,
+  "f0": 1163,
+  "f1": 1739,
+  "music": "Sung lead enters over a lighter beat; bass drops out for bar 18, then returns."
+ },
+ {
+  "id": "pre-1a",
+  "name": "Pre-chorus 1a",
+  "bars": [
+   25,
+   28
+  ],
+  "t0": 57.98,
+  "t1": 67.58,
+  "f0": 1739,
+  "f1": 2027,
+  "music": "Kick drops out; low-register vocal; sustained bass. The first real breath."
+ },
+ {
+  "id": "pre-1b",
+  "name": "Pre-chorus 1b",
+  "bars": [
+   29,
+   32
+  ],
+  "t0": 67.58,
+  "t1": 77.18,
+  "f0": 2027,
+  "f1": 2315,
+  "music": "Snare pattern returns, vocal climbs; drums cut out from the end of bar 30 until a fill in the second half of bar 32 (a held breath before the drop)."
+ },
+ {
+  "id": "drop-1",
+  "name": "Drop 1",
+  "bars": [
+   33,
+   48
+  ],
+  "t0": 77.18,
+  "t1": 115.58,
+  "f0": 2315,
+  "f1": 3467,
+  "music": "16 bars of chop lead, full drums. Bass stutter-stops on beat 4 of bars 33, 37, 38, 40, 45, 46."
+ },
+ {
+  "id": "breakdown",
+  "name": "Breakdown",
+  "bars": [
+   49,
+   52
+  ],
+  "t0": 115.58,
+  "t1": 125.18,
+  "f0": 3467,
+  "f1": 3755,
+  "music": "Drums and bass out; sung, spacious. The song's midpoint (1:55.6 = 53%)."
+ },
+ {
+  "id": "verse-2a",
+  "name": "Verse 2a",
+  "bars": [
+   53,
+   56
+  ],
+  "t0": 125.18,
+  "t1": 134.78,
+  "f0": 3755,
+  "f1": 4043,
+  "music": "Sung; still no drums; bass creeps back in from bar 55."
+ },
+ {
+  "id": "verse-2b",
+  "name": "Verse 2b",
+  "bars": [
+   57,
+   64
+  ],
+  "t0": 134.78,
+  "t1": 153.98,
+  "f0": 4043,
+  "f1": 4619,
+  "music": "Single kick hit on the bar 57 downbeat; sung with long held notes; bass intermittent."
+ },
+ {
+  "id": "build-2",
+  "name": "Build 2",
+  "bars": [
+   65,
+   72
+  ],
+  "t0": 153.98,
+  "t1": 173.18,
+  "f0": 4619,
+  "f1": 5195,
+  "music": "Chop lead returns over hats and a continuous snare roll; bass pumps. Bar 72: the drums drop out for three beats, then on beat 4 (frame 5177) the lead and voice cut out under a loud drum fill into drop 2."
+ },
+ {
+  "id": "drop-2",
+  "name": "Drop 2",
+  "bars": [
+   73,
+   80
+  ],
+  "t0": 173.18,
+  "t1": 192.38,
+  "f0": 5195,
+  "f1": 5771,
+  "music": "Second drop, chop lead, full drums; bar 80 dips for a turnaround."
+ },
+ {
+  "id": "drop-2-vox",
+  "name": "Drop 2 + vocal",
+  "bars": [
+   81,
+   86
+  ],
+  "t0": 192.38,
+  "t1": 206.78,
+  "f0": 5771,
+  "f1": 6203,
+  "music": "Sung line over the full drop: the climax. Bass stops on beat 4 of bar 85."
+ },
+ {
+  "id": "held",
+  "name": "Held note",
+  "bars": [
+   87,
+   88
+  ],
+  "t0": 206.78,
+  "t1": 211.58,
+  "f0": 6203,
+  "f1": 6347,
+  "music": "Drums fall away under one long sustained vocal note (about 4 s)."
+ },
+ {
+  "id": "outro",
+  "name": "Outro",
+  "bars": [
+   89,
+   91
+  ],
+  "t0": 211.58,
+  "t1": 217.73,
+  "f0": 6347,
+  "f1": 6532,
+  "music": "Pad and a wavering vocal tail; ends at 3:37.7."
+ }
+]

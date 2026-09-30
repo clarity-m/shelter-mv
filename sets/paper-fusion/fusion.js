@@ -1,0 +1,982 @@
+// Ported from style-frames/12-paper-fusion/frame.html by render/port_frame.py (logic unchanged).
+export function createFusion(CANVAS, LOGFN = () => {}) {
+
+// ============================================================================
+// Shelter MV, style frame 12: fusion ignition in backlit cut paper.
+// A tokamak in a night hall, built as a shadow box of flat paper layers:
+//   L0 gallery railing (soft focus)      L1 front coil arc + cryostat wall
+//   L2 plasma vellum (the light)          L3 back coil arc + central column
+//   L3d the deck under the ring           L4 hall structures + floor
+//   L5 back wall with windows             L6 night-sky tissue
+// The coils, deck and plasma come from one 3D model projected through one
+// camera; the paper layers are cut from those projections. Light is one
+// analytic "lantern" field (plasma ring seen through the coil cage) that paints
+// the cards, the floor fans, the wall stripes and the haze shafts.
+//   frame.html            the still          frame.html?f=N  ignition test frame
+//   render: python3 render.py out.png "f=N"
+// ============================================================================
+const T0 = performance.now();
+const Q = new URLSearchParams('');
+const W = 1920, H = 1080;
+const LOG = [];
+const log = s => { LOG.push(s); LOGFN(s); };
+const TIMES = {};
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(57021);
+
+// ---------------------------------------------------------------- scene
+const SC = {
+  R0: 1.0, A: 0.12, KAPPA: 1.35,                 // plasma: major radius, minor radius, elongation
+  NCOIL: 12, COIL_T: 0.16, PHI0: (-90 + 15 + 6) * Math.PI / 180,
+  RIN: 0.5, ROUT: 1.58, HC: 0.82, BAND: 0.10,  // D-coil: inner leg, outer extent, half-height, band width
+  SPLIT: 0.8,                                   // front coils: r < SPLIT goes behind the plasma layer
+  SOL_R: 0.2, RCUT: 0.72,
+  BASE_R: 2.0, DECK_Z: -0.7, FLOOR_Z: -1.25, WALL_Y: 4.2,
+  D: 12.0, ELEV: 19 * Math.PI / 180, S: 300, PPX: 960, PPY: 470,
+};
+
+// ---------------------------------------------------------------- animation
+// f = frame of the 3 s ignition test (30 fps, kick on frame 10); -1 = the still
+const FR = Q.has('f') ? +Q.get('f') : -1;
+function animState(f) {
+  if (f < 0) return { ign: 1.0, reach: 99.0, push: 0.0 };
+  const k = f - 10;
+  const ign = k < 0 ? 0.0 : 1.0 + 0.55 * Math.exp(-k / 5);
+  const reach = k < 0 ? 0.3 : 0.35 + 7.5 * (1 - Math.exp(-k / 11));
+  const u = f / 89;
+  const push = 0.1 * (u * u * (3 - 2 * u)) + 0.02 * u;
+  return { ign, reach, push };
+}
+// paper-layer depths for the 2.5D camera (arbitrary units, camera at 0)
+const LDEPTH = [1.0, 1.5, 1.6, 1.72, 1.8, 2.2, 2.6, 3.4];
+function layerT(push) {
+  const a = new Float32Array(24);
+  for (let j = 0; j < 8; j++) { a[j * 3] = LDEPTH[j] / (LDEPTH[j] - push); a[j * 3 + 1] = 0; a[j * 3 + 2] = 0; }
+  return a;
+}
+
+// ---------------------------------------------------------------- camera
+const CAM = (() => {
+  const e = SC.ELEV, D = SC.D;
+  return {
+    pos: [0, -D * Math.cos(e), D * Math.sin(e)],
+    fwd: [0, Math.cos(e), -Math.sin(e)],
+    up: [0, Math.sin(e), Math.cos(e)],
+    right: [1, 0, 0],
+    F: SC.S * D,
+  };
+})();
+function project(X) {
+  const dx = X[0] - CAM.pos[0], dy = X[1] - CAM.pos[1], dz = X[2] - CAM.pos[2];
+  const zc = dx * CAM.fwd[0] + dy * CAM.fwd[1] + dz * CAM.fwd[2];
+  const yc = dx * CAM.up[0] + dy * CAM.up[1] + dz * CAM.up[2];
+  return [SC.PPX + CAM.F * dx / zc, SC.PPY - CAM.F * yc / zc, zc];
+}
+const RING = (() => {
+  let a = 1e9, b = -1e9, c = 1e9, d = -1e9;
+  for (let i = 0; i < 720; i++) {
+    const t = i * Math.PI / 360, s = project([SC.R0 * Math.cos(t), SC.R0 * Math.sin(t), 0]);
+    a = Math.min(a, s[0]); b = Math.max(b, s[0]); c = Math.min(c, s[1]); d = Math.max(d, s[1]);
+  }
+  return { c: [(a + b) / 2, (c + d) / 2], r: [(b - a) / 2, (d - c) / 2] };
+})();
+
+// ================================================================ PAPER CUTS
+// Three RGB mask canvases; each channel is one layer. 'lighter' adds a shape
+// to a channel, 'multiply' with the other two channels at 255 cuts a hole.
+function mkCanvas() {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d', { willReadFrequently: true }); x.fillStyle = '#000'; x.fillRect(0, 0, W, H);
+  return [c, x];
+}
+const [cvA, cA] = mkCanvas();  // R L0 gallery (soft) | G L1 front coils + cryostat wall | B glowing ports
+const [cvB, cB] = mkCanvas();  // R L3 back coils + column | G L3d deck | B L4 hall structures + floor
+const [cvC, cC] = mkCanvas();  // R L5 walls | G floor flag (1 floor, .5 floor objects) | B cool LEDs
+const ADD = ['rgb(255,0,0)', 'rgb(0,255,0)', 'rgb(0,0,255)'];
+const CUT = ['rgb(0,255,255)', 'rgb(255,0,255)', 'rgb(255,255,0)'];
+function add(x, ch) { x.globalCompositeOperation = 'lighter'; x.fillStyle = x.strokeStyle = ADD[ch]; }
+function cut(x, ch) { x.globalCompositeOperation = 'multiply'; x.fillStyle = x.strokeStyle = CUT[ch]; }
+
+function fill3(x, poly) {
+  if (poly.length < 3) return;
+  x.beginPath();
+  for (let i = 0; i < poly.length; i++) { const s = project(poly[i]); if (i) x.lineTo(s[0], s[1]); else x.moveTo(s[0], s[1]); }
+  x.closePath(); x.fill();
+}
+function clipHalf(poly, k, v, keepGreater) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const A = poly[i], B = poly[(i + 1) % poly.length];
+    const ia = keepGreater ? A[k] >= v : A[k] <= v, ib = keepGreater ? B[k] >= v : B[k] <= v;
+    if (ia) out.push(A);
+    if (ia !== ib) { const t = (v - A[k]) / (B[k] - A[k]); out.push(A.map((a, m) => a + t * (B[m] - a))); }
+  }
+  return out;
+}
+function circle3(r, z, n) { const p = []; for (let i = 0; i < n; i++) { const a = 2 * Math.PI * i / n; p.push([r * Math.cos(a), r * Math.sin(a), z]); } return p; }
+function drawCyl(x, r, z0, z1, n) {
+  const top = circle3(r, z1, n), bot = circle3(r, z0, n);
+  fill3(x, top); fill3(x, bot);
+  for (let i = 0; i < n; i++) { const j = (i + 1) % n; fill3(x, [top[i], top[j], bot[j], bot[i]]); }
+}
+// D-shaped toroidal field coil: flat inner leg, full outer curve
+function dLoop(rin, rout, h, nc, nl) {
+  const p = [];
+  for (let i = 0; i <= nc; i++) {
+    const t = -Math.PI / 2 + Math.PI * i / nc;
+    p.push([rin + (rout - rin) * Math.pow(Math.max(Math.cos(t), 0), 0.75), h * Math.sin(t)]);
+  }
+  for (let i = 1; i < nl; i++) p.push([rin, h - 2 * h * i / nl]);
+  return p;
+}
+const DOUT = dLoop(SC.RIN, SC.ROUT, SC.HC, 72, 18);
+const DIN = dLoop(SC.RIN + SC.BAND, SC.ROUT - SC.BAND, SC.HC - SC.BAND, 72, 18);
+// one coil (a thick D-band) clipped to z >= deck and rMin <= r <= rMax, as its projected silhouette
+function coilPolys(phi, rMin, rMax) {
+  const h = SC.COIL_T / 2, c = Math.cos(phi), s = Math.sin(phi), out = [];
+  const map = p => project([p[0] * c - p[2] * s, p[0] * s + p[2] * c, p[1]]);
+  const emit = poly => {
+    let P = clipHalf(poly, 1, SC.DECK_Z, true);
+    if (rMin > 0) P = clipHalf(P, 0, rMin, true);
+    if (rMax < 9) P = clipHalf(P, 0, rMax, false);
+    if (P.length >= 3) out.push(P.map(map));
+  };
+  const n = DOUT.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n, o1 = DOUT[i], o2 = DOUT[j], i1 = DIN[i], i2 = DIN[j];
+    emit([[o1[0], o1[1], h], [o2[0], o2[1], h], [i2[0], i2[1], h], [i1[0], i1[1], h]]);
+    emit([[o1[0], o1[1], -h], [o2[0], o2[1], -h], [i2[0], i2[1], -h], [i1[0], i1[1], -h]]);
+    emit([[o1[0], o1[1], h], [o2[0], o2[1], h], [o2[0], o2[1], -h], [o1[0], o1[1], -h]]);
+    emit([[i1[0], i1[1], h], [i2[0], i2[1], h], [i2[0], i2[1], -h], [i1[0], i1[1], -h]]);
+  }
+  const mid = project([(SC.RIN + SC.ROUT) / 2 * c, (SC.RIN + SC.ROUT) / 2 * s, 0]);
+  const rm = Math.max(rMin, Math.min(rMax, (SC.RIN + SC.ROUT) / 2));
+  out.depth = project([rm * c, rm * s, 0])[2];
+  return out;
+}
+// paper pieces overlap: cut a hair-wide gap round each piece, then lay it on
+function layPieces(x, ch, pieces, gap) {
+  pieces.sort((a, b) => b.depth - a.depth);
+  const path = p => { x.beginPath(); x.moveTo(p[0][0], p[0][1]); for (let i = 1; i < p.length; i++) x.lineTo(p[i][0], p[i][1]); x.closePath(); };
+  for (const pc of pieces) {
+    cut(x, ch); x.lineWidth = gap; x.lineJoin = 'round';
+    for (const p of pc) { path(p); x.fill(); x.stroke(); }
+    add(x, ch);
+    for (const p of pc) { path(p); x.fill(); }
+  }
+}
+function coilCap(r, z0, z1) {
+  const n = 120, top = circle3(r, z1, n).map(project), bot = circle3(r, z0, n).map(project), out = [top, bot];
+  for (let i = 0; i < n; i++) { const j = (i + 1) % n; out.push([top[i], top[j], bot[j], bot[i]]); }
+  return out;
+}
+function rrect(x, x0, y0, w, h, r) {
+  x.beginPath(); x.moveTo(x0 + r, y0); x.arcTo(x0 + w, y0, x0 + w, y0 + h, r); x.arcTo(x0 + w, y0 + h, x0, y0 + h, r);
+  x.arcTo(x0, y0 + h, x0, y0, r); x.arcTo(x0, y0, x0 + w, y0, r); x.closePath(); x.fill();
+}
+function dot(x, cx, cy, r) { x.beginPath(); x.arc(cx, cy, r, 0, 2 * Math.PI); x.fill(); }
+
+const YFL = Math.round(project([0, SC.WALL_Y, SC.FLOOR_Z])[1]);   // where the floor meets the back wall
+
+function drawTokamak() {
+  // cryostat base: its wall on L1 (minus the deck ellipse), the deck on L3d
+  add(cA, 1); drawCyl(cA, SC.BASE_R, SC.FLOOR_Z, SC.DECK_Z, 200);
+  cut(cA, 1); fill3(cA, circle3(SC.BASE_R, SC.DECK_Z, 200));
+  add(cB, 1); fill3(cB, circle3(SC.BASE_R, SC.DECK_Z, 200));
+  // a row of diagnostic ports round the cryostat wall: holes that show the lit interior
+  const NP = 30;
+  for (let k = 0; k < NP; k++) {
+    const phi = -Math.PI + Math.PI * (k + 0.5) / NP, c = Math.cos(phi), s = Math.sin(phi);
+    const R = SC.BASE_R + 0.003, zc = -0.9, rr = 0.036;
+    const facing = c * (CAM.pos[0] - R * c) + s * (CAM.pos[1] - R * s);
+    if (facing <= 0) continue;
+    const pts = [];
+    for (let i = 0; i < 28; i++) { const a = 2 * Math.PI * i / 28, u = Math.cos(a) * rr, v = Math.sin(a) * rr; pts.push([R * c - u * s, R * s + u * c, zc + v]); }
+    cut(cA, 1); fill3(cA, pts);
+    add(cA, 2); fill3(cA, pts);
+  }
+  // coils: front arc on L1 (outer part) and L3 (inner legs, behind the plasma); back arc on L3
+  const front = [], back = [];
+  for (let k = 0; k < SC.NCOIL; k++) {
+    const phi = SC.PHI0 + k * 2 * Math.PI / SC.NCOIL;
+    if (Math.sin(phi) < 0) front.push(coilPolys(phi, SC.RCUT, 99));
+    else back.push(coilPolys(phi, SC.RCUT, 99));
+  }
+  layPieces(cB, 0, back, 3.0);
+  layPieces(cA, 1, front, 3.0);
+  // central solenoid column
+  add(cB, 0); drawCyl(cB, SC.SOL_R, SC.DECK_Z, 0.8, 72);
+  // lantern cap where the ribs gather (the upper field-coil ring)
+  const cap = [coilCap(0.72, 0.77, 0.86)]; cap[0].depth = -1e9; layPieces(cB, 0, cap, 3.0);
+}
+
+function drawHall() {
+  // ---- L5: back wall with a row of clerestory windows
+  add(cC, 0); cC.fillRect(0, 0, W, H);
+  cut(cC, 0);
+  const wy0 = 12, wy1 = 104, ww = 176, wstep = 268;
+  for (let i = -1; i < 8; i++) {
+    const x0 = 46 + i * wstep, nc = 4, nr = 3, mw = 5;
+    for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
+      const px0 = x0 + mw + c * (ww - mw) / nc, px1 = x0 + (c + 1) * (ww - mw) / nc;
+      const py0 = wy0 + mw + r * (wy1 - wy0 - mw) / nr, py1 = wy0 + (r + 1) * (wy1 - wy0 - mw) / nr;
+      cC.fillRect(px0, py0, px1 - px0, py1 - py0);
+    }
+  }
+  // ---- floor (L4) and its flag
+  add(cB, 2); cB.fillRect(0, YFL, W, H - YFL);
+  add(cC, 1); cC.fillRect(0, YFL, W, H - YFL);
+  // ---- L4 structures
+  add(cB, 2);
+  for (const [x0, x1] of [[20, 94], [408, 448], [1472, 1512], [1826, 1900]]) {
+    cB.fillRect(x0, 0, x1 - x0, YFL + 2);
+    cB.fillRect(x0 - 7, YFL - 16, x1 - x0 + 14, 18);
+    cB.fillRect(x0 - 9, 150, x1 - x0 + 18, 10);
+  }
+  // overhead crane bridge: a Warren truss with a trolley, hoist ropes and hook block
+  const gy0 = 114, gy1 = 150, chd = 7;
+  cB.fillRect(-10, gy0, W + 20, chd);
+  cB.fillRect(-10, gy1 - chd, W + 20, chd);
+  cB.lineWidth = 5; cB.lineJoin = 'miter'; cB.beginPath();
+  for (let x = -60; x < W + 80; x += 56) { cB.moveTo(x, gy1 - chd / 2); cB.lineTo(x + 28, gy0 + chd / 2); cB.lineTo(x + 56, gy1 - chd / 2); }
+  cB.stroke();
+  cB.fillRect(1180, 92, 150, 23); cB.fillRect(1196, 80, 54, 14); cB.fillRect(1270, 84, 30, 10);
+  for (const wx of [1192, 1226, 1286, 1318]) dot(cB, wx, 115, 7);
+  cB.lineWidth = 2.2; cB.beginPath(); cB.moveTo(1246, gy1); cB.lineTo(1246, 196); cB.moveTo(1266, gy1); cB.lineTo(1266, 196); cB.stroke();
+  rrect(cB, 1238, 192, 36, 34, 7);
+  cB.lineWidth = 6; cB.beginPath(); cB.moveTo(1256, 225); cB.lineTo(1256, 236); cB.arc(1248, 240, 8, 0, Math.PI * 0.95); cB.stroke();
+  // catwalks on the back wall
+  const cwY = YFL - 58;
+  for (const [x0, x1] of [[-10, 600], [1330, 1930]]) {
+    cB.fillRect(x0, cwY, x1 - x0, 7);
+    cB.fillRect(x0, cwY - 30, x1 - x0, 3.5);
+    cB.fillRect(x0, cwY - 15, x1 - x0, 2.5);
+    for (let x = x0 + 14; x < x1; x += 38) cB.fillRect(x, cwY - 30, 3, 30);
+    for (let x = x0 + 50; x < x1; x += 152) { cB.beginPath(); cB.moveTo(x, cwY + 6); cB.lineTo(x + 26, cwY + 6); cB.lineTo(x, cwY + 32); cB.closePath(); cB.fill(); }
+  }
+  // stair from the left catwalk to the floor
+  cB.lineWidth = 5; cB.beginPath(); cB.moveTo(356, cwY + 4); cB.lineTo(214, YFL); cB.stroke();
+  for (let i = 1; i < 9; i++) { const t = i / 9, x = 356 + (214 - 356) * t, y = cwY + 4 + (YFL - cwY - 4) * t; cB.fillRect(x - 11, y - 1.5, 15, 3); }
+  cB.lineWidth = 2.5; cB.beginPath(); cB.moveTo(356, cwY - 27); cB.lineTo(214, YFL - 28); cB.stroke();
+  // cable trays with drooping cables
+  const ctY = 206;
+  for (const [x0, x1] of [[-10, 640], [1290, 1930]]) {
+    cB.fillRect(x0, ctY, x1 - x0, 6);
+    for (let x = x0 + 30; x < x1; x += 104) cB.fillRect(x - 1, gy1, 2.5, ctY - gy1);
+    cB.lineWidth = 2; cB.beginPath();
+    for (let x = x0 + 30; x < x1 - 104; x += 104) { cB.moveTo(x, ctY + 6); cB.quadraticCurveTo(x + 52, ctY + 24 + 8 * rng(), x + 104, ctY + 6); }
+    cB.stroke();
+  }
+  // floor objects: racks and cabinets near the walls, cables snaking to the machine
+  const objs = [[118, 452, 64, 96], [196, 488, 86, 70], [1640, 470, 72, 88], [1726, 500, 96, 62], [1560, 520, 44, 50]];
+  for (const [x0, yb, w, h] of objs) {
+    add(cB, 2); cB.fillRect(x0, yb - h, w, h);
+    cut(cC, 1); cC.fillRect(x0, yb - h, w, h);
+    add(cC, 1); cC.globalCompositeOperation = 'lighter'; cC.fillStyle = 'rgb(0,128,0)'; cC.fillRect(x0, yb - h, w, h);
+  }
+  // cables on the floor (dark floor objects)
+  const cables = [[[0, 700], [180, 640], [330, 610], [470, 600]], [[0, 780], [150, 750], [320, 690], [440, 660]],
+                  [[1920, 690], [1760, 650], [1600, 620], [1470, 610]], [[1920, 820], [1740, 760], [1560, 700], [1450, 680]]];
+  for (const cb of cables) {
+    for (const [cvs, ch, style] of [[cB, 2, 'add'], [cC, 1, 'half']]) {
+      if (style === 'add') add(cvs, ch);
+      else { cvs.globalCompositeOperation = 'multiply'; cvs.strokeStyle = 'rgb(255,128,255)'; }
+      cvs.lineWidth = 4; cvs.beginPath(); cvs.moveTo(cb[0][0], cb[0][1]);
+      cvs.bezierCurveTo(cb[1][0], cb[1][1], cb[2][0], cb[2][1], cb[3][0], cb[3][1]); cvs.stroke();
+    }
+  }
+  // ---- cool indicator LEDs (the humans' own light: small, dim)
+  add(cC, 2);
+  for (const [x, y, r] of [[136, 372, 1.8], [150, 372, 1.8], [226, 432, 2.0], [1662, 398, 1.8], [1296, 100, 1.6], [1752, 452, 1.8]]) dot(cC, x, y, r);
+}
+
+function drawGallery() {
+  const [cvT, cT] = mkCanvas();
+  cT.globalCompositeOperation = 'lighter'; cT.fillStyle = 'rgb(255,0,0)';
+  const ry = 1034;
+  cT.fillRect(-10, ry, W + 20, 9);
+  cT.fillRect(-10, ry + 34, W + 20, 7);
+  for (let x = 150; x < W; x += 420) cT.fillRect(x, ry, 13, H - ry);
+  // a near column at the left edge and a looping cable from the top right
+  cT.fillRect(-10, -10, 58, H + 20); cT.fillRect(40, 0, 14, H);
+  for (let y = 60; y < H; y += 150) cT.fillRect(40, y, 26, 10);
+  cT.strokeStyle = 'rgb(255,0,0)'; cT.lineWidth = 9; cT.lineCap = 'round';
+  cT.beginPath(); cT.moveTo(1500, -20); cT.bezierCurveTo(1640, 170, 1860, 190, 1950, 40); cT.stroke();
+  cT.lineWidth = 6; cT.beginPath(); cT.moveTo(1440, -20); cT.bezierCurveTo(1600, 240, 1830, 250, 1950, 120); cT.stroke();
+  cA.save(); cA.globalCompositeOperation = 'lighter'; cA.filter = 'blur(2.2px)'; cA.drawImage(cvT, 0, 0); cA.restore();
+}
+
+let t0 = performance.now();
+drawTokamak(); drawHall(); drawGallery();
+TIMES.cuts = performance.now() - t0;
+
+// ================================================================ WEBGL
+const cvs = CANVAS;
+const gl = cvs.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true, premultipliedAlpha: false, alpha: false });
+if (!gl) { log('NO WEBGL2'); throw new Error('no webgl2'); }
+if (!gl.getExtension('EXT_color_buffer_float')) log('WARNING: no EXT_color_buffer_float');
+gl.getExtension('OES_texture_float_linear');
+{ const di = gl.getExtension('WEBGL_debug_renderer_info'); log('gpu: ' + (di ? gl.getParameter(di.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER))); }
+
+const VS = `#version 300 es
+in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+const COMMON = `#version 300 es
+precision highp float;
+precision highp int;
+uniform vec2 uRes, uFull;
+uniform vec3 uCamPos, uFwd, uUp, uRight;
+uniform float uF;
+uniform vec2 uPP;
+uniform float uR0, uA, uKappa, uPhi0, uCoilT, uDeckZ, uFloorZ, uWallY, uBaseR;
+uniform vec2 uRingC, uRingR;
+uniform vec3 uLT[8];
+uniform vec2 uFocus;
+uniform float uIgn, uReach, uNcoil;
+out vec4 o;
+const float PI = 3.14159265, TAU = 6.28318531;
+
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+vec3 lin(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+vec3 srgb(vec3 c) { c = max(c, 0.0); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+vec3 hexc(float r, float g, float b) { return lin(vec3(r, g, b) / 255.0); }
+vec3 rayDirQ(vec2 q) { return normalize(uFwd * uF + uRight * (q.x - uPP.x) - uUp * (q.y - uPP.y)); }
+vec3 hitZ(vec2 q, float h) { vec3 d = rayDirQ(q); float t = (h - uCamPos.z) / d.z; return uCamPos + d * clamp(t, 0.0, 60.0); }
+vec3 hitY(vec2 q, float Y) { vec3 d = rayDirQ(q); float t = (Y - uCamPos.y) / d.y; return uCamPos + d * clamp(t, 0.0, 60.0); }
+vec2 lq(vec2 q, int j) { vec3 T = uLT[j]; return uFocus + (q - uFocus) / T.x + T.yz; }
+vec2 lqInv(vec2 c, int j) { vec3 T = uLT[j]; return uFocus + (c - T.yz - uFocus) * T.x; }
+
+// ---- the lantern: plasma ring light through the cage of 16 D-coils
+float coilAngleDist(float phi) { float dp = TAU / uNcoil; float u = (phi - uPhi0) / dp; return abs(fract(u + 0.5) - 0.5) * dp; }
+float deckVis(vec3 X) {
+  if (X.z >= uDeckZ - 0.02) return 1.0;
+  float r = length(X.xy);
+  float s = uDeckZ / X.z;
+  float rc = uR0 + s * (r - uR0);
+  return smoothstep(uBaseR - 0.04, uBaseR + 0.16, rc);
+}
+float lanternVis(vec3 X) {
+  float r = length(X.xy);
+  vec2 pol = vec2(r - uR0, X.z);
+  float dp = length(pol);
+  float c = pol.x / max(dp, 1e-4);
+  float rc = c >= 0.0 ? mix(0.9, 1.5, c) : mix(0.9, 0.5, -c);
+  float halfT = 0.5 * uCoilT / rc + 0.075 * smoothstep(1.4, 3.2, dp);
+  float da = coilAngleDist(atan(X.y, X.x));
+  float soft = 0.010 + 0.028 * max(dp - 0.6, 0.0) / (1.0 + 0.25 * dp);
+  float v = smoothstep(halfT - soft, halfT + soft, da);
+  float inside = 1.0 - smoothstep(0.6, 0.8, dp);
+  return max(v, inside);
+}
+float lanternI(vec3 X) {
+  vec2 pol = vec2(length(X.xy) - uR0, X.z);
+  float dp = length(pol);
+  float c = pol.x / max(dp, 1e-4);
+  float g = 0.6 + 0.4 * max(c, 0.0);
+  float reach = 1.0 - smoothstep(uReach - 0.9, uReach, dp);
+  return uIgn * reach * g / (dp * dp + 0.1) * deckVis(X);
+}
+float lantern(vec3 X) { return lanternI(X) * lanternVis(X); }
+// a soft beam profile round the middle of each gap: the sheets of light in the haze
+float beamVis(vec3 X) {
+  float dp = TAU / uNcoil;
+  float u = (atan(X.y, X.x) - uPhi0) / dp;
+  float dg = abs(fract(u) - 0.5) * dp;
+  float w = 0.034 + 0.013 * length(vec2(length(X.xy) - uR0, X.z));
+  return exp(-dg * dg / (w * w));
+}
+// the pattern as a paper artist cuts it: crisp windows (hand-cut wobble) backed by lit tissue
+float cutVis(vec3 X, vec2 q, float seed) {
+  float v = lanternVis(X) + 0.05 * (vnoise(q / 9.0 + seed) - 0.5) + 0.03 * (vnoise(q / 3.0 + seed * 2.0) - 0.5);
+  float fw = max(fwidth(v), 0.004);
+  return smoothstep(0.5 - fw, 0.5 + fw, v);
+}
+float inHole(vec2 q) { vec2 v = (q - uRingC) / (uRingR * vec2(0.86, 0.6)); return 1.0 - smoothstep(0.8, 1.0, length(v)); }
+float pool(vec2 q) { vec2 v = (q - uRingC) / vec2(660.0, 520.0); return exp(-dot(v, v)); }
+vec2 ringDir(vec2 q) {
+  vec2 v = (q - uRingC) / uRingR;
+  float th = atan(v.y, v.x);
+  vec2 d = uRingC + uRingR * vec2(cos(th), sin(th)) - q;
+  float l = length(d);
+  return l > 1e-3 ? d / l : vec2(0.0, 1.0);
+}
+`;
+
+const FS_FIBRE = COMMON + `
+// 2048 px tileable paper: R fine fibres, G formation clouds, B long fibres, A speckle
+float fibreField(vec2 p, float cell, float len, float wid, float dirMain, float spread, float seed) {
+  float period = 2048.0 / cell;
+  vec2 c = floor(p / cell);
+  float acc = 0.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    vec2 cc = c + vec2(float(i), float(j));
+    vec2 cw = mod(cc, period);
+    for (int k = 0; k < 3; k++) {
+      float fk = float(k);
+      vec2 h1 = hash22(cw + fk * 31.7 + seed);
+      vec2 h2 = hash22(cw * 1.7 + fk * 13.1 + seed * 2.3 + 5.0);
+      vec2 h3 = hash22(cw * 2.3 + fk * 7.9 + seed * 1.1 + 11.0);
+      vec2 ctr = (cc + h1) * cell;
+      float ang = dirMain + (h2.x - 0.5) * spread;
+      float L = len * (0.35 + 0.9 * h2.y);
+      vec2 dd = vec2(cos(ang), sin(ang)), nn = vec2(-dd.y, dd.x);
+      vec2 v = p - ctr;
+      float t = clamp(dot(v, dd), -0.5 * L, 0.5 * L);
+      float u = t / (0.5 * L);
+      vec2 cp = dd * t + nn * (h3.x - 0.5) * 0.35 * L * (1.0 - u * u);
+      float dist = length(v - cp);
+      float w = wid * (0.6 + 0.8 * h3.y);
+      acc += (1.0 - smoothstep(w * 0.45, w, dist)) * (0.4 + 0.6 * h1.y);
+    }
+  }
+  return acc;
+}
+float vnoiseP(vec2 p, float per) {
+  vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(mod(i, per)), hash12(mod(i + vec2(1.0, 0.0), per)), u.x),
+             mix(hash12(mod(i + vec2(0.0, 1.0), per)), hash12(mod(i + vec2(1.0, 1.0), per)), u.x), u.y);
+}
+void main() {
+  vec2 p = gl_FragCoord.xy;
+  float fine = fibreField(p, 16.0, 17.0, 0.75, 0.35, 1.1, 1.0);
+  float longf = fibreField(p, 52.0, 78.0, 1.1, 0.30, 0.9, 7.0);
+  float fm = 0.0, amp = 0.5, tot = 0.0;
+  for (int k = 0; k < 5; k++) {
+    float per = 14.0 * pow(2.0, float(k));
+    fm += amp * vnoiseP(p / 2048.0 * per, per);
+    tot += amp; amp *= 0.62;
+  }
+  fm /= tot;
+  o = vec4(clamp(fine * 0.8, 0.0, 1.0), fm, clamp(longf * 0.9, 0.0, 1.0), hash12(p * 0.731 + 1.3));
+}
+`;
+
+const FS_PLASMA = COMMON + `
+float psiAt(vec3 X) { float r = length(X.xy); return length(vec2((r - uR0) / uA, X.z / (uKappa * uA))); }
+void main() {
+  vec2 q = gl_FragCoord.xy;
+  vec3 d = rayDirQ(q), P = uCamPos;
+  float Rb = uR0 + uA + 0.04, Hb = uKappa * uA + 0.04;
+  float A = dot(d.xy, d.xy), B = 2.0 * dot(P.xy, d.xy), C = dot(P.xy, P.xy) - Rb * Rb;
+  float disc = B * B - 4.0 * A * C;
+  float E = 0.0, tF = 0.0, Ef = 0.0, psiMin = 9.0;
+  if (disc > 0.0) {
+    float sq = sqrt(disc);
+    float t0 = (-B - sq) / (2.0 * A), t1 = (-B + sq) / (2.0 * A);
+    float za = (-Hb - P.z) / d.z, zb = (Hb - P.z) / d.z;
+    t0 = max(t0, min(za, zb)); t1 = min(t1, max(za, zb));
+    if (t1 > t0) {
+      const int N = 160;
+      float dt = (t1 - t0) / float(N);
+      float jit = hash12(q);
+      float tm = t0;
+      for (int i = 0; i < N; i++) {
+        float t = t0 + (float(i) + jit) * dt;
+        vec3 X = P + d * t;
+        float ps = psiAt(X);
+        if (ps < psiMin) { psiMin = ps; tm = t; }
+        if (ps < 1.0) {
+          float rho = 1.0 - ps * ps; rho *= rho;
+          E += rho * dt;
+          if (tF == 0.0) tF = t;
+          if (X.y < 0.0) Ef += rho * dt;
+        }
+      }
+      for (int k = 0; k <= 24; k++) psiMin = min(psiMin, psiAt(P + d * (tm - dt + 2.0 * dt * float(k) / 24.0)));
+    }
+  }
+  o = vec4(E, tF, psiMin, E > 0.0 ? Ef / E : 0.0);
+}
+`;
+
+const FS_BLUR = COMMON + `
+uniform sampler2D uSrc; uniform vec2 uDir; uniform float uSigma;
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes, tx = uDir / uRes;
+  int R = int(ceil(uSigma * 2.6));
+  vec4 acc = texture(uSrc, uv); float ws = 1.0;
+  for (int i = 1; i <= R; i++) {
+    float w = exp(-0.5 * float(i * i) / (uSigma * uSigma));
+    acc += (texture(uSrc, uv + tx * float(i)) + texture(uSrc, uv - tx * float(i))) * w; ws += 2.0 * w;
+  }
+  o = acc / ws;
+}
+`;
+
+const FS_HAZE = COMMON + `
+uniform sampler2D uMA, uMB, uMC, uPl;
+void main() {
+  vec2 q = gl_FragCoord.xy * (uFull / uRes);
+  vec3 d = rayDirQ(q);
+  float fz = dot(d, uFwd);
+  float camD = length(uCamPos);
+  float m0 = texture(uMA, lq(q, 0) / uFull).r;
+  float m1 = texture(uMA, lq(q, 1) / uFull).g;
+  vec4 pl = texture(uPl, lq(q, 2) / uFull);
+  float m3 = texture(uMB, lq(q, 3) / uFull).r;
+  float md = texture(uMB, lq(q, 4) / uFull).g;
+  float m4 = texture(uMB, lq(q, 5) / uFull).b;
+  float fl = texture(uMC, lq(q, 5) / uFull).g;
+  float tEnd = (uWallY - uCamPos.y) / d.y;
+  if (m4 > 0.5) tEnd = fl > 0.25 ? (uFloorZ - uCamPos.z) / d.z : (uWallY - 0.6 - uCamPos.y) / d.y;
+  if (md > 0.5) tEnd = (uDeckZ - uCamPos.z) / d.z;
+  if (m3 > 0.5) tEnd = (camD + 0.4) / fz;
+  if (pl.b < 1.06 && pl.g > 0.0) tEnd = pl.g;
+  if (m1 > 0.5) tEnd = (camD - 1.5) / fz;
+  float tS = 4.0;
+  tEnd = clamp(tEnd, tS, 32.0);
+  const int NS = 56;
+  float dt = (tEnd - tS) / float(NS);
+  float jit = hash12(q + 0.37);
+  float acc = 0.0;
+  for (int i = 0; i < NS; i++) {
+    float t = tS + (float(i) + jit) * dt;
+    vec3 X = uCamPos + d * t;
+    float r = length(X.xy);
+    float dens = 0.5 + 0.5 * vnoise(vec2(X.x * 1.1 + X.y * 0.6, X.z * 2.4 - X.y * 0.4));
+    dens *= mix(0.3, 1.0, clamp(smoothstep(1.3, 2.0, r) + smoothstep(1.0, 1.3, abs(X.z)), 0.0, 1.0));
+    float dq = length(vec2(r - uR0, X.z));
+    acc += dens * lanternI(X) * mix(beamVis(X), 1.0, 0.07) * exp(-dq / 3.0) * dt;
+  }
+  o = vec4(acc, 0.0, 0.0, 1.0);
+}
+`;
+
+const PAPER_FN = `
+vec4 fib(vec2 q, float seed) { return texture(uFib, (q + seed * vec2(517.0, 263.0)) / 2048.0); }
+vec2 wob(vec2 q, float seed) {
+  vec2 p = q / 11.0 + seed * 7.13;
+  vec2 w = vec2(vnoise(p), vnoise(p + 17.3)) - 0.5;
+  vec2 p2 = q / 3.7 + seed * 3.31;
+  w += 0.4 * (vec2(vnoise(p2), vnoise(p2 + 9.1)) - 0.5);
+  return w * 1.8;
+}
+struct Edge { float m; float band; vec2 n; };
+Edge edgeOf(sampler2D T, int ch, vec2 qq, float r) {
+  vec2 px = 1.0 / uFull;
+  float m = texture(T, qq * px)[ch];
+  float gx = texture(T, (qq + vec2(r, 0.0)) * px)[ch] - texture(T, (qq - vec2(r, 0.0)) * px)[ch];
+  float gy = texture(T, (qq + vec2(0.0, r)) * px)[ch] - texture(T, (qq - vec2(0.0, r)) * px)[ch];
+  vec2 g = vec2(gx, gy);
+  float gl2 = length(g);
+  Edge e;
+  e.m = m;
+  e.band = smoothstep(0.15, 0.9, gl2) * m;
+  e.n = gl2 > 1e-4 ? -g / gl2 : vec2(0.0);
+  return e;
+}
+`;
+
+const K = `
+#define K_WALL 1.8
+#define K_RIM5 3.0
+#define K_FLOOR 2.0
+#define K_HALL 1.6
+#define K_RIM4 3.5
+#define K_DECK 0.7
+#define K_COIL 0.55
+#define K_RIM3 2.2
+#define K_WRAP 2.2
+#define K_TRANSL 0.45
+#define K_PORT 2.3
+#define K_WRAP0 1.1
+#define K_HAZE 0.10
+#define K_RAY 0.12
+`;
+
+const FS_BACK = COMMON + K + `
+uniform sampler2D uMA, uMB, uMC, uPl, uPlB1, uPlB2, uPlB3, uFib, uBlA, uBlB, uBlC, uRays;
+uniform vec2 uMoon;
+` + PAPER_FN + `
+vec3 sky(vec2 q) {
+  float t = clamp(q.y / 430.0, 0.0, 1.0);
+  vec3 c = mix(hexc(27.0, 33.0, 56.0), hexc(52.0, 64.0, 106.0), t);
+  vec4 f = fib(q, 7.0);
+  c *= 0.9 + 0.2 * f.g + 0.06 * (f.b - 0.1);
+  float md = length(q - uMoon);
+  c += hexc(159.0, 179.0, 217.0) * (0.05 * exp(-md / 50.0) + 0.025 * exp(-md / 200.0));
+  c = mix(c, hexc(216.0, 226.0, 245.0) * (0.78 + 0.1 * f.g), 1.0 - smoothstep(10.0, 11.5, md));
+  vec2 cell = floor(q / 46.0);
+  vec2 h = hash22(cell + 3.7);
+  if (h.x < 0.16) {
+    vec2 sp = (cell + 0.2 + 0.6 * hash22(cell + 9.1)) * 46.0;
+    c += hexc(216.0, 226.0, 245.0) * (0.25 + 0.5 * h.y) * (1.0 - smoothstep(0.4, 1.3, length(q - sp)));
+  }
+  return c;
+}
+void main() {
+  vec2 q = gl_FragCoord.xy;
+  // ---- L6 night-sky tissue
+  vec3 base = sky(lq(q, 7));
+  float W = 0.0;
+  // ---- L5 walls
+  vec2 q6 = lq(q, 6);
+  Edge e5 = edgeOf(uMC, 0, q6 + wob(q6, 6.0), 1.2);
+  if (e5.m > 0.002) {
+    vec3 X = hitY(q6, uWallY);
+    float lam = lanternI(X) * mix(0.1, 1.0, cutVis(X, q6, 6.0));
+    vec3 Ld = normalize(vec3(normalize(X.xy) * uR0, 0.0) - X);
+    float lamb = max(-Ld.y, 0.0) * pool(q6);
+    vec2 qs = uRingC + (q6 - uRingC) * 0.95;
+    float sh = max(texture(uBlB, qs / uFull).b - texture(uBlC, qs / uFull).g, 0.0);
+    vec4 f = fib(q6, 5.0);
+    float Ww = lam * lamb * K_WALL * (1.0 - 0.8 * sh) * (0.8 + 0.32 * f.g + 0.2 * f.r);
+    vec3 b = hexc(59.0, 70.0, 104.0) * (0.8 + 0.2 * smoothstep(0.0, 380.0, q6.y)) * (1.0 - 0.3 * sh) * (0.96 + 0.08 * f.g);
+    float fc = dot(e5.n, ringDir(q6));
+    Ww += e5.band * max(fc, 0.0) * lam * K_RIM5 * pool(q6);
+    b *= 1.0 - e5.band * max(-fc, 0.0) * 0.45;
+    base = mix(base, b, e5.m); W = mix(W, Ww, e5.m);
+  }
+  // ---- L4 hall structures and floor
+  vec2 q5 = lq(q, 5);
+  vec2 q5w = q5 + wob(q5, 5.0);
+  Edge e4 = edgeOf(uMB, 2, q5w, 1.2);
+  if (e4.m > 0.002) {
+    float fl = texture(uMC, q5w / uFull).g;
+    bool isFloor = fl > 0.25;
+    vec3 X = isFloor ? hitZ(q5, uFloorZ) : hitY(q5, uWallY - 0.6);
+    float lam = isFloor ? lanternI(X) * mix(0.12, 1.0, cutVis(X, q5, 5.0)) : lantern(X);
+    vec3 Ld = normalize(vec3(normalize(X.xy) * uR0, 0.0) - X);
+    float lamb = (isFloor ? max(Ld.z, 0.0) : 0.45 + 0.55 * max(-Ld.y, 0.0)) * pool(q5);
+    vec4 f = fib(q5, 4.0);
+    float objK = isFloor ? mix(0.25, 1.0, smoothstep(0.6, 0.9, fl)) : 1.0;
+    float sh1 = texture(uBlA, (uRingC + (q5 - uRingC) * 0.975) / uFull).g;
+    float W4 = lam * lamb * (isFloor ? K_FLOOR : K_HALL) * objK * (0.82 + 0.3 * f.g + 0.1 * f.r) * (1.0 - 0.7 * sh1);
+    vec3 b = hexc(45.0, 54.0, 86.0) * (0.96 + 0.08 * f.g) * (1.0 - 0.4 * sh1);
+    float fc = dot(e4.n, ringDir(q5));
+    W4 += e4.band * max(fc, 0.0) * lam * K_RIM4 * pool(q5) * (isFloor ? 0.0 : 1.0);
+    b *= 1.0 - e4.band * max(-fc, 0.0) * 0.45;
+    base = mix(base, b, e4.m); W = mix(W, W4, e4.m);
+  }
+  // ---- L3d deck (the floor fans under the ring)
+  vec2 q4 = lq(q, 4);
+  Edge ed = edgeOf(uMB, 1, q4 + wob(q4, 3.5), 1.2);
+  if (ed.m > 0.002) {
+    vec3 X = hitZ(q4, uDeckZ);
+    float li = lanternI(X), cv = cutVis(X, q4, 3.0);
+    vec3 Ld = normalize(vec3(normalize(X.xy) * uR0, 0.0) - X);
+    vec4 f = fib(q4, 3.0);
+    float sh1 = texture(uBlA, (uRingC + (q4 - uRingC) * 0.985) / uFull).g;
+    float tissue = exp(-1.5 * (f.g - 0.5) - 0.3 * f.r - 0.2 * f.b);
+    float rd = length(X.xy);
+    float Wd = li * (0.3 + 0.7 * max(Ld.z, 0.0)) * K_DECK * mix(0.1, tissue, cv) * (1.0 - 0.45 * sh1) * mix(1.0, 0.32, smoothstep(1.15, 2.0, rd)) * (1.0 - 0.5 * inHole(q4));
+    vec3 b = hexc(33.0, 40.0, 67.0) * (0.96 + 0.08 * f.g) * (1.0 - 0.35 * sh1);
+    base = mix(base, b, ed.m); W = mix(W, Wd, ed.m);
+  }
+  // ---- L3 back coils, inner legs, central solenoid
+  vec2 q3 = lq(q, 3);
+  Edge e3 = edgeOf(uMB, 0, q3 + wob(q3, 2.5), 1.2);
+  if (e3.m > 0.002) {
+    float G = (texture(uPlB1, q3 / uFull).r * 1.0 + texture(uPlB2, q3 / uFull).r * 0.9 + texture(uPlB3, q3 / uFull).r * 0.3) / 0.13;
+    vec4 f = fib(q3, 2.0);
+    float colm = 1.0 - 0.6 * (1.0 - smoothstep(60.0, 90.0, abs(q3.x - uRingC.x))) * smoothstep(uRingC.y - 330.0, uRingC.y - 250.0, q3.y);
+    float capF = max(step(length(hitZ(q3, 0.86).xy), 0.72), step(length(hitZ(q3, 0.77).xy), 0.72));
+    float W3 = G * K_COIL * colm * mix(1.0, 0.22, capF) * (1.0 - 0.45 * inHole(q3)) * (0.8 + 0.32 * f.g + 0.1 * f.r) * uIgn;
+    vec3 b = hexc(33.0, 40.0, 67.0) * (0.96 + 0.08 * f.g);
+    float fc = dot(e3.n, ringDir(q3));
+    W3 += e3.band * max(fc, 0.0) * (G * K_RIM3 + 0.05) * uIgn;
+    b *= 1.0 - e3.band * max(-fc, 0.0) * 0.45;
+    base = mix(base, b, e3.m); W = mix(W, W3, e3.m);
+  }
+  // ---- L2 plasma vellum
+  vec2 q2 = lq(q, 2);
+  vec4 pl = texture(uPl, q2 / uFull);
+  float psi = pl.b + wob(q2, 2.0).x * 0.012;
+  float V = 1.0 - smoothstep(1.03, 1.09, psi);
+  if (V > 0.001) {
+    float En = pl.r / 0.13;
+    float I = pow(max(En, 0.0), 0.6);
+    float Iw = I + (wob(q2 * 0.6, 2.7).x) * 0.05;
+    float fw = max(fwidth(Iw), 1e-3);
+    // stacked tissue: three sheets cover the cut, two in the body, one in the core, a hole where hottest
+    float s1 = smoothstep(0.25 - fw, 0.25 + fw, Iw), s2 = smoothstep(0.55 - fw, 0.55 + fw, Iw), s3 = smoothstep(0.95 - fw, 0.95 + fw, Iw);
+    float nS = 3.0 - s1 - s2 - s3;
+    float lamp = 0.8 + 3.0 * I;
+    vec4 f = fib(q2, 1.0);
+    float paper = min(nS, 1.0);
+    float tex = exp(-paper * (0.9 * (f.g - 0.5) + 0.1 * f.r + 0.1 * f.b));
+    float edgeLine = exp(-pow((Iw - 0.25) / fw, 2.0)) + exp(-pow((Iw - 0.55) / fw, 2.0)) + exp(-pow((Iw - 0.95) / fw, 2.0));
+    float Wp = lamp * pow(0.62, nS) * tex * (1.0 - 0.18 * edgeLine) * uIgn;
+    base = mix(base, hexc(33.0, 40.0, 67.0) * 0.5, V); W = mix(W, Wp, V);
+  }
+  float wisp = 0.55 + 0.45 * vnoise(q / vec2(90.0, 150.0) + 3.1) + 0.2 * (vnoise(q / 23.0) - 0.5);
+  W += texture(uRays, q / uFull).r * K_RAY * wisp * (1.0 - V) * mix(0.35, 1.0, pool(q)) * uIgn;
+  o = vec4(base, W);
+}
+`;
+
+const FS_MID = COMMON + K + `
+uniform sampler2D uBack, uWrap1, uWrap2, uMA, uMC, uHz, uFib, uBlA, uBlC;
+` + PAPER_FN + `
+void main() {
+  vec2 q = gl_FragCoord.xy;
+  vec4 bk = texture(uBack, q / uFull);
+  vec3 base = bk.rgb; float W = bk.a;
+  // ---- L1 front coils + cryostat wall with its lit ports
+  vec2 q1 = lq(q, 1);
+  vec2 q1w = q1 + wob(q1, 1.0);
+  Edge e1 = edgeOf(uMA, 1, q1w, 1.2);
+  float hole = texture(uMA, q1w / uFull).b;
+  if (e1.m > 0.002 || hole > 0.002) {
+    float Wb = texture(uWrap1, lqInv(q1 + e1.n * 2.5, 1) / uFull).a;
+    float Wb2 = texture(uWrap2, lqInv(q1, 1) / uFull).a;
+    vec4 f = fib(q1, 1.5);
+    vec4 bl = texture(uBlA, q1 / uFull);
+    float sh0 = texture(uBlA, (q1 + vec2(3.0, -6.0)) / uFull).r;
+    vec3 b = hexc(23.0, 28.0, 48.0) * (0.96 + 0.08 * f.g) * (1.0 - 0.45 * sh0);
+    float inner = clamp((1.0 - bl.g) * 2.0, 0.0, 1.0) * e1.m;
+    float W1 = e1.band * (Wb * K_WRAP + bl.b * 3.0 * uIgn) + inner * Wb2 * K_TRANSL;
+    b *= 1.0 - e1.band * (1.0 - clamp(Wb * 1.5, 0.0, 1.0)) * 0.45;
+    float cov = e1.m * (1.0 - hole);
+    base = mix(base, b, cov); W = mix(W, W1, cov);
+    if (hole > 0.002) { W = mix(W, K_PORT * (0.8 + 0.4 * f.g) * uIgn, hole); base = mix(base, hexc(16.0, 19.0, 31.0) * 0.8, hole); }
+  }
+  // ---- haze in front of the first surface
+  W += texture(uHz, lq(q, 2) / uFull).r * K_HAZE * mix(0.2, 1.0, pool(q));
+  // ---- cool indicator LEDs
+  vec2 q5 = lq(q, 5);
+  float led = texture(uMC, q5 / uFull).b, ledG = texture(uBlC, q5 / uFull).b;
+  base += hexc(159.0, 179.0, 217.0) * ledG * 0.9 + hexc(216.0, 226.0, 245.0) * led * 0.55;
+  o = vec4(base, W);
+}
+`;
+
+const FS_FRONT = COMMON + K + `
+uniform sampler2D uMid, uWrap3, uMA, uFib;
+` + PAPER_FN + `
+void main() {
+  vec2 q = gl_FragCoord.xy;
+  vec4 md = texture(uMid, q / uFull);
+  vec3 base = md.rgb; float W = md.a;
+  vec2 q0 = lq(q, 0);
+  Edge e0 = edgeOf(uMA, 0, q0, 2.5);
+  if (e0.m > 0.002) {
+    float Wb = texture(uWrap3, lqInv(q0 + e0.n * 4.0, 0) / uFull).a;
+    vec4 f = fib(q0 * 0.7, 0.5);
+    vec3 b = hexc(16.0, 19.0, 31.0) * (0.97 + 0.06 * f.g);
+    float W0 = e0.band * Wb * K_WRAP0;
+    b *= 1.0 - e0.band * (1.0 - clamp(Wb * 1.5, 0.0, 1.0)) * 0.35;
+    base = mix(base, b, e0.m); W = mix(W, W0, e0.m);
+  }
+  o = vec4(base, W);
+}
+`;
+
+
+const FS_RAYS = COMMON + `
+uniform sampler2D uMA, uMB, uPl;
+void main() {
+  vec2 q = gl_FragCoord.xy * (uFull / uRes);
+  vec2 dv = uRingC - q;
+  float dist = length(dv);
+  const int N = 112;
+  vec2 stp = dv / float(N);
+  vec2 p = q + stp * hash12(q * 0.37 + 5.1);
+  float T = 1.0, acc = 0.0;
+  for (int i = 0; i < N; i++) {
+    vec2 u = p / uFull;
+    vec4 pl = texture(uPl, lq(p, 2) / uFull);
+    float V = 1.0 - smoothstep(1.0, 1.08, pl.b);
+    float m1 = texture(uMA, lq(p, 1) / uFull).g;
+    float m3 = texture(uMB, lq(p, 3) / uFull).r;
+    acc += T * V * pow(max(pl.r / 0.13, 0.0), 0.6) * (1.0 - m1);
+    T *= 1.0 - 0.16 * max(m1, m3 * (1.0 - V));
+    p += stp;
+  }
+  acc *= dist / float(N) / 90.0;
+  o = vec4(acc, 0.0, 0.0, 1.0);
+}
+`;
+
+const FS_BRIGHT = COMMON + `
+uniform sampler2D uSrc;
+void main() { float w = texture(uSrc, gl_FragCoord.xy / uRes).a; o = vec4(max(w - 2.2, 0.0), 0.0, 0.0, 1.0); }
+`;
+
+const FS_FINAL = COMMON + `
+uniform sampler2D uImg, uBloom1, uBloom2, uPl, uRays, uHz;
+uniform float uView;
+vec3 ramp(float w) {
+  vec3 c1 = hexc(138.0, 58.0, 36.0), c2 = hexc(196.0, 96.0, 63.0), c3 = hexc(217.0, 119.0, 87.0);
+  vec3 c4 = hexc(240.0, 160.0, 112.0), c5 = hexc(255.0, 217.0, 184.0), c6 = hexc(255.0, 243.0, 230.0);
+  w = max(w, 0.0);
+  if (w < 0.25) return c1 * (w / 0.25);
+  if (w < 0.6) return mix(c1, c2, (w - 0.25) / 0.35);
+  if (w < 1.0) return mix(c2, c3, (w - 0.6) / 0.4);
+  if (w < 1.8) return mix(c3, c4, (w - 1.0) / 0.8);
+  if (w < 3.0) return mix(c4, c5, (w - 1.8) / 1.2);
+  if (w < 5.0) return mix(c5, c6, (w - 3.0) / 2.0);
+  return c6;
+}
+void main() {
+  vec2 q = vec2(gl_FragCoord.x, uFull.y - gl_FragCoord.y);
+  vec4 c = texture(uImg, q / uFull);
+  if (uView > 0.5 && uView < 1.5) { vec4 pp = texture(uPl, q / uFull); o = vec4(vec3(pp.r / 0.5), 1.0); if (pp.b < 1.06) o.b = 0.3; return; }
+  if (uView > 1.5 && uView < 2.5) { o = vec4(vec3(texture(uRays, q / uFull).r * 0.5), 1.0); return; }
+  if (uView > 2.5) { o = vec4(vec3(texture(uHz, q / uFull).r * 0.25), 1.0); return; }
+  float W = c.a + 0.35 * texture(uBloom1, q / uFull).r + 0.22 * texture(uBloom2, q / uFull).r;
+  vec3 col = c.rgb * (1.0 - 0.55 * clamp(W, 0.0, 1.0)) + ramp(W);
+  vec2 v = (q / uFull - 0.5) * vec2(1.0, 0.8);
+  col *= 1.0 - 0.6 * dot(v, v);
+  vec3 s = srgb(col);
+  float g = (hash12(q * 1.13 + 7.7) + hash12(q * 0.91 + 3.1) + hash12(q * 1.37 + 1.9)) / 3.0 - 0.5;
+  s += g * 0.06 * (0.5 + 0.5 * s);
+  o = vec4(clamp(s, 0.0, 1.0), 1.0);
+}
+`;
+
+// ---------------------------------------------------------------- GL plumbing
+function compile(src, label) {
+  const mk = (type, s) => {
+    const sh = gl.createShader(type); gl.shaderSource(sh, s); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(sh);
+      const m = /ERROR: 0:(\d+)/.exec(info), ln = m ? +m[1] : 0;
+      log('SHADER ERROR ' + label + ': ' + info + '\n' + s.split('\n').slice(Math.max(0, ln - 4), ln + 2).map((l, i) => (Math.max(0, ln - 4) + i + 1) + ': ' + l).join('\n'));
+      throw new Error('shader ' + label);
+    }
+    return sh;
+  };
+  const t = performance.now();
+  const p = gl.createProgram();
+  gl.attachShader(p, mk(gl.VERTEX_SHADER, VS)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, src));
+  gl.bindAttribLocation(p, 0, 'aP'); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { log('LINK ERROR ' + label + ': ' + gl.getProgramInfoLog(p)); throw new Error('link ' + label); }
+  TIMES.compile = (TIMES.compile || 0) + performance.now() - t;
+  return p;
+}
+function mkTex(w, h, f16, wrap) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  if (f16) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  const wm = wrap ? gl.REPEAT : gl.CLAMP_TO_EDGE;
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wm); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wm);
+  return t;
+}
+function mkFbo(w, h, f16, wrap) {
+  const t = mkTex(w, h, f16, wrap), f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  if (st !== gl.FRAMEBUFFER_COMPLETE) log('FBO incomplete ' + st);
+  return { f, t, w, h };
+}
+function canvasTex(c) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, c);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+let UCOMMON = {};
+function run(p, target, uni, texs, bands) {
+  const w = target ? target.w : W, h = target ? target.h : H;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.f : null);
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(p);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  const all = Object.assign({}, UCOMMON, { uRes: [w, h], uFull: [W, H] }, uni || {});
+  for (const k in all) {
+    const loc = gl.getUniformLocation(p, k); if (!loc) continue;
+    const v = all[k];
+    if (typeof v === 'number') gl.uniform1f(loc, v);
+    else if (v.length === 2) gl.uniform2fv(loc, v);
+    else if (v.length === 3) gl.uniform3fv(loc, v);
+    else if (v.length === 4) gl.uniform4fv(loc, v);
+    else gl.uniform3fv(loc, v);
+  }
+  let u = 0;
+  for (const k in (texs || {})) {
+    const loc = gl.getUniformLocation(p, k); if (!loc) continue;
+    gl.activeTexture(gl.TEXTURE0 + u); gl.bindTexture(gl.TEXTURE_2D, texs[k]); gl.uniform1i(loc, u); u++;
+  }
+  bands = bands || 1;
+  if (bands > 1) {
+    gl.enable(gl.SCISSOR_TEST);
+    for (let b = 0; b < bands; b++) {
+      const y0 = Math.floor(h * b / bands), y1 = Math.floor(h * (b + 1) / bands);
+      gl.scissor(0, y0, w, y1 - y0); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.flush();
+    }
+    gl.disable(gl.SCISSOR_TEST);
+  } else gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+const _px = new Uint8Array(4);
+function gpuSync() { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, _px); }
+function timed(label, fn) { gpuSync(); const t = performance.now(); fn(); gpuSync(); TIMES[label] = (TIMES[label] || 0) + performance.now() - t; }
+
+// ---------------------------------------------------------------- programs, buffers
+const P = {
+  fibre: compile(FS_FIBRE, 'fibre'), plasma: compile(FS_PLASMA, 'plasma'), blur: compile(FS_BLUR, 'blur'),
+  haze: compile(FS_HAZE, 'haze'), back: compile(FS_BACK, 'back'), mid: compile(FS_MID, 'mid'),
+  front: compile(FS_FRONT, 'front'), rays: compile(FS_RAYS, 'rays'), bright: compile(FS_BRIGHT, 'bright'), fin: compile(FS_FINAL, 'final'),
+};
+const H2 = [W / 2, H / 2], H4 = [W / 4, H / 4];
+const FB = {
+  fib: mkFbo(2048, 2048, false, true),
+  pl: mkFbo(W, H, true),
+  plB1: mkFbo(...H2, true), plB2: mkFbo(...H4, true), plB3: mkFbo(...H4, true), rays: mkFbo(...H2, true),
+  blA: mkFbo(...H2, true), blB: mkFbo(...H2, true), blC: mkFbo(...H2, true),
+  hz: mkFbo(...H2, true), back: mkFbo(W, H, true),
+  wrap1: mkFbo(...H2, true), wrap2: mkFbo(...H2, true), mid: mkFbo(W, H, true), wrap3: mkFbo(...H2, true),
+  front: mkFbo(W, H, true), bright: mkFbo(...H2, true), bloom1: mkFbo(...H2, true), bloom2: mkFbo(...H4, true),
+  tmp2: mkFbo(...H2, true), tmp4: mkFbo(...H4, true),
+};
+function blur(src, dst, sigma) {
+  const tmp = dst.w === W / 2 ? FB.tmp2 : FB.tmp4;
+  run(P.blur, tmp, { uDir: [1, 0], uSigma: sigma }, { uSrc: src });
+  run(P.blur, dst, { uDir: [0, 1], uSigma: sigma }, { uSrc: tmp.t });
+}
+
+UCOMMON = {
+  uCamPos: CAM.pos, uFwd: CAM.fwd, uUp: CAM.up, uRight: CAM.right, uF: CAM.F, uPP: [SC.PPX, SC.PPY],
+  uR0: SC.R0, uA: SC.A, uKappa: SC.KAPPA, uPhi0: SC.PHI0, uCoilT: SC.COIL_T, uDeckZ: SC.DECK_Z,
+  uFloorZ: SC.FLOOR_Z, uWallY: SC.WALL_Y, uBaseR: SC.BASE_R, uRingC: RING.c, uRingR: RING.r,
+  uNcoil: SC.NCOIL, uFocus: RING.c, uLT: layerT(0), uIgn: 1.0, uReach: 99.0, uMoon: [352, 58],
+};
+
+// ---------------------------------------------------------------- static passes
+let TA, TB, TC;
+timed('upload', () => { TA = canvasTex(cvA); TB = canvasTex(cvB); TC = canvasTex(cvC); });
+timed('fibre', () => run(P.fibre, FB.fib, {}, {}, 4));
+timed('plasma', () => run(P.plasma, FB.pl, {}, {}, 4));
+timed('staticBlur', () => {
+  blur(FB.pl.t, FB.plB1, 12); blur(FB.pl.t, FB.plB2, 20); blur(FB.pl.t, FB.plB3, 40);
+  blur(TA, FB.blA, 2.0); blur(TB, FB.blB, 4.0); blur(TC, FB.blC, 3.0);
+});
+
+// ---------------------------------------------------------------- per-frame passes
+function renderFrame(st) {
+  UCOMMON.uIgn = st.ign; UCOMMON.uReach = st.reach; UCOMMON.uLT = layerT(st.push);
+  const tx = { uMA: TA, uMB: TB, uMC: TC, uPl: FB.pl.t, uPlB1: FB.plB1.t, uPlB2: FB.plB2.t, uPlB3: FB.plB3.t, uRays: FB.rays.t, uFib: FB.fib.t,
+               uBlA: FB.blA.t, uBlB: FB.blB.t, uBlC: FB.blC.t };
+  timed('haze', () => run(P.haze, FB.hz, {}, tx, 4));
+  timed('rays', () => run(P.rays, FB.rays, {}, tx, 2));
+  timed('back', () => run(P.back, FB.back, {}, tx, 4));
+  timed('wrap', () => { blur(FB.back.t, FB.wrap1, 1.5); blur(FB.back.t, FB.wrap2, 6.0); });
+  timed('mid', () => run(P.mid, FB.mid, {}, Object.assign({ uBack: FB.back.t, uWrap1: FB.wrap1.t, uWrap2: FB.wrap2.t, uHz: FB.hz.t }, tx), 2));
+  timed('front', () => { blur(FB.mid.t, FB.wrap3, 4.0); run(P.front, FB.front, {}, Object.assign({ uMid: FB.mid.t, uWrap3: FB.wrap3.t }, tx)); });
+  timed('bloom', () => { run(P.bright, FB.bright, {}, { uSrc: FB.front.t }); blur(FB.bright.t, FB.bloom1, 5.0); blur(FB.bright.t, FB.bloom2, 12.0); });
+  timed('final', () => run(P.fin, null, { uView: +(Q.get('view') || 0) }, { uImg: FB.front.t, uBloom1: FB.bloom1.t, uBloom2: FB.bloom2.t, uPl: FB.pl.t, uRays: FB.rays.t, uHz: FB.hz.t }));
+}
+
+
+  return { renderFrame, animState, gpuSync, TIMES };
+}

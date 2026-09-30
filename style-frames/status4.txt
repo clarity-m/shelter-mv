@@ -1,0 +1,5 @@
+14-pixel-swarm exit=0 16:59
+13-paper-swarm exit=0 17:12
+11-paper-lab exit=0 17:18
+12-paper-fusion exit=0 17:23
+all done 17:23

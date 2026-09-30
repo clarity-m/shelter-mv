@@ -1,0 +1,1367 @@
+[
+ {
+  "bar": 1,
+  "t": 0.38,
+  "mix": -12.7,
+  "vocals": -25.0,
+  "drums": -60.2,
+  "bass": -18.0,
+  "other": -20.4,
+  "chroma_top": [
+   "F",
+   "C",
+   "G"
+  ],
+  "onset_mean": 1.57
+ },
+ {
+  "bar": 2,
+  "t": 2.78,
+  "mix": -11.7,
+  "vocals": -17.7,
+  "drums": -59.9,
+  "bass": -18.4,
+  "other": -18.5,
+  "chroma_top": [
+   "G",
+   "E",
+   "D"
+  ],
+  "onset_mean": 1.48
+ },
+ {
+  "bar": 3,
+  "t": 5.18,
+  "mix": -13.2,
+  "vocals": -23.2,
+  "drums": -57.7,
+  "bass": -19.3,
+  "other": -18.5,
+  "chroma_top": [
+   "A",
+   "E",
+   "G"
+  ],
+  "onset_mean": 1.56
+ },
+ {
+  "bar": 4,
+  "t": 7.58,
+  "mix": -13.5,
+  "vocals": -17.4,
+  "drums": -49.5,
+  "bass": -25.8,
+  "other": -18.7,
+  "chroma_top": [
+   "D",
+   "F",
+   "C"
+  ],
+  "onset_mean": 1.72
+ },
+ {
+  "bar": 5,
+  "t": 9.98,
+  "mix": -11.9,
+  "vocals": -22.8,
+  "drums": -28.5,
+  "bass": -23.4,
+  "other": -16.8,
+  "chroma_top": [
+   "F",
+   "C",
+   "E"
+  ],
+  "onset_mean": 1.96
+ },
+ {
+  "bar": 6,
+  "t": 12.38,
+  "mix": -11.9,
+  "vocals": -17.2,
+  "drums": -33.5,
+  "bass": -25.8,
+  "other": -18.0,
+  "chroma_top": [
+   "G",
+   "E",
+   "D"
+  ],
+  "onset_mean": 1.66
+ },
+ {
+  "bar": 7,
+  "t": 14.78,
+  "mix": -13.2,
+  "vocals": -21.7,
+  "drums": -32.8,
+  "bass": -30.3,
+  "other": -18.1,
+  "chroma_top": [
+   "E",
+   "G",
+   "A"
+  ],
+  "onset_mean": 1.64
+ },
+ {
+  "bar": 8,
+  "t": 17.18,
+  "mix": -12.7,
+  "vocals": -16.8,
+  "drums": -41.7,
+  "bass": -41.4,
+  "other": -22.1,
+  "chroma_top": [
+   "D",
+   "A",
+   "F"
+  ],
+  "onset_mean": 1.54
+ },
+ {
+  "bar": 9,
+  "t": 19.58,
+  "mix": -8.2,
+  "vocals": -22.0,
+  "drums": -22.2,
+  "bass": -23.8,
+  "other": -28.1,
+  "chroma_top": [
+   "F",
+   "E",
+   "F#"
+  ],
+  "onset_mean": 1.5
+ },
+ {
+  "bar": 10,
+  "t": 21.98,
+  "mix": -7.4,
+  "vocals": -18.3,
+  "drums": -24.9,
+  "bass": -21.9,
+  "other": -25.6,
+  "chroma_top": [
+   "G",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.55
+ },
+ {
+  "bar": 11,
+  "t": 24.38,
+  "mix": -6.2,
+  "vocals": -23.0,
+  "drums": -23.9,
+  "bass": -10.4,
+  "other": -19.8,
+  "chroma_top": [
+   "A",
+   "E",
+   "G#"
+  ],
+  "onset_mean": 1.54
+ },
+ {
+  "bar": 12,
+  "t": 26.78,
+  "mix": -6.0,
+  "vocals": -18.2,
+  "drums": -24.4,
+  "bass": -11.9,
+  "other": -21.7,
+  "chroma_top": [
+   "D",
+   "E",
+   "A"
+  ],
+  "onset_mean": 1.57
+ },
+ {
+  "bar": 13,
+  "t": 29.18,
+  "mix": -7.7,
+  "vocals": -22.1,
+  "drums": -22.0,
+  "bass": -22.5,
+  "other": -19.6,
+  "chroma_top": [
+   "F",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.44
+ },
+ {
+  "bar": 14,
+  "t": 31.58,
+  "mix": -7.7,
+  "vocals": -18.4,
+  "drums": -24.2,
+  "bass": -22.6,
+  "other": -27.0,
+  "chroma_top": [
+   "E",
+   "G",
+   "G#"
+  ],
+  "onset_mean": 1.5
+ },
+ {
+  "bar": 15,
+  "t": 33.98,
+  "mix": -6.3,
+  "vocals": -21.8,
+  "drums": -24.6,
+  "bass": -10.9,
+  "other": -19.5,
+  "chroma_top": [
+   "A",
+   "E",
+   "G#"
+  ],
+  "onset_mean": 1.59
+ },
+ {
+  "bar": 16,
+  "t": 36.38,
+  "mix": -8.0,
+  "vocals": -17.6,
+  "drums": -31.3,
+  "bass": -18.0,
+  "other": -28.9,
+  "chroma_top": [
+   "D",
+   "C",
+   "F"
+  ],
+  "onset_mean": 1.63
+ },
+ {
+  "bar": 17,
+  "t": 38.78,
+  "mix": -12.7,
+  "vocals": -19.6,
+  "drums": -55.6,
+  "bass": -19.1,
+  "other": -28.0,
+  "chroma_top": [
+   "F",
+   "C",
+   "G"
+  ],
+  "onset_mean": 1.43
+ },
+ {
+  "bar": 18,
+  "t": 41.18,
+  "mix": -16.2,
+  "vocals": -19.7,
+  "drums": -50.0,
+  "bass": -60.3,
+  "other": -22.0,
+  "chroma_top": [
+   "D",
+   "G",
+   "E"
+  ],
+  "onset_mean": 1.63
+ },
+ {
+  "bar": 19,
+  "t": 43.58,
+  "mix": -10.4,
+  "vocals": -22.7,
+  "drums": -31.2,
+  "bass": -19.4,
+  "other": -23.3,
+  "chroma_top": [
+   "A",
+   "C",
+   "G#"
+  ],
+  "onset_mean": 2.44
+ },
+ {
+  "bar": 20,
+  "t": 45.98,
+  "mix": -11.3,
+  "vocals": -43.2,
+  "drums": -22.6,
+  "bass": -18.6,
+  "other": -23.5,
+  "chroma_top": [
+   "D",
+   "C",
+   "C#"
+  ],
+  "onset_mean": 2.39
+ },
+ {
+  "bar": 21,
+  "t": 48.38,
+  "mix": -10.3,
+  "vocals": -18.8,
+  "drums": -25.4,
+  "bass": -18.8,
+  "other": -22.2,
+  "chroma_top": [
+   "F",
+   "C",
+   "E"
+  ],
+  "onset_mean": 1.77
+ },
+ {
+  "bar": 22,
+  "t": 50.78,
+  "mix": -10.4,
+  "vocals": -18.7,
+  "drums": -24.2,
+  "bass": -19.2,
+  "other": -24.1,
+  "chroma_top": [
+   "G",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.89
+ },
+ {
+  "bar": 23,
+  "t": 53.18,
+  "mix": -10.5,
+  "vocals": -19.1,
+  "drums": -28.2,
+  "bass": -19.5,
+  "other": -23.3,
+  "chroma_top": [
+   "A",
+   "C",
+   "G"
+  ],
+  "onset_mean": 1.99
+ },
+ {
+  "bar": 24,
+  "t": 55.58,
+  "mix": -11.0,
+  "vocals": -22.1,
+  "drums": -23.1,
+  "bass": -20.0,
+  "other": -23.2,
+  "chroma_top": [
+   "G",
+   "C",
+   "F#"
+  ],
+  "onset_mean": 1.96
+ },
+ {
+  "bar": 25,
+  "t": 57.98,
+  "mix": -10.9,
+  "vocals": -17.6,
+  "drums": -33.3,
+  "bass": -14.0,
+  "other": -20.6,
+  "chroma_top": [
+   "E",
+   "D",
+   "C"
+  ],
+  "onset_mean": 1.4
+ },
+ {
+  "bar": 26,
+  "t": 60.38,
+  "mix": -12.3,
+  "vocals": -21.2,
+  "drums": -45.7,
+  "bass": -16.3,
+  "other": -19.5,
+  "chroma_top": [
+   "G",
+   "F",
+   "C"
+  ],
+  "onset_mean": 1.51
+ },
+ {
+  "bar": 27,
+  "t": 62.78,
+  "mix": -11.6,
+  "vocals": -16.9,
+  "drums": -45.8,
+  "bass": -15.7,
+  "other": -19.3,
+  "chroma_top": [
+   "D",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.56
+ },
+ {
+  "bar": 28,
+  "t": 65.18,
+  "mix": -11.4,
+  "vocals": -16.0,
+  "drums": -44.4,
+  "bass": -17.0,
+  "other": -20.1,
+  "chroma_top": [
+   "G",
+   "F",
+   "C"
+  ],
+  "onset_mean": 1.54
+ },
+ {
+  "bar": 29,
+  "t": 67.58,
+  "mix": -11.4,
+  "vocals": -17.2,
+  "drums": -35.3,
+  "bass": -16.0,
+  "other": -19.7,
+  "chroma_top": [
+   "F",
+   "E",
+   "G"
+  ],
+  "onset_mean": 1.81
+ },
+ {
+  "bar": 30,
+  "t": 69.98,
+  "mix": -11.7,
+  "vocals": -16.4,
+  "drums": -38.2,
+  "bass": -18.1,
+  "other": -20.4,
+  "chroma_top": [
+   "G",
+   "A",
+   "C"
+  ],
+  "onset_mean": 1.64
+ },
+ {
+  "bar": 31,
+  "t": 72.38,
+  "mix": -11.6,
+  "vocals": -16.3,
+  "drums": -43.3,
+  "bass": -15.6,
+  "other": -21.8,
+  "chroma_top": [
+   "F",
+   "E",
+   "G"
+  ],
+  "onset_mean": 1.42
+ },
+ {
+  "bar": 32,
+  "t": 74.78,
+  "mix": -11.3,
+  "vocals": -23.8,
+  "drums": -29.0,
+  "bass": -19.3,
+  "other": -25.7,
+  "chroma_top": [
+   "D",
+   "E",
+   "F"
+  ],
+  "onset_mean": 1.44
+ },
+ {
+  "bar": 33,
+  "t": 77.18,
+  "mix": -8.0,
+  "vocals": -20.6,
+  "drums": -21.5,
+  "bass": -22.7,
+  "other": -28.3,
+  "chroma_top": [
+   "F",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.56
+ },
+ {
+  "bar": 34,
+  "t": 79.58,
+  "mix": -7.4,
+  "vocals": -18.1,
+  "drums": -23.5,
+  "bass": -21.3,
+  "other": -26.6,
+  "chroma_top": [
+   "G",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.51
+ },
+ {
+  "bar": 35,
+  "t": 81.98,
+  "mix": -6.1,
+  "vocals": -22.7,
+  "drums": -24.6,
+  "bass": -10.4,
+  "other": -19.9,
+  "chroma_top": [
+   "A",
+   "E",
+   "G#"
+  ],
+  "onset_mean": 1.57
+ },
+ {
+  "bar": 36,
+  "t": 84.38,
+  "mix": -6.1,
+  "vocals": -18.0,
+  "drums": -24.8,
+  "bass": -11.6,
+  "other": -22.2,
+  "chroma_top": [
+   "D",
+   "E",
+   "A"
+  ],
+  "onset_mean": 1.59
+ },
+ {
+  "bar": 37,
+  "t": 86.78,
+  "mix": -8.0,
+  "vocals": -21.7,
+  "drums": -21.1,
+  "bass": -22.3,
+  "other": -21.7,
+  "chroma_top": [
+   "F",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.44
+ },
+ {
+  "bar": 38,
+  "t": 89.18,
+  "mix": -7.8,
+  "vocals": -18.5,
+  "drums": -23.7,
+  "bass": -22.8,
+  "other": -26.9,
+  "chroma_top": [
+   "E",
+   "G",
+   "G#"
+  ],
+  "onset_mean": 1.51
+ },
+ {
+  "bar": 39,
+  "t": 91.58,
+  "mix": -6.4,
+  "vocals": -22.8,
+  "drums": -26.5,
+  "bass": -10.9,
+  "other": -19.5,
+  "chroma_top": [
+   "A",
+   "E",
+   "G#"
+  ],
+  "onset_mean": 1.61
+ },
+ {
+  "bar": 40,
+  "t": 93.98,
+  "mix": -8.0,
+  "vocals": -20.3,
+  "drums": -25.0,
+  "bass": -22.2,
+  "other": -24.0,
+  "chroma_top": [
+   "D",
+   "C",
+   "F"
+  ],
+  "onset_mean": 1.61
+ },
+ {
+  "bar": 41,
+  "t": 96.38,
+  "mix": -6.4,
+  "vocals": -23.8,
+  "drums": -23.1,
+  "bass": -11.6,
+  "other": -18.9,
+  "chroma_top": [
+   "F",
+   "E",
+   "F#"
+  ],
+  "onset_mean": 1.44
+ },
+ {
+  "bar": 42,
+  "t": 98.78,
+  "mix": -6.3,
+  "vocals": -19.7,
+  "drums": -23.1,
+  "bass": -11.3,
+  "other": -18.5,
+  "chroma_top": [
+   "G",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.4
+ },
+ {
+  "bar": 43,
+  "t": 101.18,
+  "mix": -6.5,
+  "vocals": -22.8,
+  "drums": -22.9,
+  "bass": -11.2,
+  "other": -19.6,
+  "chroma_top": [
+   "A",
+   "E",
+   "G#"
+  ],
+  "onset_mean": 1.48
+ },
+ {
+  "bar": 44,
+  "t": 103.58,
+  "mix": -7.1,
+  "vocals": -17.5,
+  "drums": -21.9,
+  "bass": -13.9,
+  "other": -19.6,
+  "chroma_top": [
+   "D",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.54
+ },
+ {
+  "bar": 45,
+  "t": 105.98,
+  "mix": -7.7,
+  "vocals": -21.6,
+  "drums": -22.7,
+  "bass": -21.8,
+  "other": -19.9,
+  "chroma_top": [
+   "F",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.43
+ },
+ {
+  "bar": 46,
+  "t": 108.38,
+  "mix": -7.5,
+  "vocals": -18.1,
+  "drums": -25.8,
+  "bass": -21.7,
+  "other": -22.3,
+  "chroma_top": [
+   "G",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.47
+ },
+ {
+  "bar": 47,
+  "t": 110.78,
+  "mix": -6.6,
+  "vocals": -21.6,
+  "drums": -22.7,
+  "bass": -11.2,
+  "other": -20.1,
+  "chroma_top": [
+   "A",
+   "E",
+   "G#"
+  ],
+  "onset_mean": 1.52
+ },
+ {
+  "bar": 48,
+  "t": 113.18,
+  "mix": -7.8,
+  "vocals": -21.7,
+  "drums": -33.6,
+  "bass": -14.6,
+  "other": -18.9,
+  "chroma_top": [
+   "D",
+   "A",
+   "F"
+  ],
+  "onset_mean": 1.58
+ },
+ {
+  "bar": 49,
+  "t": 115.58,
+  "mix": -11.7,
+  "vocals": -19.6,
+  "drums": -47.9,
+  "bass": -33.5,
+  "other": -18.6,
+  "chroma_top": [
+   "G",
+   "A",
+   "C"
+  ],
+  "onset_mean": 1.64
+ },
+ {
+  "bar": 50,
+  "t": 117.98,
+  "mix": -12.1,
+  "vocals": -22.2,
+  "drums": -57.3,
+  "bass": -58.6,
+  "other": -13.5,
+  "chroma_top": [
+   "F",
+   "E",
+   "G"
+  ],
+  "onset_mean": 1.44
+ },
+ {
+  "bar": 51,
+  "t": 120.38,
+  "mix": -12.6,
+  "vocals": -21.3,
+  "drums": -54.3,
+  "bass": -60.2,
+  "other": -14.7,
+  "chroma_top": [
+   "D",
+   "F",
+   "C"
+  ],
+  "onset_mean": 1.55
+ },
+ {
+  "bar": 52,
+  "t": 122.78,
+  "mix": -13.6,
+  "vocals": -42.1,
+  "drums": -47.0,
+  "bass": -60.1,
+  "other": -14.4,
+  "chroma_top": [
+   "G",
+   "C",
+   "F"
+  ],
+  "onset_mean": 0.96
+ },
+ {
+  "bar": 53,
+  "t": 125.18,
+  "mix": -12.8,
+  "vocals": -18.5,
+  "drums": -60.5,
+  "bass": -60.9,
+  "other": -14.8,
+  "chroma_top": [
+   "G",
+   "A",
+   "C"
+  ],
+  "onset_mean": 1.65
+ },
+ {
+  "bar": 54,
+  "t": 127.58,
+  "mix": -12.7,
+  "vocals": -19.0,
+  "drums": -59.6,
+  "bass": -58.5,
+  "other": -14.8,
+  "chroma_top": [
+   "E",
+   "F",
+   "G"
+  ],
+  "onset_mean": 1.45
+ },
+ {
+  "bar": 55,
+  "t": 129.98,
+  "mix": -13.3,
+  "vocals": -19.5,
+  "drums": -57.3,
+  "bass": -53.2,
+  "other": -16.0,
+  "chroma_top": [
+   "D",
+   "F",
+   "C"
+  ],
+  "onset_mean": 1.56
+ },
+ {
+  "bar": 56,
+  "t": 132.38,
+  "mix": -13.2,
+  "vocals": -20.0,
+  "drums": -55.9,
+  "bass": -44.0,
+  "other": -16.1,
+  "chroma_top": [
+   "G",
+   "F",
+   "C"
+  ],
+  "onset_mean": 1.32
+ },
+ {
+  "bar": 57,
+  "t": 134.78,
+  "mix": -12.7,
+  "vocals": -18.4,
+  "drums": -45.1,
+  "bass": -18.1,
+  "other": -19.3,
+  "chroma_top": [
+   "D",
+   "E",
+   "G"
+  ],
+  "onset_mean": 1.41
+ },
+ {
+  "bar": 58,
+  "t": 137.18,
+  "mix": -12.5,
+  "vocals": -22.7,
+  "drums": -49.5,
+  "bass": -17.1,
+  "other": -19.5,
+  "chroma_top": [
+   "G",
+   "F",
+   "C"
+  ],
+  "onset_mean": 1.45
+ },
+ {
+  "bar": 59,
+  "t": 139.58,
+  "mix": -12.8,
+  "vocals": -18.1,
+  "drums": -49.4,
+  "bass": -21.8,
+  "other": -17.2,
+  "chroma_top": [
+   "D",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.58
+ },
+ {
+  "bar": 60,
+  "t": 141.98,
+  "mix": -12.3,
+  "vocals": -17.2,
+  "drums": -49.4,
+  "bass": -45.8,
+  "other": -15.0,
+  "chroma_top": [
+   "G",
+   "F",
+   "C"
+  ],
+  "onset_mean": 1.54
+ },
+ {
+  "bar": 61,
+  "t": 144.38,
+  "mix": -12.8,
+  "vocals": -18.0,
+  "drums": -49.2,
+  "bass": -45.8,
+  "other": -15.5,
+  "chroma_top": [
+   "E",
+   "F",
+   "C"
+  ],
+  "onset_mean": 1.52
+ },
+ {
+  "bar": 62,
+  "t": 146.78,
+  "mix": -12.9,
+  "vocals": -17.5,
+  "drums": -48.3,
+  "bass": -42.3,
+  "other": -15.9,
+  "chroma_top": [
+   "G",
+   "A",
+   "C"
+  ],
+  "onset_mean": 1.47
+ },
+ {
+  "bar": 63,
+  "t": 149.18,
+  "mix": -13.8,
+  "vocals": -17.9,
+  "drums": -48.2,
+  "bass": -45.2,
+  "other": -17.0,
+  "chroma_top": [
+   "E",
+   "F",
+   "C"
+  ],
+  "onset_mean": 1.49
+ },
+ {
+  "bar": 64,
+  "t": 151.58,
+  "mix": -12.8,
+  "vocals": -22.6,
+  "drums": -44.3,
+  "bass": -24.7,
+  "other": -17.3,
+  "chroma_top": [
+   "D",
+   "F",
+   "A"
+  ],
+  "onset_mean": 1.36
+ },
+ {
+  "bar": 65,
+  "t": 153.98,
+  "mix": -14.4,
+  "vocals": -24.2,
+  "drums": -32.4,
+  "bass": -41.6,
+  "other": -18.9,
+  "chroma_top": [
+   "F",
+   "C",
+   "G"
+  ],
+  "onset_mean": 1.97
+ },
+ {
+  "bar": 66,
+  "t": 156.38,
+  "mix": -15.2,
+  "vocals": -20.7,
+  "drums": -33.9,
+  "bass": -39.0,
+  "other": -20.7,
+  "chroma_top": [
+   "G",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.95
+ },
+ {
+  "bar": 67,
+  "t": 158.78,
+  "mix": -15.4,
+  "vocals": -24.7,
+  "drums": -34.6,
+  "bass": -37.9,
+  "other": -19.6,
+  "chroma_top": [
+   "E",
+   "A",
+   "C"
+  ],
+  "onset_mean": 2.09
+ },
+ {
+  "bar": 68,
+  "t": 161.18,
+  "mix": -14.4,
+  "vocals": -21.3,
+  "drums": -33.2,
+  "bass": -32.9,
+  "other": -19.2,
+  "chroma_top": [
+   "D",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.9
+ },
+ {
+  "bar": 69,
+  "t": 163.58,
+  "mix": -13.1,
+  "vocals": -28.7,
+  "drums": -30.1,
+  "bass": -20.0,
+  "other": -17.9,
+  "chroma_top": [
+   "F",
+   "C",
+   "E"
+  ],
+  "onset_mean": 1.85
+ },
+ {
+  "bar": 70,
+  "t": 165.98,
+  "mix": -12.8,
+  "vocals": -19.7,
+  "drums": -33.6,
+  "bass": -21.7,
+  "other": -18.7,
+  "chroma_top": [
+   "G",
+   "E",
+   "D"
+  ],
+  "onset_mean": 1.77
+ },
+ {
+  "bar": 71,
+  "t": 168.38,
+  "mix": -13.1,
+  "vocals": -19.6,
+  "drums": -34.1,
+  "bass": -24.0,
+  "other": -19.5,
+  "chroma_top": [
+   "E",
+   "A",
+   "G"
+  ],
+  "onset_mean": 1.56
+ },
+ {
+  "bar": 72,
+  "t": 170.78,
+  "mix": -12.3,
+  "vocals": -40.2,
+  "drums": -45.4,
+  "bass": -55.9,
+  "other": -17.8,
+  "chroma_top": [
+   "F",
+   "E",
+   "G"
+  ],
+  "onset_mean": 1.72
+ },
+ {
+  "bar": 73,
+  "t": 173.18,
+  "mix": -6.5,
+  "vocals": -22.6,
+  "drums": -22.0,
+  "bass": -11.8,
+  "other": -20.5,
+  "chroma_top": [
+   "F",
+   "E",
+   "F#"
+  ],
+  "onset_mean": 1.43
+ },
+ {
+  "bar": 74,
+  "t": 175.58,
+  "mix": -6.3,
+  "vocals": -18.4,
+  "drums": -23.3,
+  "bass": -11.1,
+  "other": -21.8,
+  "chroma_top": [
+   "G",
+   "E",
+   "F#"
+  ],
+  "onset_mean": 1.42
+ },
+ {
+  "bar": 75,
+  "t": 177.98,
+  "mix": -6.6,
+  "vocals": -21.5,
+  "drums": -23.4,
+  "bass": -11.3,
+  "other": -20.2,
+  "chroma_top": [
+   "A",
+   "C",
+   "G"
+  ],
+  "onset_mean": 1.52
+ },
+ {
+  "bar": 76,
+  "t": 180.38,
+  "mix": -7.1,
+  "vocals": -17.4,
+  "drums": -20.5,
+  "bass": -13.8,
+  "other": -21.6,
+  "chroma_top": [
+   "D",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.58
+ },
+ {
+  "bar": 77,
+  "t": 182.78,
+  "mix": -6.4,
+  "vocals": -21.8,
+  "drums": -24.4,
+  "bass": -11.1,
+  "other": -19.9,
+  "chroma_top": [
+   "F",
+   "E",
+   "C"
+  ],
+  "onset_mean": 1.39
+ },
+ {
+  "bar": 78,
+  "t": 185.18,
+  "mix": -6.1,
+  "vocals": -18.5,
+  "drums": -25.6,
+  "bass": -10.5,
+  "other": -20.8,
+  "chroma_top": [
+   "G",
+   "E",
+   "F#"
+  ],
+  "onset_mean": 1.46
+ },
+ {
+  "bar": 79,
+  "t": 187.58,
+  "mix": -6.8,
+  "vocals": -22.3,
+  "drums": -27.0,
+  "bass": -11.7,
+  "other": -19.7,
+  "chroma_top": [
+   "A",
+   "G",
+   "C"
+  ],
+  "onset_mean": 1.5
+ },
+ {
+  "bar": 80,
+  "t": 189.98,
+  "mix": -10.5,
+  "vocals": -15.3,
+  "drums": -26.7,
+  "bass": -16.9,
+  "other": -19.7,
+  "chroma_top": [
+   "E",
+   "C",
+   "F"
+  ],
+  "onset_mean": 1.39
+ },
+ {
+  "bar": 81,
+  "t": 192.38,
+  "mix": -6.9,
+  "vocals": -18.8,
+  "drums": -20.5,
+  "bass": -12.2,
+  "other": -20.8,
+  "chroma_top": [
+   "D",
+   "E",
+   "F"
+  ],
+  "onset_mean": 1.37
+ },
+ {
+  "bar": 82,
+  "t": 194.78,
+  "mix": -6.3,
+  "vocals": -19.2,
+  "drums": -22.3,
+  "bass": -10.8,
+  "other": -20.8,
+  "chroma_top": [
+   "G",
+   "F",
+   "F#"
+  ],
+  "onset_mean": 1.42
+ },
+ {
+  "bar": 83,
+  "t": 197.18,
+  "mix": -6.9,
+  "vocals": -18.0,
+  "drums": -23.1,
+  "bass": -12.0,
+  "other": -19.8,
+  "chroma_top": [
+   "D",
+   "E",
+   "F"
+  ],
+  "onset_mean": 1.47
+ },
+ {
+  "bar": 84,
+  "t": 199.58,
+  "mix": -7.0,
+  "vocals": -16.9,
+  "drums": -21.1,
+  "bass": -13.4,
+  "other": -21.6,
+  "chroma_top": [
+   "F",
+   "G",
+   "C"
+  ],
+  "onset_mean": 1.46
+ },
+ {
+  "bar": 85,
+  "t": 201.98,
+  "mix": -8.5,
+  "vocals": -17.4,
+  "drums": -22.3,
+  "bass": -34.1,
+  "other": -27.1,
+  "chroma_top": [
+   "E",
+   "F",
+   "G"
+  ],
+  "onset_mean": 1.47
+ },
+ {
+  "bar": 86,
+  "t": 204.38,
+  "mix": -6.0,
+  "vocals": -17.6,
+  "drums": -21.9,
+  "bass": -10.5,
+  "other": -20.5,
+  "chroma_top": [
+   "G",
+   "A",
+   "C"
+  ],
+  "onset_mean": 1.49
+ },
+ {
+  "bar": 87,
+  "t": 206.78,
+  "mix": -11.9,
+  "vocals": -19.7,
+  "drums": -52.7,
+  "bass": -23.0,
+  "other": -17.1,
+  "chroma_top": [
+   "F",
+   "G",
+   "E"
+  ],
+  "onset_mean": 1.26
+ },
+ {
+  "bar": 88,
+  "t": 209.18,
+  "mix": -14.3,
+  "vocals": -47.4,
+  "drums": -31.1,
+  "bass": -55.3,
+  "other": -15.0,
+  "chroma_top": [
+   "C",
+   "A",
+   "D"
+  ],
+  "onset_mean": 1.27
+ },
+ {
+  "bar": 89,
+  "t": 211.58,
+  "mix": -15.0,
+  "vocals": -51.9,
+  "drums": -44.2,
+  "bass": -28.9,
+  "other": -16.4,
+  "chroma_top": [
+   "C",
+   "D",
+   "A"
+  ],
+  "onset_mean": 1.27
+ },
+ {
+  "bar": 90,
+  "t": 213.98,
+  "mix": -17.4,
+  "vocals": -39.9,
+  "drums": -57.9,
+  "bass": -22.3,
+  "other": -18.7,
+  "chroma_top": [
+   "D",
+   "F",
+   "A"
+  ],
+  "onset_mean": 1.2
+ },
+ {
+  "bar": 91,
+  "t": 216.38,
+  "mix": -32.1,
+  "vocals": -56.0,
+  "drums": -57.5,
+  "bass": -44.9,
+  "other": -32.7,
+  "chroma_top": [
+   "D",
+   "A",
+   "E"
+  ],
+  "onset_mean": 0.85
+ }
+]

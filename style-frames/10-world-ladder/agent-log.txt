@@ -1,0 +1,15 @@
+I rendered the dusk hill shot at all five rungs, and they read as one film: the camera, composition, sun, tree, figure and Clawd are identical across the five, and only the rendering changes. Saturation rises from a gray pixel world with an orange Clawd to a luminous finale where Clawd is the 11-ray spark. The scene is built once in 3D in a single WebGL2 file, `ladder.html?rung=N`; each rung is a different renderer over the same geometry. `frame.png` cuts one frame into five vertical bands, and the hill line runs unbroken across the seams, which also previews a wipe transition. Each rung renders in 1.0–1.7 s inside the page and 2.7–4.8 s including Chrome startup, so all five fit the 3–5 s budget. Rungs 1 and 4 re-render byte-identical.
+
+Weak spots:
+- **Rung 4:** the paint reads as soft impressionism rather than confident brushwork.
+- **Rungs 3–4:** the foreground slope is large and quiet.
+- **Rung 5:** I deliberately darkened its sky so the spark reads as light against dark. That is a break from "same light", and its grid leans a little toward synthwave.
+
+Clawd's rung 1 form uses the 36×10 two-times-pixel sprite from his ladder; that is my reading of "glyph, 2x pixel". NOTES.md has the transition ideas for each pair of rungs and the timings.
+
+Everything is in `C:\Users\USER\Projects\shelter-mv\style-frames\10-world-ladder`:
+- rung1.png … rung5.png
+- ladder-strip.png
+- frame.png
+- NOTES.md
+- ladder.html

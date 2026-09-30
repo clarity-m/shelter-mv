@@ -1,0 +1,698 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Shelter MV / 06 riso / the harness</title>
+<style>
+html,body{margin:0;padding:0;background:#f5f0e8;overflow:hidden;}
+canvas{display:block;}
+</style>
+</head>
+<body>
+<canvas id="out"></canvas>
+<!--
+  Shelter MV style frame 06: risograph print. Scene: "The harness".
+  Three spot inks on warm paper: riso black (line work), riso Midnight (the night; ?ink=federal swaps in federal blue),
+  Claude orange (Clawd and his light).
+  Pipeline: the scene is vector art drawn with Canvas2D into per-ink density plates. Tone plates get screened,
+  line plates print solid. A WebGL2 pass then does AM halftone at 45/15/75 degrees, integer-pixel misregistration
+  per drum, multiply overprint, ink starvation / mottle / dropouts, paper fibre and grain.
+  Clawd lives on his own orange mask: pixel-exact #D97757, never screened, never filtered.
+  Deterministic (mulberry32 + integer hashes). ?detail&cx=668&cy=652&z=2.2 at 1080x1080 renders detail.png, a close-up
+  of the leaning researcher (dots stay the same size, as in a real close-up shot). render.sh shows the invocations.
+-->
+<script>
+"use strict";
+const T0 = performance.now();
+const Q = new URLSearchParams(location.search);
+const DETAIL = Q.has('detail');
+const OW = DETAIL ? 1080 : 1920, OH = 1080;
+const VS = DETAIL ? +(Q.get('z') || 2.5) : 1;                      // view scale (scene px -> output px)
+const VC = DETAIL ? [+(Q.get('cx') || 690), +(Q.get('cy') || 590)] : [960, 540];
+const LWS = 1 / Math.sqrt(VS);                                      // close-ups get relatively finer pen work
+
+// ------------------------------------------------------------------ utilities
+function mulberry32(a){ return function(){ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
+const rnd = mulberry32(0x0601A);
+function h1(i){ let t = Math.imul((i|0) ^ 0x9E3779B9, 0x85EBCA6B); t ^= t >>> 13; t = Math.imul(t, 0xC2B2AE35); t ^= t >>> 16; return (t >>> 0) / 4294967296; }
+function noise1(x){ const i = Math.floor(x), f = x - i, u = f*f*(3-2*f); return h1(i)*(1-u) + h1(i+1)*u; }
+const clamp = (v,a,b) => v < a ? a : (v > b ? b : v);
+const lerp = (a,b,t) => a + (b-a)*t;
+const D2R = Math.PI / 180, TAU = Math.PI * 2;
+
+// ------------------------------------------------------------------ plates
+// Kt/Bt/Ot: screened tone (alpha = ink density). Kl/Bl/Ol: solid line art. Cl: Clawd mask (orange drum).
+const KEYS = ['Kt','Kl','Bt','Bl','Ot','Ol','Cl'];
+const TONES = ['Kt','Bt','Ot'], ALL = ['Kt','Kl','Bt','Bl','Ot','Ol'];
+const CV = {}, PL = {};
+for (const k of KEYS) {
+  const c = document.createElement('canvas'); c.width = OW; c.height = OH;
+  const x = c.getContext('2d');
+  x.setTransform(VS, 0, 0, VS, OW/2 - VS*VC[0], OH/2 - VS*VC[1]);
+  CV[k] = c; PL[k] = x;
+}
+const A = d => 'rgba(0,0,0,' + clamp(d, 0, 1).toFixed(4) + ')';
+function Pth(poly, closed = true){ const p = new Path2D(); poly.forEach((q, i) => i ? p.lineTo(q[0], q[1]) : p.moveTo(q[0], q[1])); if (closed) p.closePath(); return p; }
+function knock(path, keys = ALL, a = 1){
+  for (const k of keys){ const x = PL[k]; x.save(); x.globalCompositeOperation = 'destination-out'; x.fillStyle = A(a); x.fill(path); x.restore(); }
+}
+// d >= 0 adds ink, d < 0 removes ink; optional clip path
+function paint(k, path, d, clip){
+  const x = PL[k]; x.save(); if (clip) x.clip(clip);
+  if (typeof d === 'number' && d < 0){ x.globalCompositeOperation = 'destination-out'; x.fillStyle = A(-d); }
+  else x.fillStyle = (typeof d === 'number') ? A(d) : d;
+  x.fill(path); x.restore();
+}
+function radialG(k, clip, cx, cy, ry, stops, op){
+  const x = PL[k]; x.save();
+  if (clip) x.clip(clip);
+  if (op) x.globalCompositeOperation = op;
+  x.translate(cx, cy); x.scale(1, ry);
+  const rm = stops[stops.length-1][0];
+  const g = x.createRadialGradient(0, 0, 0, 0, 0, rm);
+  for (const [r, d] of stops) g.addColorStop(clamp(r/rm, 0, 1), A(d));
+  x.fillStyle = g; x.fillRect(-6000, -6000/ry, 12000, 12000/ry);
+  x.restore();
+}
+function linG(k, clip, x0, y0, x1, y1, stops, op){
+  const x = PL[k]; x.save();
+  if (op) x.globalCompositeOperation = op;
+  const g = x.createLinearGradient(x0, y0, x1, y1);
+  for (const [t, d] of stops) g.addColorStop(t, A(d));
+  x.fillStyle = g;
+  if (clip) x.fill(clip); else x.fillRect(-6000, -6000, 12000, 12000);
+  x.restore();
+}
+
+// centripetal Catmull-Rom through pts -> dense polyline (step in input units)
+function crc(pts, closed = false, step = 3){
+  const n = pts.length; if (n < 2) return pts.slice();
+  const ext = closed ? [pts[n-1], ...pts, pts[0], pts[1]]
+    : [[2*pts[0][0]-pts[1][0], 2*pts[0][1]-pts[1][1]], ...pts, [2*pts[n-1][0]-pts[n-2][0], 2*pts[n-1][1]-pts[n-2][1]]];
+  const out = [], segs = closed ? n : n - 1;
+  const dd = (a, b) => Math.max(1e-5, Math.sqrt(Math.hypot(b[0]-a[0], b[1]-a[1])));
+  for (let i = 0; i < segs; i++){
+    const p0 = ext[i], p1 = ext[i+1], p2 = ext[i+2], p3 = ext[i+3];
+    const t0 = 0, t1 = t0 + dd(p0,p1), t2 = t1 + dd(p1,p2), t3 = t2 + dd(p2,p3);
+    const m = Math.max(2, Math.ceil(Math.hypot(p2[0]-p1[0], p2[1]-p1[1]) / step));
+    for (let j = 0; j < m; j++){
+      const t = t1 + (t2 - t1) * j / m;
+      const L = (a, b, ta, tb) => { const u = (t - ta) / (tb - ta); return [a[0] + (b[0]-a[0])*u, a[1] + (b[1]-a[1])*u]; };
+      const A1 = L(p0,p1,t0,t1), A2 = L(p1,p2,t1,t2), A3 = L(p2,p3,t2,t3);
+      const B1 = L(A1,A2,t0,t2), B2 = L(A2,A3,t1,t3);
+      out.push(L(B1,B2,t1,t2));
+    }
+  }
+  if (closed) out.push(out[0].slice()); else out.push(pts[n-1].slice());
+  return out;
+}
+// brush line: discs stamped along a polyline, width tapers at the ends and wobbles along its length
+function ink(k, pts, w, o = {}){
+  const x = PL[k], n = pts.length; if (n < 2) return;
+  const cum = [0];
+  for (let i = 1; i < n; i++) cum.push(cum[i-1] + Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]));
+  const L = cum[n-1]; if (!(L > 0)) return;
+  const a0 = o.a0 ?? 0.35, a1 = o.a1 ?? 0.35, tl = Math.min(0.48, (o.tl ?? 14) / L);
+  const wob = o.wob ?? 0.18, fq = o.fq ?? 0.03, seed = o.seed ?? Math.floor(rnd()*1e6);
+  const W = w * LWS, ds = 0.6 / VS;
+  const p = new Path2D();
+  let j = 0;
+  for (let s = 0; s <= L + 1e-6; s += ds){
+    while (j < n - 2 && cum[j+1] < s) j++;
+    const seg = cum[j+1] - cum[j], u = seg > 0 ? clamp((s - cum[j]) / seg, 0, 1) : 0;
+    const px = pts[j][0] + (pts[j+1][0] - pts[j][0]) * u, py = pts[j][1] + (pts[j+1][1] - pts[j][1]) * u;
+    const f = s / L;
+    let prof = 1;
+    if (f < tl) prof = a0 + (1 - a0) * Math.sin(f / tl * Math.PI / 2);
+    if (1 - f < tl) prof = Math.min(prof, a1 + (1 - a1) * Math.sin((1 - f) / tl * Math.PI / 2));
+    const r = Math.max(0.35 / VS, 0.5 * W * prof * (1 + wob * (2 * noise1(seed + s * fq) - 1)));
+    p.moveTo(px + r, py); p.arc(px, py, r, 0, TAU);
+  }
+  x.save();
+  if (o.op) x.globalCompositeOperation = o.op;
+  x.fillStyle = o.style || '#000'; x.fill(p);
+  x.restore();
+}
+const inkC = (k, pts, w, o = {}) => ink(k, crc(pts, !!o.closed, o.step || 2), w, o);
+function ell(cx, cy, rx, ry, a0 = 0, a1 = TAU, n = 96){ const o = []; for (let i = 0; i <= n; i++){ const a = a0 + (a1 - a0) * i / n; o.push([cx + rx*Math.cos(a), cy + ry*Math.sin(a)]); } return o; }
+function rectPts(x, y, w, h){ return [[x, y], [x+w, y], [x+w, y+h], [x, y+h]]; }
+function rrectPts(x, y, w, h, r){
+  const o = [];
+  const arc = (cx, cy, a0) => { for (let i = 0; i <= 6; i++){ const a = a0 + i/6 * Math.PI/2; o.push([cx + r*Math.cos(a), cy + r*Math.sin(a)]); } };
+  arc(x+w-r, y+r, -Math.PI/2); arc(x+w-r, y+h-r, 0); arc(x+r, y+h-r, Math.PI/2); arc(x+r, y+r, Math.PI);
+  return o;
+}
+// closed polygon around a smooth centreline with linearly varying width
+function tube(cpts, w0, w1, step = 2){
+  const c = crc(cpts, false, step), n = c.length, Lp = [], Rp = [];
+  for (let i = 0; i < n; i++){
+    const a = c[Math.max(0, i-1)], b = c[Math.min(n-1, i+1)];
+    let tx = b[0]-a[0], ty = b[1]-a[1]; const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
+    const w = lerp(w0, w1, i / (n-1)) / 2;
+    Lp.push([c[i][0] - ty*w, c[i][1] + tx*w]); Rp.push([c[i][0] + ty*w, c[i][1] - tx*w]);
+  }
+  return {poly: Lp.concat(Rp.slice().reverse()), left: Lp, right: Rp, center: c};
+}
+// local figure coords (facing right, y down, unit = o.s px) -> scene
+function mapPts(pts, o){
+  const c = Math.cos(o.a || 0), s = Math.sin(o.a || 0), m = o.m ? -1 : 1;
+  return pts.map(([x, y]) => { const X = x * o.s, Y = y * o.s; return [o.x + m*(X*c - Y*s), o.y + X*s + Y*c]; });
+}
+function txt(k, str, x, y, size, font, rot = 0, align = 'left'){
+  const c = PL[k]; c.save(); c.translate(x, y); c.rotate(rot);
+  c.font = size + 'px ' + font; c.textAlign = align; c.fillStyle = '#000'; c.fillText(str, 0, 0); c.restore();
+}
+
+// ------------------------------------------------------------------ scene constants
+const LC = [960, 758];                                   // Clawd's heart: the only light that matters
+const CLW = {x: 906, y: 728, u: 6};                      // 18x5 glyph, 1:2 pixels -> 108 x 60 px
+const BEN = {back: 712, front: 868, bot: 918};
+const RING = {cx: 960, cy: 792, rx: 124, r0: 115, k: 0.22, H: 232};
+const OFF = {K: [0, 0], B: [3, -2], O: [-3, 2]};         // drum misregistration, integer px: keeps Clawd pixel-exact
+
+// ------------------------------------------------------------------ room + light
+function room(){
+  radialG('Bt', null, LC[0], LC[1], 0.8, [[0,0],[95,0],[220,0.28],[400,0.58],[620,0.84],[900,1.0],[1400,1.0]]);
+  radialG('Ot', null, LC[0], LC[1], 0.85, [[0,0],[82,0],[140,0.3],[250,0.26],[400,0.1],[560,0]]);
+  radialG('Kt', null, LC[0], LC[1], 0.9, [[0,0],[470,0],[780,0.3],[1100,0.56],[1500,0.74]]);
+  // cool spill from the monitor: less ink
+  radialG('Bt', null, 1452, 556, 0.75, [[0,0.42],[170,0.28],[320,0]], 'destination-out');
+  radialG('Kt', null, 1452, 556, 0.75, [[0,0.5],[200,0.3],[360,0]], 'destination-out');
+}
+
+// ------------------------------------------------------------------ whiteboard (dim, it is night)
+function whiteboard(){
+  const x0 = -30, y0 = 120, x1 = 452, y1 = 392;
+  const p = Pth(rectPts(x0, y0, x1-x0, y1-y0));
+  knock(p, TONES);
+  linG('Bt', p, x1, y1, x0, y0, [[0, 0.6], [1, 0.82]]);
+  linG('Kt', p, x1, y1, x0, y0, [[0, 0.04], [0.5, 0.16], [1, 0.4]]);
+  ink('Kl', [[x0 - 20, y0], [x1, y0], [x1, y1]], 4, {a0: 1, a1: 1, wob: 0.1});
+  ink('Kl', [[x0 - 20, y1], [x1, y1]], 4, {a0: 1, a1: 1, wob: 0.1});
+  const tray = Pth(rectPts(x0 - 20, y1, x1 - x0 - 10, 11));
+  knock(tray, TONES); paint('Bt', tray, 0.75);
+  ink('Kl', [[x0 - 20, y1 + 11], [x1 - 30, y1 + 11]], 3.2, {a0: 1, a1: 1});
+  const mk = rrectPts(x0 + 250, y1 - 9, 50, 9, 4);
+  knock(Pth(mk), TONES); paint('Bt', Pth(mk), 0.3);
+  inkC('Kl', mk, 2.2, {closed: true, a0: 1, a1: 1});
+  // marks, in blue marker (blue line drum)
+  const k = 'Kl', r2 = mulberry32(77);
+  const ax = x0 + 78, ay = y0 + 40, aw = 170, ah = 150;
+  ink(k, [[ax, ay], [ax, ay + ah], [ax + aw, ay + ah]], 2.2, {a0: 0.7, a1: 0.5, wob: 0.25});
+  const cur = [];
+  for (let i = 0; i <= 44; i++){ const t = i/44; cur.push([ax + 10 + t*(aw - 18), ay + 14 + (ah - 34)*(1 - Math.exp(-4.2*t)) + (r2() - 0.5)*9*Math.exp(-1.5*t)]); }
+  ink(k, cur, 2.2, {a0: 0.5, a1: 0.3, wob: 0.3});
+  const mx = x0 + 290, my = y0 + 40, cs = 18, N = 7;          // causal attention pattern
+  for (let r = 0; r < N; r++) for (let c = 0; c <= r; c++){
+    const d = c === r ? 0.55 : (c === 0 ? 0.4 : 0.08 + 0.26 * r2());
+    paint('Kt', Pth(rectPts(mx + c*cs + 2, my + r*cs + 2, cs - 4, cs - 4)), d);
+  }
+  for (let i = 0; i <= N; i++){
+    ink(k, [[mx, my + i*cs], [mx + N*cs, my + i*cs]], 1.3, {a0: 0.8, a1: 0.8, wob: 0.3});
+    ink(k, [[mx + i*cs, my], [mx + i*cs, my + N*cs]], 1.3, {a0: 0.8, a1: 0.8, wob: 0.3});
+  }
+  const F = '"Ink Free", "Segoe Print", cursive';               // symbols only, no words
+  txt(k, '∇θ', x0 + 292, y0 + 214, 32, F, -0.03);
+  txt(k, 'Σ eˣ', x0 + 360, y0 + 214, 28, F, -0.02);
+  txt(k, 'QKᵀ/√d', x0 + 292, y0 + 250, 26, F, 0.01);
+}
+
+// ------------------------------------------------------------------ people
+// head profile, facing right, head units (crown to chin ~ 1), origin ~ ear
+const HEAD = [[0.13,0.86],[0.135,0.62],[0.155,0.47],[0.2,0.432],[0.26,0.42],[0.318,0.395],[0.35,0.345],[0.338,0.293],
+  [0.365,0.258],[0.352,0.236],[0.373,0.215],[0.36,0.19],[0.355,0.156],[0.395,0.143],[0.425,0.116],[0.415,0.08],[0.372,0.0],
+  [0.337,-0.058],[0.35,-0.115],[0.342,-0.2],[0.31,-0.33],[0.24,-0.45],[0.1,-0.535],[-0.07,-0.56],[-0.25,-0.505],
+  [-0.385,-0.37],[-0.44,-0.17],[-0.415,0.05],[-0.34,0.2],[-0.25,0.3],[-0.215,0.48],[-0.205,0.86]];
+const EAR = [[-0.015,-0.075],[-0.07,-0.095],[-0.118,-0.06],[-0.132,0.015],[-0.112,0.095],[-0.065,0.145],[-0.03,0.13],[-0.02,0.1]];
+const EAR_IN = [[-0.05,-0.05],[-0.088,-0.03],[-0.095,0.03],[-0.075,0.08]];
+const SHADE = [[0.19,-0.62],[0.15,-0.3],[0.1,-0.06],[0.1,0.14],[0.16,0.32],[0.27,0.46],[0.3,0.95]];
+const JAW_SH = [[0.34,0.385],[0.26,0.425],[0.16,0.447],[0.06,0.40],[-0.04,0.33],[-0.12,0.24],[-0.3,0.3],[-0.4,1.0],[0.45,1.0]];
+
+const HAIR1 = [[0.305,-0.33],[0.27,-0.30],[0.21,-0.29],[0.16,-0.25],[0.12,-0.18],[0.085,-0.10],[0.05,-0.085],[0.0,-0.10],
+  [-0.06,-0.105],[-0.12,-0.07],[-0.15,0.0],[-0.17,0.1],[-0.21,0.2],[-0.27,0.27],[-0.35,0.22],[-0.43,0.08],[-0.47,-0.12],
+  [-0.44,-0.34],[-0.31,-0.51],[-0.11,-0.6],[0.09,-0.585],[0.24,-0.5],[0.315,-0.41]];
+const HAIR2 = [[0.31,-0.34],[0.27,-0.305],[0.2,-0.31],[0.15,-0.25],[0.1,-0.15],[0.05,-0.1],[-0.03,-0.11],[-0.1,-0.09],
+  [-0.15,0.0],[-0.19,0.12],[-0.26,0.22],[-0.34,0.2],[-0.42,0.1],[-0.47,-0.08],[-0.49,-0.28],[-0.43,-0.47],[-0.33,-0.57],
+  [-0.2,-0.6],[-0.12,-0.66],[0.0,-0.63],[0.08,-0.67],[0.18,-0.61],[0.27,-0.56],[0.33,-0.47],[0.36,-0.4]];
+
+function head(o, st){
+  const step = 1.2 / o.s;
+  const M = pts => mapPts(pts, o);
+  const silPts = M(crc(HEAD, true, step));
+  const S = Pth(silPts);
+  knock(S);
+  paint('Ot', S, st.skinO); if (st.skinB) paint('Bt', S, st.skinB);
+  // form shadow + jaw shadow (flat, hard-edged: print shading)
+  const shP = Pth(M(crc(SHADE, false, step).concat([[-1.2, 1.2], [-1.2, -1.2]])));
+  paint('Bt', shP, st.shadeB, S); if (st.shadeO) paint('Ot', shP, st.shadeO, S);
+  paint('Bt', Pth(M(crc(JAW_SH, true, step))), st.jawB, S);
+  if (st.blush) paint('Ot', Pth(M(ell(0.215, 0.105, 0.075, 0.045))), st.blush, S);
+  if (st.beard) paint('Bt', Pth(M(crc([[0.1,0.16],[0.2,0.3],[0.3,0.32],[0.36,0.33],[0.35,0.39],[0.3,0.42],[0.18,0.44],[0.05,0.38],[-0.06,0.22],[-0.08,0.1],[0.02,0.12]], true, step))), st.beard, S);
+  ink('Kl', silPts.slice(0, Math.floor(silPts.length * 0.62)), st.lw, {a0: 0.5, a1: 1, tl: 20});
+  ink('Kl', silPts.slice(Math.floor(silPts.length * 0.6)), st.lw, {a0: 1, a1: 0.5, tl: 20});
+  const eP = M(crc(EAR, false, step));
+  paint('Bt', Pth(eP), st.shadeB * 0.5);
+  ink('Kl', eP, st.lw * 0.62, {a0: 0.4, a1: 0.4});
+  ink('Kl', M(crc(EAR_IN, false, step)), st.lw * 0.42, {a0: 0.3, a1: 0.3});
+  if (st.bun){
+    const bP = M(ell(st.bun[0], st.bun[1], st.bun[2], st.bun[3]));
+    knock(Pth(bP)); paint('Bt', Pth(bP), st.hairB); paint('Kt', Pth(bP), st.hairK);
+    ink('Kl', bP, st.lw, {a0: 1, a1: 1});
+  }
+  const hP = M(crc(st.hair, true, step));
+  const H = Pth(hP);
+  knock(H); paint('Bt', H, st.hairB); paint('Kt', H, st.hairK);
+  ink('Bt', M(crc(st.sheen, false, step)), st.lw * 2.2, {a0: 0.1, a1: 0.1, tl: 30, op: 'destination-out', style: A(0.7)});
+  ink('Kt', M(crc(st.sheen, false, step)), st.lw * 2.6, {a0: 0.1, a1: 0.1, tl: 30, op: 'destination-out', style: A(0.9)});
+  for (const fl of st.flow) ink('Kl', M(crc(fl, false, step)), st.lw * 0.35, {a0: 0.1, a1: 0.2, tl: 30});
+  ink('Kl', hP, st.lw, {a0: 1, a1: 1});
+  for (const sd of st.strands) ink('Kl', M(crc(sd, false, step)), st.lw * 0.45, {a0: 0.2, a1: 0.05, tl: 20});
+  ink('Kl', M(crc(st.lid, false, step)), st.lw * 0.85, {a0: 0.35, a1: 0.6, tl: 6});
+  paint('Kl', Pth(M(crc(st.iris, true, step))), 1);
+  ink('Kl', M(crc([[0.2,-0.118],[0.25,-0.137],[0.305,-0.132],[0.328,-0.12]], false, step)), st.lw * 0.7, {a0: 0.3, a1: 0.5, tl: 8});
+  ink('Kl', M(crc([[0.36,0.124],[0.374,0.138],[0.392,0.134]], false, step)), st.lw * 0.45, {a0: 0.4, a1: 0.4, tl: 3});
+  ink('Kl', M(crc(st.mouth, false, step)), st.lw * 0.5, {a0: 0.6, a1: 0.2, tl: 5});
+  if (st.glasses){
+    const lens = M(ell(0.322, -0.032, 0.034, 0.064));
+    knock(Pth(lens), ['Bt']); paint('Ot', Pth(lens), 0.12);
+    ink('Kl', lens, st.lw * 0.5, {a0: 1, a1: 1});
+    ink('Kl', M(crc([[0.292,-0.06],[0.18,-0.07],[0.05,-0.062],[-0.03,-0.045]], false, step)), st.lw * 0.5, {a0: 1, a1: 0.6});
+  }
+}
+
+const ST1 = { lw: 4.4, skinO: 0.22, skinB: 0.0, shadeB: 0.36, shadeO: 0.0, jawB: 0.2, blush: 0.42,
+  hair: HAIR1, bun: [-0.5, -0.24, 0.135, 0.145], hairB: 0.95, hairK: 0.55,
+  sheen: [[0.22,-0.47],[0.05,-0.54],[-0.14,-0.53],[-0.3,-0.45]],
+  flow: [[[0.2,-0.4],[0.0,-0.47],[-0.25,-0.42],[-0.4,-0.3]], [[0.12,-0.2],[-0.05,-0.28],[-0.3,-0.26],[-0.43,-0.2]]],
+  strands: [[[0.075,-0.095],[0.1,0.0],[0.106,0.08],[0.09,0.16]], [[0.23,-0.44],[0.3,-0.37],[0.345,-0.27]]],
+  lid: [[0.232,-0.038],[0.26,-0.047],[0.29,-0.04],[0.312,-0.018]],
+  iris: [[0.283,-0.036],[0.302,-0.028],[0.297,-0.01],[0.283,-0.016]],
+  mouth: [[0.352,0.236],[0.328,0.242],[0.305,0.232]], glasses: true };
+const ST2 = { lw: 4.0, skinO: 0.08, skinB: 0.0, shadeB: 0.42, shadeO: 0.0, jawB: 0.22, blush: 0.0, beard: 0.42,
+  hair: HAIR2, bun: null, hairB: 0.85, hairK: 0.3,
+  sheen: [[0.24,-0.5],[0.08,-0.6],[-0.1,-0.6],[-0.28,-0.52]],
+  flow: [[[0.25,-0.45],[0.05,-0.52],[-0.2,-0.5],[-0.38,-0.38]]],
+  strands: [[[0.3,-0.36],[0.33,-0.28]]],
+  lid: [[0.24,-0.045],[0.27,-0.056],[0.3,-0.05],[0.318,-0.034]],
+  iris: [[0.29,-0.046],[0.31,-0.04],[0.308,-0.022],[0.292,-0.026]],
+  mouth: [[0.352,0.236],[0.33,0.238],[0.31,0.228]], glasses: false };
+
+// researcher 1: leans in close over the bench, elbow down, stylus in the near (right) hand
+const R1 = {x: 646, y: 546, s: 165, a: 24 * D2R, m: false};
+function researcher1Body(){
+  head(R1, ST1);
+  const T = crc([[566,606],[536,616],[506,634],[480,662],[461,700],[447,750],[438,880],[704,880],[698,780],[688,718],
+    [672,684],[652,664],[630,668],[608,660],[586,644]], true, 2);
+  const TP = Pth(T);
+  knock(TP);
+  linG('Bt', TP, 690, 650, 440, 740, [[0, 0.44], [0.5, 0.66], [1, 0.86]]);
+  linG('Ot', TP, 690, 650, 540, 700, [[0, 0.22], [1, 0]]);
+  ink('Kl', T, 4.6, {a0: 1, a1: 1});
+  inkC('Kl', [[574,622],[592,654],[612,670],[634,676],[656,672]], 2.2, {a0: 0.3, a1: 0.3});   // crew-neck rib
+  inkC('Kl', [[500,660],[512,684],[518,712]], 2.0, {a0: 0.1, a1: 0.1});             // shoulder-blade fold
+}
+let STYLUS_TIP = [828, 732];
+// tube with a rounded start cap (shoulder / deltoid)
+function tubeCap(cpts, w0, w1){
+  const t = tube(cpts, w0, w1);
+  const c0 = t.center[0], c1 = t.center[3];
+  let tx = c1[0] - c0[0], ty = c1[1] - c0[1]; const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
+  const nx = -ty, ny = tx, r = w0 / 2, cap = [];
+  for (let i = 0; i <= 16; i++){ const a = -Math.PI/2 + Math.PI * i / 16; cap.push([c0[0] + r*(-Math.cos(a)*tx + Math.sin(a)*nx), c0[1] + r*(-Math.cos(a)*ty + Math.sin(a)*ny)]); }
+  return {poly: t.left.concat(t.right.slice().reverse()).concat(cap), left: t.left, right: t.right, center: t.center};
+}
+function researcher1Arm(){
+  const fa = tube([[640,798],[672,764],[706,733]], 34, 27);
+  const sl = tubeCap([[568,682],[584,738],[602,784],[626,802],[656,792]], 48, 40);
+  const HO = {x: 704, y: 732, s: 82, a: -16 * D2R, m: false};
+  const M = p => mapPts(p, HO);
+  const HAND = [[0,-0.17],[0.2,-0.2],[0.42,-0.19],[0.58,-0.155],[0.72,-0.115],[0.85,-0.07],[0.95,-0.03],[0.985,0.01],
+    [0.96,0.045],[0.88,0.055],[0.8,0.06],[0.83,0.085],[0.84,0.115],[0.8,0.15],[0.7,0.175],[0.6,0.195],[0.53,0.23],
+    [0.45,0.28],[0.35,0.3],[0.25,0.285],[0.13,0.255],[0.04,0.2],[0,0.17]];
+  const hp = M(crc(HAND, true, 1.2 / HO.s));
+  // cast shadow on the bench top, thrown away from Clawd
+  const off = pts => pts.map(([x, y]) => [x - 24, y + 16]);
+  for (const poly of [sl.poly, fa.poly, hp]){ paint('Bt', Pth(off(poly)), 0.26, TOP_P); paint('Ot', Pth(off(poly)), -0.6, TOP_P); }
+  // bare forearm, lit on the side facing Clawd
+  const FA = Pth(fa.poly); knock(FA);
+  paint('Ot', FA, 0.24);
+  paint('Bt', Pth(fa.right.concat(fa.center.slice().reverse())), 0.26, FA);
+  ink('Kl', fa.poly.concat([fa.poly[0]]), 4.0, {a0: 1, a1: 1});
+  // pushed-up sweater sleeve with a round shoulder
+  const SL = Pth(sl.poly); knock(SL);
+  linG('Bt', SL, 660, 770, 560, 700, [[0, 0.4], [1, 0.74]]);
+  linG('Ot', SL, 660, 790, 590, 740, [[0, 0.22], [1, 0]]);
+  ink('Kl', sl.poly.concat([sl.poly[0]]), 4.6, {a0: 1, a1: 1});
+  inkC('Kl', [[600,772],[614,786],[620,798]], 2.0, {a0: 0.1, a1: 0.1});             // elbow folds
+  inkC('Kl', [[589,782],[601,798]], 1.8, {a0: 0.1, a1: 0.1});
+  const n = sl.center.length;
+  for (const f of [0.86, 0.93]){ const i = Math.floor(n * f); inkC('Kl', [sl.left[i], sl.center[i], sl.right[i]], 1.9, {a0: 0.4, a1: 0.4}); }
+  // hand: pinch grip on the stylus
+  const pinch = M([[0.81, 0.07]])[0];
+  const TIP = STYLUS_TIP;
+  const back = [pinch[0] - (TIP[0] - pinch[0]) * 0.85, pinch[1] - (TIP[1] - pinch[1]) * 0.85];
+  ink('Kl', [back, pinch], 5.8, {a0: 0.9, a1: 1, wob: 0.03});
+  const HP = Pth(hp); knock(HP);
+  paint('Ot', HP, 0.24);
+  paint('Bt', Pth(M(crc([[0.84,0.115],[0.7,0.15],[0.56,0.17],[0.44,0.16],[0.3,0.17],[0.15,0.16],[0,0.15],[0,0.4],[0.9,0.4]], true, 0.01))), 0.28, HP);
+  ink('Kl', hp, 3.8, {a0: 1, a1: 1});
+  inkC('Kl', M([[0.8,0.06],[0.66,0.075],[0.54,0.095]]), 1.7, {a0: 0.5, a1: 0.1});             // index underside
+  inkC('Kl', M([[0.84,0.115],[0.72,0.145],[0.58,0.165],[0.47,0.16]]), 1.9, {a0: 0.5, a1: 0.1}); // thumb
+  inkC('Kl', M([[0.8,0.09],[0.77,0.12]]), 1.4, {a0: 0.3, a1: 0.3});                            // thumbnail
+  inkC('Kl', M([[0.44,0.215],[0.41,0.275]]), 1.6, {a0: 0.3, a1: 0.3});
+  inkC('Kl', M([[0.31,0.225],[0.29,0.28]]), 1.6, {a0: 0.3, a1: 0.3});
+  inkC('Kl', M([[0.43,-0.185],[0.45,-0.12]]), 1.6, {a0: 0.3, a1: 0.3});                       // knuckle
+  inkC('Kl', M([[0.87,-0.05],[0.945,-0.02]]), 1.4, {a0: 0.3, a1: 0.3});                       // nail
+  ink('Kl', [pinch, TIP], 5.2, {a0: 1, a1: 0.38, tl: 34, wob: 0.03});
+  // a glint running down the stylus
+  const g0 = [lerp(pinch[0], TIP[0], 0.12), lerp(pinch[1], TIP[1], 0.12) - 1.2], g1 = [lerp(pinch[0], TIP[0], 0.7), lerp(pinch[1], TIP[1], 0.7) - 0.8];
+  ink('Kl', [g0, g1], 1.3, {a0: 0.2, a1: 0.2, op: 'destination-out', wob: 0});
+}
+
+// researcher 2: stands back at the monitor, mug in hand, faces left
+const R2 = {x: 1752, y: 466, s: 128, a: 6 * D2R, m: true};
+function researcher2(){
+  const B = {x: R2.x, y: R2.y, s: R2.s, a: 0, m: true};
+  const M = p => mapPts(p, B), st = 1.5 / R2.s;
+  head(R2, ST2);
+  const T = M(crc([[-0.25,0.66],[-0.37,0.77],[-0.47,0.94],[-0.51,1.22],[-0.5,2.4],[0.42,2.4],[0.44,1.42],[0.41,1.1],
+    [0.31,0.9],[0.19,0.8],[0.08,0.845],[-0.06,0.8],[-0.17,0.72]], true, st));
+  const TP = Pth(T); knock(TP);
+  linG('Bt', TP, R2.x - 60, 0, R2.x + 70, 0, [[0, 0.32], [1, 0.68]]);
+  ink('Kl', T, 4.2, {a0: 1, a1: 1});
+  inkC('Kl', M([[-0.2,0.72],[-0.06,0.83],[0.08,0.88],[0.19,0.82]]), 2.2, {a0: 0.3, a1: 0.3});
+  inkC('Kl', M([[0.19,0.84],[0.3,1.1],[0.35,1.6],[0.34,2.3]]), 2.2, {a0: 0.3, a1: 0.3});
+  const arm = tube(M([[-0.1,0.86],[-0.12,1.2],[-0.08,1.46],[0.04,1.56],[0.22,1.5],[0.42,1.36]]), 0.3*R2.s, 0.21*R2.s, 1.5);
+  const AP = Pth(arm.poly); knock(AP);
+  linG('Bt', AP, R2.x - 70, 0, R2.x + 30, 0, [[0, 0.34], [1, 0.66]]);
+  ink('Kl', arm.poly.concat([arm.poly[0]]), 4.0, {a0: 1, a1: 1});
+  inkC('Kl', M([[-0.05,1.44],[0.02,1.5]]), 1.8, {a0: 0.1, a1: 0.1});
+  // mug
+  const mug = M(rrectPts(0.5, 1.1, 0.25, 0.29, 0.03));
+  const MG = Pth(mug); knock(MG); paint('Bt', MG, 0.1);
+  paint('Bt', Pth(M(rectPts(0.64, 1.1, 0.12, 0.3))), 0.24, MG);
+  ink('Kl', mug.concat([mug[0]]), 3.2, {a0: 1, a1: 1});
+  const rim = M(ell(0.625, 1.1, 0.125, 0.028)); paint('Kt', Pth(rim), 0.7); ink('Kl', rim, 2.2, {a0: 1, a1: 1});
+  for (const [dx, sd] of [[0, 3], [0.07, 9]]){                                          // steam: paper-white wisps
+    const wisp = []; for (let i = 0; i <= 20; i++){ const t = i/20; wisp.push([0.6 + dx + 0.03*Math.sin(t*7 + sd), 1.05 - t*0.36]); }
+    const wp = M(wisp);
+    ['Bt','Kt'].forEach(k => ink(k, wp, 3.2, {a0: 0.2, a1: 0.05, tl: 20, op: 'destination-out', style: A(0.8)}));
+  }
+  const fist = M(crc([[0.41,1.22],[0.5,1.18],[0.58,1.22],[0.6,1.32],[0.55,1.4],[0.44,1.4],[0.39,1.32]], true, 1/R2.s));
+  const FP = Pth(fist); knock(FP); paint('Ot', FP, 0.08); paint('Bt', FP, 0.12);
+  ink('Kl', fist, 3.2, {a0: 1, a1: 1});
+  inkC('Kl', M([[0.48,1.24],[0.54,1.27],[0.58,1.27]]), 1.6, {a0: 0.3, a1: 0.3});
+  inkC('Kl', M([[0.48,1.32],[0.55,1.34]]), 1.6, {a0: 0.3, a1: 0.3});
+}
+
+// ------------------------------------------------------------------ bench, monitor, harness
+let TOP_P;
+function bench(){
+  TOP_P = Pth([[-200, BEN.back], [2200, BEN.back], [2200, BEN.front], [-200, BEN.front]]);
+  knock(TOP_P);
+  radialG('Bt', TOP_P, RING.cx, RING.cy, 0.3, [[0,0],[170,0],[360,0.24],[600,0.5],[900,0.72],[1300,0.86]]);
+  radialG('Ot', TOP_P, RING.cx, RING.cy, 0.3, [[0,0],[110,0],[190,0.3],[400,0.24],[650,0.08],[900,0]]);
+  radialG('Kt', TOP_P, RING.cx, RING.cy, 0.3, [[0,0],[700,0],[1100,0.2],[1500,0.36]]);
+  const face = Pth([[-200, BEN.front], [2200, BEN.front], [2200, BEN.bot], [-200, BEN.bot]]);
+  knock(face);
+  radialG('Bt', face, 960, BEN.front, 0.3, [[0,0.5],[500,0.72],[1100,0.88]]);
+  radialG('Ot', face, 960, BEN.front, 0.3, [[0,0.22],[300,0.08],[600,0]]);
+  radialG('Kt', face, 960, BEN.front, 0.3, [[0,0.08],[700,0.3],[1200,0.45]]);
+  const under = Pth([[-200, BEN.bot], [2200, BEN.bot], [2200, 1400], [-200, 1400]]);
+  knock(under);
+  paint('Bt', under, 1.0);
+  linG('Kt', under, 0, BEN.bot, 0, 1080, [[0, 0.7], [1, 0.84]]);
+  ink('Kl', [[-50, BEN.back], [800, BEN.back]], 2.6, {a0: 1, a1: 0, tl: 200, wob: 0.15});      // edge is lost in the light
+  ink('Kl', [[1120, BEN.back], [1970, BEN.back]], 2.6, {a0: 0, a1: 1, tl: 200, wob: 0.15});
+  ink('Kl', [[-50, BEN.front], [1970, BEN.front]], 5.2, {a0: 1, a1: 1, wob: 0.12});
+  ink('Kl', [[-50, BEN.bot], [1970, BEN.bot]], 4, {a0: 1, a1: 1, wob: 0.12});
+  ink('Ol', crc([[620, BEN.front + 6], [960, BEN.front + 6], [1300, BEN.front + 6]]), 3.4, {a0: 0.05, a1: 0.05, tl: 220});
+}
+// harness: two cupped "hands" of jointed ribs (2D-designed fingers); the tips curl in but never meet
+// [angle on the plate rim (deg), height, outward bulge, tip curl-in, back row?]
+const FINGERS = [[158, 200, 26, 50, false], [182, 232, 34, 56, false], [206, 222, 30, 38, true], [232, 186, 22, 26, true]];
+function fingerBase(phi, side){
+  const a = phi * D2R;
+  let bx = RING.cx + RING.rx * 0.93 * Math.cos(a);
+  const by = RING.cy + RING.rx * 0.93 * RING.k * Math.sin(a);
+  if (side > 0) bx = 2 * RING.cx - bx;
+  return [bx, by];
+}
+function fingerPts(phi, h, B, T, side){
+  const [bx, by] = fingerBase(phi, side), s = side > 0 ? -1 : 1;
+  const P = [[0, 0], [-0.55*B, -0.25*h], [-B, -0.55*h], [-0.6*B + 0.35*T, -0.85*h], [0.8*T, -h], [T, -0.965*h]];
+  return crc(P.map(([dx, dy]) => [bx + s*dx, by + dy]), false, 1.5);
+}
+function atFrac(pts, f){
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i-1] + Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]));
+  const t = f * cum[cum.length-1]; let i = 1; while (i < pts.length - 1 && cum[i] < t) i++;
+  const u = clamp((t - cum[i-1]) / Math.max(1e-6, cum[i] - cum[i-1]), 0, 1);
+  return [lerp(pts[i-1][0], pts[i][0], u), lerp(pts[i-1][1], pts[i][1], u)];
+}
+function ribShadows(){
+  for (const [phi] of FINGERS) for (const side of [-1, 1]){
+    const [bx, by] = fingerBase(phi, side);
+    let dx = bx - RING.cx, dy = (by - RING.cy) / RING.k; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
+    const P = (r, w) => [RING.cx + r*dx - w*dy, RING.cy + RING.k*(r*dy + w*dx)];
+    const r0 = Math.hypot(bx - RING.cx, (by - RING.cy) / RING.k);
+    const poly = Pth([P(r0, -4), P(1500, -80), P(1500, 80), P(r0, 4)]);
+    paint('Bt', poly, 0.3, TOP_P);
+    paint('Ot', poly, -0.6, TOP_P);
+  }
+}
+function finger(pts, back){
+  const k = back ? 'Bl' : 'Kl', w = back ? 4.4 : 6.8;
+  if (!back) ['Ot','Bt'].forEach(kk => ink(kk, pts, w + 7, {a0: 1, a1: 0.6, op: 'destination-out', wob: 0}));
+  ink(k, pts, w, {a0: 1, a1: 0.62, tl: 60, wob: 0.06});
+  if (!back){
+    const rim = [];
+    for (let i = 4; i < pts.length - 3; i++){
+      const p = pts[i]; const dx = LC[0] - p[0], dy = LC[1] - p[1], l = Math.hypot(dx, dy) || 1;
+      rim.push([p[0] + dx / l * (w * 0.95), p[1] + dy / l * (w * 0.95)]);
+    }
+    ink('Ol', rim, 2.6, {a0: 0.2, a1: 0.2, tl: 40});
+  }
+  for (const f of [0.36, 0.7, 1.0]){
+    const p = atFrac(pts, f), rr = (f === 1 ? 0.8 : 1.1) * w;
+    paint(k, Pth(ell(p[0], p[1], rr, rr, 0, TAU, 24)), 1);
+    if (f !== 1) paint(k, Pth(ell(p[0], p[1], rr * 0.42, rr * 0.42, 0, TAU, 16)), -1);
+  }
+}
+function ring(){
+  const {cx, cy, rx, k} = RING, ry = rx * k, t = 9;
+  const side = ell(cx, cy, rx, ry, 0, Math.PI, 60).concat(ell(cx, cy + t, rx, ry, Math.PI, 0, 60));
+  const SD = Pth(side); knock(SD); paint('Bt', SD, 0.42); paint('Ot', SD, 0.3);
+  const top = ell(cx, cy, rx, ry);
+  const TP = Pth(top); knock(TP); paint('Ot', TP, 0.06);
+  ink('Kl', ell(cx, cy + t, rx, ry, 0, Math.PI, 60), 4, {a0: 1, a1: 1});
+  ink('Kl', [[cx - rx, cy], [cx - rx, cy + t]], 3.4, {a0: 1, a1: 1});
+  ink('Kl', [[cx + rx, cy], [cx + rx, cy + t]], 3.4, {a0: 1, a1: 1});
+  ink('Kl', top, 4, {a0: 1, a1: 1});
+  ink('Kl', ell(cx, cy, rx * 0.72, ry * 0.72, 0, Math.PI, 50), 2, {a0: 0.4, a1: 0.4});
+  for (let i = 0; i < 24; i++){                                                            // rim ticks: an instrument
+    const a = i / 24 * TAU; if (Math.sin(a) < 0.1) continue;
+    ink('Kl', [[cx + rx*0.86*Math.cos(a), cy + ry*0.86*Math.sin(a)], [cx + rx*0.97*Math.cos(a), cy + ry*0.97*Math.sin(a)]], 1.6, {a0: 1, a1: 1});
+  }
+}
+function cables(){
+  inkC('Kl', [[1082,800],[1170,814],[1290,806],[1380,774],[1424,752]], 5.2, {a0: 1, a1: 1});
+  inkC('Kl', [[1100,799],[1170,811],[1270,806]], 1.3, {a0: 0.1, a1: 0.1, op: 'destination-out'});
+  inkC('Kl', [[868,776],[820,764],[772,742],[748,714]], 4.6, {a0: 1, a1: 1});
+}
+function monitor(){
+  const mx = 1302, my = 470, mw = 300, mh = 178;
+  const pole = Pth(rectPts(1442, my + mh - 6, 18, 744 - (my + mh)));
+  knock(pole); paint('Bt', pole, 0.55); paint('Kt', pole, 0.3);
+  ink('Kl', [[1442, my + mh], [1442, 742]], 3, {a0: 1, a1: 1}); ink('Kl', [[1460, my + mh], [1460, 742]], 3, {a0: 1, a1: 1});
+  const foot = ell(1451, 746, 60, 11);
+  knock(Pth(foot)); paint('Bt', Pth(foot), 0.5); ink('Kl', foot, 3.4, {a0: 1, a1: 1});
+  const body = rrectPts(mx, my, mw, mh, 10);
+  knock(Pth(body)); paint('Bt', Pth(body), 0.72); paint('Kt', Pth(body), 0.4);
+  ink('Kl', body.concat([body[0]]), 4.6, {a0: 1, a1: 1});
+  const sx = mx + 14, sy = my + 14, sw = mw - 28, sh = mh - 30;
+  const scr = Pth(rectPts(sx, sy, sw, sh)); knock(scr); paint('Bt', scr, 0.05);
+  ink('Kl', rectPts(sx, sy, sw, sh).concat([[sx, sy]]), 2.2, {a0: 1, a1: 1});
+  // gray gridworld, waiting for its agent
+  const G = ['#######', '#S....#', '#.##..#', '#...#G#', '#######'];
+  const gx = sx + 14, gy = sy + 16, cs = 21;
+  G.forEach((row, r) => { for (let c = 0; c < row.length; c++){
+    if (row[c] === '#') paint('Bt', Pth(rectPts(gx + c*cs, gy + r*cs, cs, cs)), 0.62);
+  }});
+  for (let i = 0; i <= G[0].length; i++) ink('Kl', [[gx + i*cs, gy], [gx + i*cs, gy + G.length*cs]], 1.0, {a0: 1, a1: 1, wob: 0});
+  for (let i = 0; i <= G.length; i++) ink('Kl', [[gx, gy + i*cs], [gx + G[0].length*cs, gy + i*cs]], 1.0, {a0: 1, a1: 1, wob: 0});
+  const s0 = [gx + cs + 3, gy + cs + 3], s1 = cs - 6;                                     // empty spawn cell
+  const sq = [[s0[0], s0[1]], [s0[0] + s1, s0[1]], [s0[0] + s1, s0[1] + s1], [s0[0], s0[1] + s1], [s0[0], s0[1]]];
+  for (let i = 0; i < 4; i++){ const a = sq[i], b = sq[i+1];
+    for (let j = 0; j < 3; j++){ const t0 = j / 3 + 0.04, t1 = t0 + 0.2; ink('Ol', [[lerp(a[0], b[0], t0), lerp(a[1], b[1], t0)], [lerp(a[0], b[0], t1), lerp(a[1], b[1], t1)]], 1.8, {a0: 1, a1: 1}); } }
+  const g0 = [gx + 6*cs + cs/2, gy + 3*cs + cs/2];
+  ink('Kl', [[g0[0], g0[1] - 6], [g0[0] + 6, g0[1]], [g0[0], g0[1] + 6], [g0[0] - 6, g0[1]], [g0[0], g0[1] - 6]], 1.8, {a0: 1, a1: 1});
+  // eval curve ticking upward
+  const px0 = sx + 186, py0 = sy + 22, pw = 72, ph = 90;
+  ink('Kl', [[px0, py0], [px0, py0 + ph], [px0 + pw, py0 + ph]], 1.6, {a0: 1, a1: 1});
+  const r3 = mulberry32(5), ev = [];
+  let v = 0.05;
+  for (let i = 0; i <= 24; i++){ const t = i / 24; v = Math.max(v, 0.05 + 0.55 * Math.pow(t, 1.6) + (r3() - 0.5) * 0.08); ev.push([px0 + 3 + t * (pw - 8), py0 + ph - 4 - v * (ph - 12)]); }
+  ink('Ol', ev, 2.4, {a0: 1, a1: 1, wob: 0});
+  const last = ev[ev.length - 1];
+  paint('Ol', Pth(ell(last[0], last[1], 3.6, 3.6, 0, TAU, 16)), 1);
+  txt('Kl', '0.31', px0 + pw - 2, py0 - 6, 12, 'Consolas, monospace', 0, 'right');
+  txt('Kl', 'ep 0001', sx + 12, sy + sh - 8, 11, 'Consolas, monospace');
+}
+
+// ------------------------------------------------------------------ Clawd
+const GLYPH = ['...############...', '...##.######.##...', '.################.', '...############...', '....#.#....#.#....'];
+function clawd(){
+  const U = Math.max(1, Math.round(CLW.u * VS));
+  const ox = Math.round(OW/2 + VS*(CLW.x - VC[0])), oy = Math.round(OH/2 + VS*(CLW.y - VC[1]));
+  // every other drum is knocked out where he will actually print (compensating each drum's misregistration),
+  // with a 1 px trap, so nothing ever overprints him: he stays pixel-exact #D97757
+  const drumOff = {K: OFF.K, B: OFF.B, O: OFF.O};
+  for (const k of ALL){
+    const d = drumOff[k[0]], dx = OFF.O[0] - d[0], dy = OFF.O[1] - d[1];
+    const x = PL[k]; x.save(); x.setTransform(1,0,0,1,0,0); x.globalCompositeOperation = 'destination-out'; x.fillStyle = '#000';
+    x.fillRect(ox + 1*U + dx - 1, oy + dy - 1, 16*U + 2, 8*U + 2);
+    GLYPH[4].split('').forEach((ch, c) => { if (ch === '#') x.fillRect(ox + c*U + dx - 1, oy + 8*U + dy, U + 2, 2*U + 1); });
+    x.restore();
+  }
+  const x = PL.Cl; x.save(); x.setTransform(1,0,0,1,0,0); x.fillStyle = '#000';
+  GLYPH.forEach((row, r) => { for (let c = 0; c < row.length; c++) if (row[c] === '#') x.fillRect(ox + c*U, oy + r*2*U, U, 2*U); });
+  x.restore();
+}
+
+// ------------------------------------------------------------------ HUD (knocked out: paper shows through)
+function hud(){
+  const F = '600 16px Consolas, monospace';
+  const off = {Bt: OFF.B, Bl: OFF.B, Kt: OFF.K, Kl: OFF.K, Ot: OFF.O, Ol: OFF.O};
+  for (const k of ['Bt','Bl','Kt','Kl','Ot','Ol']){
+    const x = PL[k]; x.save(); x.globalCompositeOperation = 'destination-out'; x.font = F; x.fillStyle = '#000';
+    const dx = -off[k][0], dy = -off[k][1];
+    x.fillText('EP', 66 + dx, 994 + dy);   x.fillText('0001', 150 + dx, 994 + dy);
+    x.fillText('STEP', 66 + dx, 1018 + dy); x.fillText('000 128', 150 + dx, 1018 + dy);
+    x.fillText('EVAL', 66 + dx, 1042 + dy); x.fillText('0.31', 150 + dx, 1042 + dy);
+    x.restore();
+  }
+}
+
+// ------------------------------------------------------------------ compose the scene
+STYLUS_TIP = atFrac(fingerPts(FINGERS[0][0], FINGERS[0][1], FINGERS[0][2], FINGERS[0][3], -1), 0.36);
+room();
+whiteboard();
+researcher2();
+researcher1Body();
+bench();
+monitor();
+ribShadows();
+ring();
+cables();
+for (const F of FINGERS.filter(f => f[4])) for (const sd of [-1, 1]) finger(fingerPts(F[0], F[1], F[2], F[3], sd), true);
+clawd();
+for (const F of FINGERS.filter(f => !f[4])) for (const sd of [-1, 1]) finger(fingerPts(F[0], F[1], F[2], F[3], sd), false);
+researcher1Arm();
+if (!DETAIL) hud();
+
+// ------------------------------------------------------------------ print: screen, misregister, overprint
+const PAPER = [245, 240, 232].map(v => v / 255);
+const CLAWD_RGB = [217, 119, 87].map(v => v / 255);
+const INK_O = CLAWD_RGB.map((v, i) => v / PAPER[i]);    // orange drum prints exactly #D97757 at 100% on this paper
+const INKS_B = {federal: [61, 85, 136], midnight: [67, 80, 96], charcoal: [70, 68, 72]};
+const INK_B = INKS_B[Q.get('ink') || 'midnight'].map(v => v / 255);   // riso Midnight: the night, desaturated (early phase)
+const INK_K = [0.12, 0.115, 0.125];                       // riso black
+const CELL = [7.2, 7.2, 7.2], ANG = [45 * D2R, 15 * D2R, 75 * D2R];
+
+function composite(){
+  const out = document.getElementById('out'); out.width = OW; out.height = OH;
+  const gl = out.getContext('webgl2', {preserveDrawingBuffer: true, antialias: false, premultipliedAlpha: false, alpha: false});
+  if (!gl){ console.log('NO WEBGL2'); return; }
+  const vsrc = `#version 300 es
+in vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }`;
+  const fsrc = `#version 300 es
+precision highp float;
+uniform sampler2D tKt, tKl, tBt, tBl, tOt, tOl, tCl;
+uniform vec2 uRes;
+uniform vec2 uOffK, uOffB, uOffO;
+uniform vec3 uInkK, uInkB, uInkO, uPaper, uCell, uAng;
+out vec4 frag;
+float h21(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float vn(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
+  float a = h21(i), b = h21(i+vec2(1,0)), c = h21(i+vec2(0,1)), d = h21(i+vec2(1,1));
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y); }
+float fbm(vec2 p){ float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++){ s += a*vn(p); p = mat2(1.6,1.2,-1.2,1.6)*p + 11.7; a *= 0.5; } return s / 0.97; }
+float getA(sampler2D t, vec2 px){
+  ivec2 q = ivec2(floor(px)); ivec2 sz = textureSize(t, 0);
+  if (q.x < 0 || q.y < 0 || q.x >= sz.x || q.y >= sz.y) return 0.0;
+  return texelFetch(t, q, 0).a;
+}
+// AM halftone: cosine spot function, rotated screen; rough = ink/paper noise on the threshold
+float screenCov(vec2 px, float ang, float cell, float d, float rough){
+  float c = cos(ang), s = sin(ang);
+  vec2 q = mat2(c, s, -s, c) * px / cell;
+  vec2 f = fract(q) - 0.5;
+  float t = 0.5 - 0.25*(cos(6.2831853*f.x) + cos(6.2831853*f.y));
+  float w = max(fwidth(t), 1e-3) * 0.7;
+  float cov = smoothstep(t + rough - w, t + rough + w, d);
+  return d < 0.004 ? 0.0 : cov;
+}
+float lineCov(float a, float rough){ return smoothstep(0.30 + rough, 0.62 + rough, a); }
+// ink transfer: big starved blotches, fine mottle, pin-hole dropouts
+float strength(vec2 px, float seed, float amt){
+  float big = fbm(px*0.0035 + seed);
+  float mot = vn(px*0.45 + seed*3.7);
+  float s = 1.0 - amt*(0.65*(1.0 - big) + 0.35*mot);
+  float dz = vn(px*0.9 + seed*5.3) * vn(px*0.23 + seed);
+  s *= 1.0 - 0.7*smoothstep(0.55, 0.78, dz);
+  return clamp(s, 0.0, 1.0);
+}
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  vec2 pk = px - uOffK, pb = px - uOffB, po = px - uOffO;
+  float rK = (vn(pk*0.6 + 3.1) - 0.5)*0.2;
+  float rB = (vn(pb*0.6 + 17.3) - 0.5)*0.2;
+  float rO = (vn(po*0.6 + 41.9) - 0.5)*0.2;
+  float cK = max(screenCov(pk, uAng.x, uCell.x, getA(tKt, pk), rK), lineCov(getA(tKl, pk), rK));
+  float cB = max(screenCov(pb, uAng.y, uCell.y, getA(tBt, pb), rB), lineCov(getA(tBl, pb), rB));
+  float cO = max(screenCov(po, uAng.z, uCell.z, getA(tOt, po), rO), lineCov(getA(tOl, po), rO));
+  float cC = getA(tCl, po);
+  vec3 paper = uPaper;
+  float fib = fbm(vec2(px.x*0.2, px.y*0.045) + 2.0) - 0.5;
+  float blot = fbm(px*0.0022 + 9.0) - 0.5;
+  paper *= 1.0 + (0.045*fib + 0.035*blot) * (1.0 - 0.8*cC);
+  paper *= 1.0 - 0.22*step(0.9994, h21(floor(px*0.5) + 7.0));
+  vec3 col = paper;
+  col *= mix(vec3(1.0), uInkB, cB * strength(pb, 1.3, 0.16));
+  col *= mix(vec3(1.0), uInkO, max(cO * strength(po, 7.9, 0.22), cC));
+  col *= mix(vec3(1.0), uInkK, cK * strength(pk, 4.4, 0.1));
+  col += (h21(px + 91.7) - 0.5) * 0.03 * (1.0 - 0.5*cC);
+  frag = vec4(clamp(col, 0.0, 1.0), 1.0);
+}`;
+  function sh(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.log('SHADER ' + gl.getShaderInfoLog(s)); return s; }
+  const pr = gl.createProgram();
+  gl.attachShader(pr, sh(gl.VERTEX_SHADER, vsrc)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fsrc)); gl.linkProgram(pr);
+  if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) console.log('LINK ' + gl.getProgramInfoLog(pr));
+  gl.useProgram(pr);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  KEYS.forEach((k, i) => {
+    const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, CV[k]);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.uniform1i(gl.getUniformLocation(pr, 't' + k), i);
+  });
+  const U = n => gl.getUniformLocation(pr, n);
+  gl.uniform2f(U('uRes'), OW, OH);
+  gl.uniform2f(U('uOffK'), OFF.K[0], OFF.K[1]); gl.uniform2f(U('uOffB'), OFF.B[0], OFF.B[1]); gl.uniform2f(U('uOffO'), OFF.O[0], OFF.O[1]);
+  gl.uniform3fv(U('uInkK'), INK_K); gl.uniform3fv(U('uInkB'), INK_B); gl.uniform3fv(U('uInkO'), INK_O);
+  gl.uniform3fv(U('uPaper'), PAPER); gl.uniform3fv(U('uCell'), CELL); gl.uniform3fv(U('uAng'), ANG);
+  gl.viewport(0, 0, OW, OH);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.finish();
+}
+const T1 = performance.now();
+composite();
+console.log('RENDER_MS ' + (performance.now() - T0).toFixed(0) + ' (vector plates ' + (T1 - T0).toFixed(0) + ' ms, print pass ' + (performance.now() - T1).toFixed(0) + ' ms)');
+</script>
+</body>
+</html>

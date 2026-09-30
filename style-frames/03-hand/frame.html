@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Shelter MV - style frame 03 - the hand</title>
+<style>html,body{margin:0;padding:0;background:#000;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="out" width="1920" height="1080"></canvas>
+<script>
+"use strict";
+// ============================================================================
+// Shelter MV, style frame 03: "The hand".
+// Layers: painted background (Canvas2D) -> raymarched SDF hand with an anime
+// cel shader + ink lines (WebGL2) -> pixel-crisp Clawd sprite -> light/post.
+// Deterministic: all randomness comes from a seeded PRNG.
+// URL params: mode=final|debug|hand, ss=<supersampling>, az/el/dist = camera.
+// ============================================================================
+const W = 1920, H = 1080;
+const Q = new URLSearchParams(location.search);
+const MODE = Q.get('mode') || 'final';
+const SS = +(Q.get('ss') || 2);            // supersampling factor for the hand
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function mkCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, v) => { const t = clamp01((v - a) / (b - a)); return t * t * (3 - 2 * t); };
+
+// ---------------------------------------------------------------- vec3 helpers
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const mul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const len = a => Math.hypot(a[0], a[1], a[2]);
+const norm = a => mul(a, 1 / len(a));
+const rad = d => d * Math.PI / 180;
+function rot(v, k, ang) {               // Rodrigues rotation of v about unit axis k
+  const c = Math.cos(ang), s = Math.sin(ang);
+  return add(add(mul(v, c), mul(cross(k, v), s)), mul(k, dot(k, v) * (1 - c)));
+}
+
+// ================================================================= HAND RIG
+// Units: cm. Hand-local frame: +z toward the fingertips, +y out of the palm
+// (palm faces up), +x toward the thumb (a right hand, palm up).
+const FINGERS = [
+  // index, middle, ring, little
+  { mcp: [2.34, 0.42, 4.15], spread: -4, L: [4.0, 2.4, 1.95],  R: [0.80, 0.70, 0.61, 0.52], flex: [39, 44, 21] },
+  { mcp: [0.78, 0.12, 4.50], spread: -1.5, L: [4.4, 2.8, 2.05],  R: [0.82, 0.72, 0.63, 0.53], flex: [43, 46, 21] },
+  { mcp: [-0.76, 0.22, 4.25], spread: 3, L: [4.15, 2.65, 2.0], R: [0.79, 0.69, 0.60, 0.51], flex: [47, 47, 21] },
+  { mcp: [-2.20, 0.60, 3.62], spread: 8, L: [3.3, 2.0, 1.85],  R: [0.71, 0.62, 0.54, 0.47], flex: [53, 48, 23] },
+];
+const THUMB = {
+  cmc: [1.8, -0.6, -3.0],
+  // metacarpal, proximal, distal directions (hand frame) and lengths
+  dirs: [[0.45, 0.45, 0.77], [0.05, 0.62, 0.78], [-0.25, 0.62, 0.74]],
+  L: [4.0, 3.1, 2.7],
+  R: [1.0, 0.88, 0.78, 0.66],
+  dorsalHint: [0.92, -0.25, -0.2],
+};
+
+function buildRig() {
+  const J = [];      // 5 chains x 4 joints: [x,y,z,r]
+  const D = [];      // 5 chains x 3 segments: dorsal unit vector
+  const B = [];      // bounding sphere per chain
+  const up = [0, 1, 0];
+  for (const f of FINGERS) {
+    const d0 = rot([0, 0, 1], up, rad(f.spread));
+    const lat = norm(cross(d0, up));           // flexion axis
+    let p = f.mcp.slice(), ang = 0;
+    J.push([...p, f.R[0]]);
+    for (let s = 0; s < 3; s++) {
+      ang += rad(f.flex[s]);
+      const d = add(mul(d0, Math.cos(ang)), mul(up, Math.sin(ang)));
+      const l = s === 2 ? f.L[s] - f.R[3] : f.L[s];
+      p = add(p, mul(d, l));
+      J.push([...p, f.R[s + 1]]);
+      D.push(norm(cross(d, lat)));             // dorsal: points away from palm side
+    }
+  }
+  {
+    let p = THUMB.cmc.slice();
+    J.push([...p, THUMB.R[0]]);
+    for (let s = 0; s < 3; s++) {
+      const d = norm(THUMB.dirs[s]);
+      const l = s === 2 ? THUMB.L[s] - THUMB.R[3] : THUMB.L[s];
+      p = add(p, mul(d, l));
+      J.push([...p, THUMB.R[s + 1]]);
+      const h = THUMB.dorsalHint;
+      D.push(norm(sub(h, mul(d, dot(h, d)))));
+    }
+  }
+  for (let c = 0; c < 5; c++) {
+    const js = J.slice(c * 4, c * 4 + 4);
+    const cen = mul(js.reduce((a, j) => add(a, j), [0, 0, 0]), 0.25);
+    let r = 0;
+    for (const j of js) r = Math.max(r, len(sub(j, cen)) + j[3]);
+    B.push([...cen, r + 0.15]);
+  }
+  return { J, D, B };
+}
+
+// Camera (hand frame). Target, orbit angles, distance, vertical fov.
+const CAM = {
+  target: [0.2, 2.1, 0.9],
+  az: +(Q.get('az') || 70),     // degrees; 90 = looking from the thumb side
+  el: +(Q.get('el') || 27),     // elevation above the palm plane
+  dist: +(Q.get('dist') || 39),
+  fov: 24,
+  roll: +(Q.get('roll') || 5),
+  shift: [+(Q.get('sx') || -0.10), +(Q.get('sy') || 0.07)],   // lens shift (ndc units of half-height)
+};
+function cameraBasis() {
+  const az = rad(CAM.az), el = rad(CAM.el);
+  // az measured from -z (wrist side) toward +x (thumb side)
+  const dir = [Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)];
+  const pos = add(CAM.target, mul(dir, CAM.dist));
+  const f = norm(sub(CAM.target, pos));
+  const r0 = norm(cross(f, [0, 1, 0]));
+  const u0 = cross(r0, f);
+  const cr = Math.cos(rad(CAM.roll)), sr = Math.sin(rad(CAM.roll));
+  const r = add(mul(r0, cr), mul(u0, sr)), u = sub(mul(u0, cr), mul(r0, sr));
+  return { pos, f, r, u, th: Math.tan(rad(CAM.fov / 2)) };
+}
+// project a hand-space point to output pixel coords (and view depth)
+function project(p, cam) {
+  const v = sub(p, cam.pos);
+  const z = dot(v, cam.f);
+  const x = dot(v, cam.r) / (z * cam.th) - CAM.shift[0];
+  const y = dot(v, cam.u) / (z * cam.th) - CAM.shift[1];
+  return [W / 2 + x * H / 2, H / 2 - y * H / 2, z];
+}
+// ray direction through output pixel (px, py) (py from the top)
+function pixelRay(px, py, cam) {
+  const nx = (px - W / 2) / (H / 2) + CAM.shift[0];
+  const ny = (H / 2 - py) / (H / 2) + CAM.shift[1];
+  return norm(add(cam.f, add(mul(cam.r, nx * cam.th), mul(cam.u, ny * cam.th))));
+}
+
+// ================================================================= SHADERS
+const VS = `#version 300 es
+in vec2 aPos;
+void main(){ gl_Position = vec4(aPos,0.0,1.0); }`;
+
+// Shared: uniforms, ray setup and the hand signed distance field.
+const COMMON = `#version 300 es
+precision highp float;
+uniform vec2 uRes;
+uniform vec3 uCamPos, uCamF, uCamR, uCamU;
+uniform float uTh;
+uniform vec2 uShift;
+uniform vec4 uJ[20];
+uniform vec3 uD[15];
+uniform vec4 uB[5];
+
+vec3 rayDir(vec2 frag){
+  vec2 ndc = (frag / uRes)*2.0 - 1.0;
+  ndc.x *= uRes.x / uRes.y;
+  ndc += uShift;
+  return normalize(uCamF + uCamR*ndc.x*uTh + uCamU*ndc.y*uTh);
+}
+float dot2(vec3 v){ return dot(v,v); }
+float smin(float a, float b, float k){ float h = max(k-abs(a-b),0.0)/k; return min(a,b) - h*h*k*0.25; }
+float smax(float a, float b, float k){ return -smin(-a,-b,k); }
+float sdRoundCone(vec3 p, vec3 a, vec3 b, float r1, float r2){
+  vec3 ba = b - a; float l2 = dot(ba,ba); float rr = r1 - r2;
+  float a2 = l2 - rr*rr; float il2 = 1.0/l2;
+  vec3 pa = p - a; float y = dot(pa,ba); float z = y - l2;
+  float x2 = dot2(pa*l2 - ba*y); float y2 = y*y*l2; float z2 = z*z*l2;
+  float k = sign(rr)*rr*rr*x2;
+  if (sign(z)*a2*z2 > k) return sqrt(x2 + z2)*il2 - r2;
+  if (sign(y)*a2*y2 < k) return sqrt(x2 + y2)*il2 - r1;
+  return (sqrt(x2*a2*il2) + y*rr)*il2 - r1;
+}
+float sdEllipsoid(vec3 p, vec3 r){ float k0 = length(p/r); float k1 = length(p/(r*r)); return k0*(k0-1.0)/k1; }
+float sdOEll(vec3 p, vec3 c, vec3 ex, vec3 ey, vec3 ez, vec3 r){
+  vec3 q = p - c; return sdEllipsoid(vec3(dot(q,ex),dot(q,ey),dot(q,ez)), r);
+}
+float sdCappedCyl(vec3 p, vec3 a, vec3 b, float r){
+  vec3 ba = b - a; vec3 pa = p - a;
+  float baba = dot(ba,ba); float paba = dot(pa,ba);
+  float x = length(pa*baba - ba*paba) - r*baba;
+  float y = abs(paba - baba*0.5) - baba*0.5;
+  float x2 = x*x; float y2 = y*y*baba;
+  float d = (max(x,y) < 0.0) ? -min(x2,y2) : (((x > 0.0) ? x2 : 0.0) + ((y > 0.0) ? y2 : 0.0));
+  return sign(d)*sqrt(abs(d))/baba;
+}
+
+float gMat;  // material of last map() call: 1 skin, 2 nail, 3 sleeve
+
+float palmSDF(vec3 p){
+  float d = 1e9;
+  // metacarpal fan
+  d = smin(d, sdRoundCone(p, vec3( 1.25, 0.00,-2.2), uJ[0].xyz  + vec3(0.0,-0.05,-0.2), 0.98, 0.86), 1.5);
+  d = smin(d, sdRoundCone(p, vec3( 0.30,-0.10,-2.4), uJ[4].xyz  + vec3(0.0,-0.05,-0.2), 1.0, 0.88), 1.5);
+  d = smin(d, sdRoundCone(p, vec3(-0.65,-0.05,-2.3), uJ[8].xyz  + vec3(0.0,-0.05,-0.2), 0.98, 0.86), 1.5);
+  d = smin(d, sdRoundCone(p, vec3(-1.50, 0.10,-2.1), uJ[12].xyz + vec3(0.05,-0.05,-0.2), 0.94, 0.80), 1.5);
+  // carpus / heel of the palm
+  d = smin(d, sdEllipsoid(p - vec3(0.15,-0.25,-3.3), vec3(2.35,1.22,1.8)), 1.3);
+  // thenar eminence (thumb ball)
+  vec3 tz = normalize(uJ[17].xyz - uJ[16].xyz);
+  vec3 tx = normalize(cross(vec3(0.0,1.0,0.0), tz));
+  vec3 ty = cross(tz, tx);
+  d = smin(d, sdOEll(p, mix(uJ[16].xyz, uJ[17].xyz, 0.45) + vec3(-0.55,0.45,0.1), tx, ty, tz, vec3(1.35,1.08,2.4)), 1.05);
+  // hypothenar
+  d = smin(d, sdOEll(p, vec3(-2.05,0.40,-1.4), vec3(0.99,0.0,0.14), vec3(0.0,1.0,0.0), vec3(-0.14,0.0,0.99), vec3(1.0,1.02,2.6)), 1.05);
+  // distal palm pads under the knuckles
+  d = smin(d, sdRoundCone(p, uJ[0].xyz + vec3(0.1,0.25,-0.55), uJ[12].xyz + vec3(0.2,0.2,-0.5), 0.80, 0.68), 0.9);
+  // hollow of the palm
+  d = smax(d, -sdEllipsoid(p - vec3(-0.05,2.7,0.6), vec3(2.5,2.0,3.3)), 0.9);
+  // wrist and forearm
+  float fa = sdRoundCone(p*vec3(0.80,1.0,1.0), vec3(0.0,-0.45,-3.9), vec3(0.0,-0.8,-12.0), 1.85, 2.15);
+  d = smin(d, fa, 1.8);
+  return d;
+}
+float fingerSDF(int f, vec3 p){
+  int b = f*4;
+  float d = sdRoundCone(p, uJ[b].xyz, uJ[b+1].xyz, uJ[b].w, uJ[b+1].w);
+  d = smin(d, sdRoundCone(p, uJ[b+1].xyz, uJ[b+2].xyz, uJ[b+1].w, uJ[b+2].w), 0.12);
+  d = smin(d, sdRoundCone(p, uJ[b+2].xyz, uJ[b+3].xyz, uJ[b+2].w, uJ[b+3].w), 0.10);
+  d = smin(d, length(p - uJ[b+1].xyz) - uJ[b+1].w*1.025, 0.2);
+  return d;
+}
+float thumbSDF(vec3 p){
+  float d = sdRoundCone(p, uJ[16].xyz, uJ[17].xyz, uJ[16].w, uJ[17].w);
+  d = smin(d, sdRoundCone(p, uJ[17].xyz, uJ[18].xyz, uJ[17].w, uJ[18].w), 0.25);
+  d = smin(d, sdRoundCone(p, uJ[18].xyz, uJ[19].xyz, uJ[18].w, uJ[19].w), 0.12);
+  return d;
+}
+// nail decal on the distal segment: returns >0 inside the nail; st = local (along, angle, chain)
+float nailAt(vec3 p, out vec3 st){
+  st = vec3(0.0);
+  for (int c = 0; c < 5; c++){
+    int b = c*4;
+    vec3 a = uJ[b+2].xyz, t = uJ[b+3].xyz;
+    if (length(p - t) > 2.2) continue;
+    vec3 ez = normalize(t - a);
+    float L = length(t - a);
+    vec3 ey = uD[c*3+2];
+    vec3 ex = cross(ey, ez);
+    vec3 q = p - a;
+    float s = dot(q, ez);
+    float ang = atan(dot(q, ex), dot(q, ey));
+    float r = uJ[b+3].w;
+    float thumb = (c == 4) ? 1.0 : 0.0;
+    float s0 = L*mix(0.28, 0.22, thumb), s1 = L + r*mix(0.80, 0.55, thumb);
+    float sm = 0.5*(s0 + s1), hs = 0.5*(s1 - s0);
+    float ha = mix(0.92, 1.0, thumb);
+    float u = (s - sm)/hs, v = ang/ha;
+    float e = pow(abs(u), 3.0) + v*v;
+    if (e < 1.0){ st = vec3(u, v, float(c)); return 1.0 - e; }
+  }
+  return 0.0;
+}
+float sleeveSDF(vec3 p){
+  vec3 q = p; q.x *= 0.86;
+  vec3 A = vec3(0.0,-0.75,-6.3), B = vec3(0.0,-1.2,-40.0);
+  vec3 ax = normalize(B - A);
+  vec3 rel = q - A;
+  float along = dot(rel, ax);
+  vec3 rad = rel - ax*along;
+  float ang = atan(rad.x, rad.y);
+  float fold = 0.07*sin(ang*3.0 + along*0.21) + 0.045*sin(ang*5.0 - along*0.37 + 1.3);
+  fold *= smoothstep(0.0, 2.5, along);
+  float outer = sdCappedCyl(q, A, B, 2.25) - 0.55 + fold;
+  float inner = sdCappedCyl(q, A - ax*2.0, B, 2.4);
+  return smax(outer, -inner, 0.12);
+}
+float map(vec3 p){
+  float dp = palmSDF(p);
+  float d = dp;
+  for (int f = 0; f < 4; f++){
+    if (length(p - uB[f].xyz) - uB[f].w > d + 0.6) continue;
+    d = min(d, smin(dp, fingerSDF(f, p), 0.55));
+  }
+  if (length(p - uB[4].xyz) - uB[4].w < d + 0.9) d = min(d, smin(dp, thumbSDF(p), 0.9));
+  gMat = 1.0;
+  float ds = sleeveSDF(p);
+  if (ds < d){ d = ds; gMat = 3.0; }
+  return d;
+}
+vec3 calcNormal(vec3 p){
+  const vec2 k = vec2(1.0,-1.0); const float e = 0.0025;
+  return normalize(k.xyy*map(p + k.xyy*e) + k.yyx*map(p + k.yyx*e) + k.yxy*map(p + k.yxy*e) + k.xxx*map(p + k.xxx*e));
+}
+`;
+
+// Pass 1: raymarch to a G-buffer.
+const GBUF_FS = COMMON + `
+layout(location=0) out vec4 oGeo;   // world normal, view depth
+layout(location=1) out vec4 oAux;   // material, -, -, hit
+void main(){
+  vec3 rd = rayDir(gl_FragCoord.xy);
+  vec3 ro = uCamPos;
+  oGeo = vec4(0.0,0.0,0.0,1e4); oAux = vec4(0.0);
+  vec3 bc = vec3(0.0,0.5,-6.0); float br = 40.0;
+  vec3 oc = ro - bc; float bb = dot(oc, rd); float cc = dot(oc,oc) - br*br; float disc = bb*bb - cc;
+  if (disc < 0.0) return;
+  float t = max(-bb - sqrt(disc), 0.0); float tmax = -bb + sqrt(disc);
+  bool hit = false;
+  for (int i = 0; i < 240; i++){
+    float d = map(ro + rd*t);
+    if (d < 0.0005*t){ hit = true; break; }
+    t += d*0.9;
+    if (t > tmax) break;
+  }
+  if (!hit) return;
+  vec3 p = ro + rd*t;
+  vec3 n = calcNormal(p);
+  map(p);
+  vec3 st;
+  if (gMat < 1.5 && nailAt(p, st) > 0.0) gMat = 2.0;
+  oGeo = vec4(n, dot(p - ro, uCamF));
+  oAux = vec4(gMat, 0.0, 0.0, 1.0);
+}`;
+
+// Pass 2: anime cel shading.
+const SHADE_FS = COMMON + `
+uniform sampler2D uGeo, uAux;
+uniform vec3 uSun;        // direction toward the key light (window sun)
+uniform vec3 uClawd;      // clawd light position
+uniform int uMode;
+uniform float uGlowV;
+out vec4 o;               // rgb colour, a = light level (for ink weight)
+
+float softShadow(vec3 ro, vec3 rd, float k, float tmax){
+  float res = 1.0; float t = 0.05;
+  for (int i = 0; i < 56; i++){
+    float h = map(ro + rd*t);
+    res = min(res, k*h/t);
+    t += clamp(h, 0.03, 0.7);
+    if (res < 0.002 || t > tmax) break;
+  }
+  return clamp(res, 0.0, 1.0);
+}
+float calcAO(vec3 p, vec3 n){
+  float occ = 0.0, sca = 1.0;
+  for (int i = 0; i < 6; i++){
+    float h = 0.05 + 0.3*float(i);
+    float d = map(p + n*h);
+    occ += (h - d)*sca; sca *= 0.7;
+  }
+  return clamp(1.0 - 0.5*occ, 0.0, 1.0);
+}
+// thin line helper: distance-based stroke
+float stroke(float dist, float w){ return 1.0 - smoothstep(w*0.5, w*0.5 + 0.02, abs(dist)); }
+
+void main(){
+  ivec2 ip = ivec2(gl_FragCoord.xy);
+  vec4 g = texelFetch(uGeo, ip, 0);
+  vec4 a = texelFetch(uAux, ip, 0);
+  if (a.w < 0.5){ o = vec4(0.0); return; }
+  vec3 rd = rayDir(gl_FragCoord.xy);
+  vec3 p = uCamPos + rd*(g.w / dot(rd, uCamF));
+  vec3 n = normalize(g.xyz);
+  vec3 V = -rd;
+  float mat = a.x;
+  vec3 L = normalize(uSun);
+
+  if (uMode == 1){
+    float l = 0.5 + 0.5*dot(n, normalize(vec3(0.5,0.8,-0.3)));
+    vec3 c = mix(vec3(0.35,0.3,0.32), vec3(0.98,0.88,0.8), l);
+    if (mat > 1.5 && mat < 2.5) c = mix(c, vec3(1.0,0.6,0.7), 0.5);
+    if (mat > 2.5) c = mix(c, vec3(0.75,0.72,0.9), 0.6);
+    o = vec4(c, l);
+    return;
+  }
+
+  float ndl = dot(n, L);
+  float sh = softShadow(p + n*0.03, L, 14.0, 20.0);
+  float lit = smoothstep(0.07, 0.11, ndl) * smoothstep(0.36, 0.42, sh);
+  float ao = calcAO(p, n);
+  float fres = 1.0 - clamp(dot(n, V), 0.0, 1.0);
+  // light direction projected on screen plane, for rim placement
+  vec3 Ls = normalize(L - V*dot(L, V));
+  float rimSide = dot(n, Ls);
+
+  // palette (linear-ish sRGB values)
+  vec3 cLit, cShade, cDeep, cTerm, cRim;
+  if (mat > 2.5){          // lab-coat sleeve
+    cLit = vec3(1.00,0.955,0.905); cShade = vec3(0.78,0.74,0.86); cDeep = vec3(0.60,0.55,0.70);
+    cTerm = vec3(1.0,0.86,0.78); cRim = vec3(1.0,0.98,0.93);
+  } else if (mat > 1.5){   // nail
+    cLit = vec3(1.00,0.84,0.80); cShade = vec3(0.92,0.70,0.71); cDeep = vec3(0.76,0.52,0.57);
+    cTerm = vec3(1.0,0.72,0.66); cRim = vec3(1.0,0.97,0.94);
+  } else {                 // skin
+    cLit = vec3(1.00,0.85,0.70); cShade = vec3(0.895,0.66,0.66); cDeep = vec3(0.71,0.47,0.53);
+    cTerm = vec3(1.0,0.60,0.50); cRim = vec3(1.0,0.965,0.90);
+  }
+  vec3 col = mix(cShade, cLit, lit);
+  if (mat > 2.5){
+    // inside of the cuff opening
+    vec3 q = p; q.x *= 0.86;
+    vec3 A = vec3(0.0,-0.75,-6.3), ax = normalize(vec3(0.0,-1.2,-40.0) - A);
+    vec3 rel = q - A; float along = dot(rel, ax);
+    float rr = length(rel - ax*along);
+    if (rr < 2.47 && along > -0.3) col = mix(vec3(0.52,0.45,0.60), vec3(0.66,0.56,0.66), lit);
+  }
+  float sleeveLine = 0.0;
+  if (mat > 2.5){
+    vec3 q = p; q.x *= 0.86;
+    vec3 A = vec3(0.0,-0.75,-6.3), ax = normalize(vec3(0.0,-1.2,-40.0) - A);
+    vec3 rel = q - A; float along = dot(rel, ax);
+    vec3 radv = rel - ax*along; float ang = atan(radv.x, radv.y);
+    float outerSurf = step(2.5, length(radv));
+    sleeveLine = max(sleeveLine, stroke(along - 1.25, 0.05) * outerSurf * 0.8);          // cuff hem
+    float t1 = clamp((along - 2.2)/3.2, 0.0, 1.0);
+    sleeveLine = max(sleeveLine, stroke(ang - (1.10 + 0.25*t1*t1), 0.045*sin(3.14159*t1)) * step(0.001, t1) * step(t1, 0.999) * outerSurf * 0.7);
+    float t2 = clamp((along - 1.8)/2.4, 0.0, 1.0);
+    sleeveLine = max(sleeveLine, stroke(ang - (2.05 - 0.2*t2), 0.04*sin(3.14159*t2)) * step(0.001, t2) * step(t2, 0.999) * outerSurf * 0.6);
+  }
+  if (mat < 2.5){
+    float blush = 0.0;
+    for (int c = 0; c < 5; c++){
+      blush = max(blush, 1.0 - smoothstep(0.35, 1.25, length(p - uJ[c*4+3].xyz)));
+      if (c < 4) blush = max(blush, 0.6*(1.0 - smoothstep(0.5, 1.0, length(p - uJ[c*4+1].xyz))));
+    }
+    col = mix(col, col*vec3(1.0,0.86,0.86) + vec3(0.02,0.0,0.0), blush*0.55);
+    col *= mix(vec3(1.0), vec3(0.95,0.93,0.985), smoothstep(-2.0, -7.5, p.z));
+  }
+  // warm sub-surface band just inside the terminator
+  float term = smoothstep(0.02, 0.09, ndl) * (1.0 - smoothstep(0.10, 0.22, ndl)) * smoothstep(0.3, 0.5, sh);
+  col = mix(col, cTerm, term*0.35);
+  // second shadow tone in crevices / contact areas
+  float deep = 1.0 - smoothstep(0.26, 0.30, ao);
+  col = mix(col, cDeep, deep*0.75);
+  // cool sky bounce into shadows facing up
+  col += (1.0 - lit)*vec3(-0.02,0.0,0.05)*clamp(n.y*0.8 + 0.2, 0.0, 1.0);
+
+  // creases: palmar side of finger joints, and a few palm lines (skin only)
+  float crease = 0.0;
+  if (mat < 1.5){
+    for (int f = 0; f < 4; f++){
+      int b = f*4;
+      for (int j = 1; j <= 2; j++){
+        vec3 jc = uJ[b+j].xyz;
+        vec3 ax = normalize(uJ[b+j+1].xyz - uJ[b+j-1].xyz);
+        vec3 dor = uD[f*3 + j - 1] + uD[f*3 + j];
+        float along = dot(p - jc, ax);
+        vec3 radial = (p - jc) - ax*along;
+        float rl = length(radial);
+        if (rl > uJ[b+j].w*1.35) continue;
+        float palmar = -dot(radial/rl, normalize(dor));
+        float wv = (j == 1) ? 0.07 : 0.055;
+        crease = max(crease, stroke(along + 0.04, wv) * smoothstep(0.35, 0.8, palmar));
+      }
+    }
+    // palm lines, drawn in the palm's xz plane where the surface faces up
+    if (n.y > 0.35 && p.y > 0.2 && p.z < 4.3 && p.z > -3.2){
+      vec2 q = p.xz;
+      float life = abs(length(q - vec2(4.2,-1.6)) - 3.05);
+      float lifeMask = smoothstep(2.9, 2.0, q.y) * smoothstep(-3.0, -1.6, q.y) * step(q.x, 2.6);
+      float heart = abs(q.y - (3.05 - 0.05*(q.x+3.0)*(q.x+3.0) + 0.35*q.x));
+      float heartMask = smoothstep(-3.2, -2.6, q.x) * smoothstep(1.7, 0.9, q.x);
+      float head = abs(q.y - (1.55 + 0.26*q.x + 0.03*q.x*q.x));
+      float headMask = smoothstep(-2.4, -1.5, q.x) * smoothstep(2.6, 1.8, q.x);
+      float pl = max(stroke(life, 0.04)*lifeMask, stroke(head, 0.035)*headMask*0.7);
+      crease = max(crease, pl*0.4*smoothstep(0.35, 0.6, n.y));
+    }
+  }
+
+  // clawd glow: soft, un-banded, like a compositing light
+  vec3 toC = uClawd - p; float dc = length(toC); vec3 lc = toC/dc;
+  float cw = clamp(dot(n, lc)*0.8 + 0.2, 0.0, 1.0);
+  float csh = softShadow(p + n*0.03, lc, 6.0, dc - 0.3);
+  float glow = cw * mix(0.35, 1.0, csh) / (1.0 + dc*dc*0.30);
+  float gl1 = clamp(glow*1.2, 0.0, 1.0);
+  // two soft bands, like an airbrushed glow pass in anime compositing
+  float band1 = smoothstep(0.16, 0.34, gl1), band2 = smoothstep(0.52, 0.72, gl1);
+  vec3 glowSkin = mix(vec3(0.99,0.56,0.40), vec3(1.0,0.71,0.50), band2);
+  if (uGlowV > 0.5){
+    glowSkin = mix(vec3(0.96,0.52,0.39), vec3(1.0,0.67,0.47), band2);
+    // the cup interior sits a little deeper so the glow reads as the light source
+    float cup = smoothstep(0.2, 0.8, n.y) * (1.0 - lit) * step(mat, 1.5);
+    col = mix(col, col*vec3(0.90,0.86,0.90), cup*0.8);
+  }
+  if (mat > 1.5 && mat < 2.5) glowSkin = mix(glowSkin, vec3(1.0,0.84,0.78), 0.4);
+  // smooth falloff first (warms the far fingers), then the banded pool
+  col = mix(col, col*vec3(1.04,0.84,0.72), clamp(glow*1.6, 0.0, 0.6));
+  col = mix(col, glowSkin, (band1*0.8 + band2*0.2) * (0.62 + 0.38*gl1));
+  // nail highlight
+  if (mat > 1.5 && mat < 2.5){
+    vec3 st; nailAt(p, st);
+    // lighter free edge and a soft gloss streak
+    col = mix(col, vec3(1.0,0.96,0.93), smoothstep(0.5, 0.58, st.x)*0.75);
+    float streak = exp(-pow((st.y + 0.35 - 0.1*st.x)*5.0, 2.0)) * smoothstep(0.9, 0.2, abs(st.x + 0.1));
+    col = mix(col, vec3(1.0,0.99,0.97), streak*0.55);
+  }
+  // warm translucency at the thin edges on the shadow side
+  float sss = smoothstep(0.55, 0.9, fres) * smoothstep(-0.2, 0.3, dot(-V, L)) * (1.0 - lit);
+  col = mix(col, vec3(1.0,0.55,0.45), sss*0.35*step(mat, 1.5));
+  // creases in a soft ink tone
+  vec3 creaseCol = mix(vec3(0.60,0.34,0.36), vec3(0.85,0.48,0.42), lit);
+  col = mix(col, creaseCol, crease*0.8);
+  col = mix(col, mix(vec3(0.50,0.44,0.62), vec3(0.76,0.66,0.70), lit), sleeveLine*0.7);
+  o = vec4(col, lit);
+}`;
+
+// Pass 3: ink lines from depth / normal / material discontinuities.
+const INK_FS = `#version 300 es
+precision highp float;
+out vec4 o;
+uniform sampler2D uCol, uGeo, uAux;
+uniform float uSS;
+uniform float uClawdDepth;
+uniform int uMaskMode;
+uniform vec2 uLs;          // screen-space direction toward the key light
+uniform vec3 uClawdSS;     // clawd centre in SS pixels (xy) and glow radius (z)
+uniform vec3 uSunW;
+void main(){
+  ivec2 ip = ivec2(gl_FragCoord.xy);
+  vec4 c = texelFetch(uCol, ip, 0);
+  vec4 g = texelFetch(uGeo, ip, 0);
+  vec4 a = texelFetch(uAux, ip, 0);
+  if (uMaskMode == 1){
+    float m = (a.w > 0.5 && g.w < uClawdDepth) ? 1.0 : 0.0;
+    o = vec4(m, m, m, 1.0); return;
+  }
+  if (a.w < 0.5){ o = vec4(0.0); return; }
+  float lit = c.a;
+  float lwOut = mix(2.6, 1.7, lit) * uSS;     // outer silhouette weight (in SS pixels)
+  float lwIn = mix(1.8, 1.15, lit) * uSS;     // inner lines
+  float line = 0.0;
+  const int N = 16;
+  for (int i = 0; i < N; i++){
+    float ang = 6.2831853*(float(i) + 0.5)/float(N);
+    vec2 dir = vec2(cos(ang), sin(ang));
+    for (int s = 1; s <= 3; s++){
+      float rr = float(s)/3.0;
+      ivec2 q = ip + ivec2(round(dir*lwOut*rr));
+      vec4 aq = texelFetch(uAux, q, 0);
+      if (aq.w < 0.5){ line = 1.0; break; }
+      vec4 gq = texelFetch(uGeo, q, 0);
+      float dz = (gq.w - g.w);
+      // occluding contour in front of another part of the hand: weight grows with the depth gap
+      if (dz > 0.35){
+        float wIn = mix(0.8, 1.0, smoothstep(0.8, 4.0, dz));
+        if (rr <= mix(0.7, 1.0, smoothstep(0.8, 4.0, dz))) line = max(line, wIn);
+      }
+    }
+    ivec2 q2 = ip + ivec2(round(dir*lwIn));
+    vec4 gq = texelFetch(uGeo, q2, 0);
+    vec4 aq = texelFetch(uAux, q2, 0);
+    if (aq.w > 0.5){
+      float nd = dot(gq.xyz, g.xyz);
+      if (nd < 0.2 && abs(gq.w - g.w) < 0.6) line = max(line, 0.75);   // sharp fold
+      if (abs(aq.x - a.x) > 0.5 && a.x > aq.x) line = max(line, a.x > 2.5 ? 0.85 : 0.6); // material edge
+    }
+  }
+  // rim light: fixed-width band on silhouettes that face the window
+  float rim = 0.0;
+  float rimW = 6.5*uSS;
+  for (int k = 1; k <= 10; k++){
+    ivec2 q = ip + ivec2(round(uLs*float(k)*rimW/10.0));
+    vec4 aq = texelFetch(uAux, q, 0);
+    vec4 gq = texelFetch(uGeo, q, 0);
+    if (aq.w < 0.5 || gq.w - g.w > 0.9){ rim = 1.0 - float(k-1)/14.0; break; }
+  }
+  float facing = dot(normalize(g.xyz), normalize(uSunW));
+  rim *= smoothstep(-0.55, -0.05, facing);
+  float nearC0 = 1.0 - smoothstep(0.3, 1.1, length(gl_FragCoord.xy - uClawdSS.xy)/uClawdSS.z);
+  rim *= 1.0 - 0.65*nearC0;
+  vec3 rimCol = a.x > 2.5 ? vec3(1.0,0.97,0.92) : vec3(1.0,0.93,0.80);
+  c.rgb = mix(c.rgb, rimCol, rim*0.9);
+  float rim2 = 0.0;
+  vec2 bd = normalize(vec2(0.25, -1.0));
+  float rimW2 = 4.5*uSS;
+  for (int k = 1; k <= 6; k++){
+    ivec2 q = ip + ivec2(round(bd*float(k)*rimW2/6.0));
+    vec4 aq = texelFetch(uAux, q, 0);
+    vec4 gq = texelFetch(uGeo, q, 0);
+    if (aq.w < 0.5 || gq.w - g.w > 0.9){ rim2 = 1.0 - float(k-1)/9.0; break; }
+  }
+  rim2 *= (1.0 - rim);
+  c.rgb = mix(c.rgb, a.x > 2.5 ? vec3(0.88,0.80,0.90) : vec3(1.0,0.73,0.62), rim2*0.42);
+  vec3 inkDark = vec3(0.29,0.14,0.16);
+  vec3 inkLit = vec3(0.70,0.36,0.28);
+  if (a.x > 2.5){ inkDark = vec3(0.36,0.30,0.44); inkLit = vec3(0.62,0.50,0.52); }
+  vec3 ink = mix(inkDark, inkLit, max(lit, rim));
+  ink = mix(ink, vec3(0.86,0.46,0.30), rim*0.6*step(a.x, 2.5));
+  float nearC = 1.0 - smoothstep(0.25, 1.0, length(gl_FragCoord.xy - uClawdSS.xy)/uClawdSS.z);
+  ink = mix(ink, vec3(0.74,0.30,0.20), nearC*0.8*step(a.x, 2.5));
+  o = vec4(mix(c.rgb, ink, line), 1.0);
+}`;
+
+// ================================================================= GL helpers
+function glCompile(gl, type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('compile failed (' + (type === gl.VERTEX_SHADER ? 'vs' : 'fs') + ', lost=' + gl.isContextLost() + '): [' + gl.getShaderInfoLog(s) + ']');
+  return s;
+}
+function glProgram(gl, fs) {
+  // ANGLE occasionally fails a compile with an empty log; retry a few times
+  for (let attempt = 0; ; attempt++) {
+    try { return glProgramOnce(gl, fs); } catch (e) { if (attempt >= 3) throw e; }
+  }
+}
+function glProgramOnce(gl, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, glCompile(gl, gl.VERTEX_SHADER, VS));
+  gl.attachShader(p, glCompile(gl, gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(p, 0, 'aPos');
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+function glTex(gl, w, h, internal, format, type) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+
+// Renders the hand. Returns { color: W x H canvas (straight alpha), mask: W x H
+// canvas (white where the hand is in front of Clawd), clawd3: light position }.
+function renderHand(rig, cam, clawdPx) {
+  const RW = W * SS, RH = H * SS;
+  const cv = mkCanvas(RW, RH);
+  const gl = cv.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true, premultipliedAlpha: false });
+  if (!gl) throw new Error('no webgl2');
+  gl.getExtension('EXT_color_buffer_float');
+  const vb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  const pG = glProgram(gl, GBUF_FS), pS = glProgram(gl, SHADE_FS), pI = glProgram(gl, INK_FS);
+  const tGeo = glTex(gl, RW, RH, gl.RGBA32F, gl.RGBA, gl.FLOAT);
+  const tAux = glTex(gl, RW, RH, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
+  const tCol = glTex(gl, RW, RH, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
+  const fbG = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbG);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tGeo, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, tAux, 0);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+  const fbS = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbS);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tCol, 0);
+
+  function setCommon(p) {
+    const U = n => gl.getUniformLocation(p, n);
+    gl.uniform2f(U('uRes'), RW, RH);
+    gl.uniform3fv(U('uCamPos'), cam.pos); gl.uniform3fv(U('uCamF'), cam.f);
+    gl.uniform3fv(U('uCamR'), cam.r); gl.uniform3fv(U('uCamU'), cam.u);
+    gl.uniform1f(U('uTh'), cam.th);
+    gl.uniform2f(U('uShift'), CAM.shift[0], CAM.shift[1]);
+    gl.uniform4fv(U('uJ'), new Float32Array(rig.J.flat()));
+    gl.uniform3fv(U('uD'), new Float32Array(rig.D.flat()));
+    gl.uniform4fv(U('uB'), new Float32Array(rig.B.flat()));
+    return U;
+  }
+  const probe = new Float32Array(4);
+  function tiled(readAttachment) {
+    gl.viewport(0, 0, RW, RH);
+    gl.enable(gl.SCISSOR_TEST);
+    const TS = 480;
+    for (let y = 0; y < RH; y += TS) {
+      for (let x = 0; x < RW; x += TS) {
+        gl.scissor(x, y, TS, TS);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+      gl.readBuffer(readAttachment);
+      gl.readPixels(0, y, 1, 1, gl.RGBA, gl.FLOAT, probe);   // sync per tile row (keeps the GPU watchdog happy)
+    }
+    gl.disable(gl.SCISSOR_TEST);
+  }
+  // --- pass 1: G-buffer
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbG);
+  gl.useProgram(pG); setCommon(pG);
+  tiled(gl.COLOR_ATTACHMENT0);
+
+  // Clawd stands on the palm: read the surface point under its feet.
+  let clawd3 = [0.2, 1.8, 0.8];
+  {
+    const fx = Math.round(clawdPx[0] * SS), fy = Math.round((H - clawdPx[1]) * SS);
+    const px = new Float32Array(4);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.readPixels(fx, fy, 1, 1, gl.RGBA, gl.FLOAT, px);
+    if (px[3] < 1e3) {
+      const rd = pixelRay(clawdPx[0], clawdPx[1], cam);
+      const t = px[3] / dot(rd, cam.f);
+      const surf = add(cam.pos, mul(rd, t));
+      clawd3 = add(surf, [0, 0.95, 0]);
+    }
+  }
+  // --- pass 2: shading
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbS);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+  gl.useProgram(pS);
+  const US = setCommon(pS);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tGeo);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tAux);
+  gl.uniform1i(US('uGeo'), 0); gl.uniform1i(US('uAux'), 1);
+  gl.uniform3fv(US('uSun'), norm(SUN_DIR));
+  gl.uniform3fv(US('uClawd'), clawd3);
+  gl.uniform1i(US('uMode'), MODE === 'debug' ? 1 : 0);
+  gl.uniform1f(US('uGlowV'), GLOWV);
+  tiled(gl.COLOR_ATTACHMENT0);
+
+  // --- pass 3: ink (colour) and the Clawd occlusion mask
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.useProgram(pI);
+  const UI = n => gl.getUniformLocation(pI, n);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tCol);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tGeo);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, tAux);
+  gl.uniform1i(UI('uCol'), 0); gl.uniform1i(UI('uGeo'), 1); gl.uniform1i(UI('uAux'), 2);
+  gl.uniform1f(UI('uSS'), SS);
+  gl.uniform1f(UI('uClawdDepth'), project(clawd3, cam)[2]);
+  {
+    const L = norm(SUN_DIR);
+    const lx = dot(L, cam.r), ly = dot(L, cam.u), m = Math.hypot(lx, ly);
+    gl.uniform2f(UI('uLs'), lx / m, ly / m);
+    gl.uniform3fv(UI('uSunW'), L);
+    const cs = project(clawd3, cam);
+    gl.uniform3f(UI('uClawdSS'), cs[0] * SS, (H - cs[1]) * SS, 260 * SS);
+  }
+  gl.viewport(0, 0, RW, RH);
+  const readOut = () => {
+    const buf = new Uint8Array(RW * RH * 4);
+    gl.readPixels(0, 0, RW, RH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    const big = mkCanvas(RW, RH), bctx = big.getContext('2d');
+    const img = bctx.createImageData(RW, RH), row = RW * 4;
+    for (let y = 0; y < RH; y++) img.data.set(buf.subarray((RH - 1 - y) * row, (RH - y) * row), y * row);
+    bctx.putImageData(img, 0, 0);
+    const out = mkCanvas(W, H), octx = out.getContext('2d');
+    octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality = 'high';
+    octx.drawImage(big, 0, 0, W, H);
+    return out;
+  };
+  gl.uniform1i(UI('uMaskMode'), 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const color = readOut();
+  gl.uniform1i(UI('uMaskMode'), 1);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const mask = readOut();
+  return { color, mask, clawd3 };
+}
+
+// ================================================================= SCENE
+const SUN_DIR = [-0.32, 0.30, 0.90];        // toward the low window sun: far side, screen-left, up
+const CLAWD_ANCHOR = [0.1, 1.0, 0.7];       // palm point (hand frame) where Clawd stands
+let CLAWD_FEET = [880, 612];                // screen position of the feet, set in main()
+const CELL = 10;
+const GLOWV = +(Q.get('glowv') ?? 1);                             // Clawd pixel: CELL wide, 2*CELL tall
+const CLAWD = [
+  '...############...',
+  '...##.######.##...',
+  '.################.',
+  '...############...',
+  '....#.#....#.#....',
+];
+const ORANGE = '#D97757';
+
+// ---------------------------------------------------------------- background
+const SUN_PX = [330, 612];
+const WIN = { x0: -80, y0: -80, x1: 862, y1: 690, mull: 300 };
+const MON = { x: 1196, y: 96, w: 540, h: 318, shear: -0.055 };   // monitor screen placement
+
+// Background painting with a margin so the depth-of-field blur has no dark edges.
+const BM = 64;
+function paintUnder(rnd) {
+  const c = mkCanvas(W + 2 * BM, H + 2 * BM), x = c.getContext('2d');
+  x.translate(BM, BM);
+  const X0 = -BM, Y0 = -BM, XW = W + 2 * BM, YH = H + 2 * BM;
+  // interior wall: warm bounce near the window, deep lavender-plum to the right
+  let g = x.createLinearGradient(0, 0, W, 0);
+  g.addColorStop(0, '#a77a8a'); g.addColorStop(0.42, '#86667f'); g.addColorStop(0.75, '#5f4c6c'); g.addColorStop(1, '#4a3e5e');
+  x.fillStyle = g; x.fillRect(X0, Y0, XW, YH);
+  g = x.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, 'rgba(40,30,60,0.35)'); g.addColorStop(0.5, 'rgba(40,30,60,0)');
+  x.fillStyle = g; x.fillRect(X0, Y0, XW, YH);
+
+  // ---- window: golden-hour sky
+  x.save();
+  x.beginPath(); x.rect(WIN.x0, WIN.y0, WIN.x1 - WIN.x0, WIN.y1 - WIN.y0); x.clip();
+  g = x.createLinearGradient(0, WIN.y0, 0, WIN.y1);
+  g.addColorStop(0.00, '#5b82cc'); g.addColorStop(0.28, '#8ea5df'); g.addColorStop(0.48, '#cdaed8');
+  g.addColorStop(0.66, '#f6b7b6'); g.addColorStop(0.83, '#ffc68e'); g.addColorStop(1.00, '#ffe1a2');
+  x.fillStyle = g; x.fillRect(WIN.x0, WIN.y0, WIN.x1 - WIN.x0, WIN.y1 - WIN.y0);
+  // sun glow behind the clouds
+  const [sx, sy] = SUN_PX;
+  g = x.createRadialGradient(sx, sy, 0, sx, sy, 760);
+  g.addColorStop(0, 'rgba(255,250,232,1)'); g.addColorStop(0.08, 'rgba(255,236,190,0.9)');
+  g.addColorStop(0.28, 'rgba(255,204,150,0.45)'); g.addColorStop(0.6, 'rgba(255,176,160,0.12)'); g.addColorStop(1, 'rgba(255,176,160,0)');
+  x.fillStyle = g; x.fillRect(WIN.x0, WIN.y0, WIN.x1 - WIN.x0, WIN.y1 - WIN.y0);
+  // cumulus lit from below by the low sun: lavender tops, gold-pink undersides
+  const cloud = (cx, cy, wdt, hgt, n) => {
+    const puffs = [];
+    for (let i = 0; i < n; i++) {
+      const u = rnd() * 2 - 1;
+      const px = cx + u * wdt * 0.5;
+      const top = hgt * (1 - u * u) * (0.55 + 0.45 * rnd());
+      const r = hgt * (0.22 + 0.3 * rnd()) * (1.1 - 0.5 * Math.abs(u));
+      puffs.push([px, cy - top * 0.6 + r * 0.3, r]);
+    }
+    // body
+    for (const [px, py, r] of puffs) {
+      const gg = x.createLinearGradient(0, py - r, 0, py + r);
+      gg.addColorStop(0, '#c7b3dc'); gg.addColorStop(0.55, '#e7bfd4'); gg.addColorStop(1, '#ffd9bd');
+      x.fillStyle = gg; x.beginPath(); x.arc(px, py, r, 0, 7); x.fill();
+    }
+    // flat-ish base with warm underside
+    const bg = x.createLinearGradient(0, cy - hgt * 0.15, 0, cy + hgt * 0.12);
+    bg.addColorStop(0, 'rgba(255,214,190,0)'); bg.addColorStop(1, 'rgba(255,222,186,0.95)');
+    x.fillStyle = bg;
+    x.beginPath(); x.ellipse(cx, cy, wdt * 0.52, hgt * 0.16, 0, 0, 7); x.fill();
+    // sun-side rim light on puffs facing the sun
+    for (const [px, py, r] of puffs) {
+      const dx = sx - px, dy = sy - py, dl = Math.hypot(dx, dy);
+      const ox = px + dx / dl * r * 0.35, oy = py + dy / dl * r * 0.35;
+      const gg = x.createRadialGradient(ox, oy, r * 0.2, ox, oy, r * 0.95);
+      gg.addColorStop(0, 'rgba(255,240,215,0.55)'); gg.addColorStop(1, 'rgba(255,240,215,0)');
+      x.fillStyle = gg; x.beginPath(); x.arc(px, py, r, 0, 7); x.fill();
+    }
+  };
+  cloud(590, 330, 560, 260, 34);
+  cloud(120, 190, 330, 150, 20);
+  cloud(780, 540, 260, 90, 14);
+  cloud(-40, 470, 260, 80, 10);
+  // hot core of the sun, low over the skyline
+  g = x.createRadialGradient(sx, sy, 0, sx, sy, 150);
+  g.addColorStop(0, 'rgba(255,255,248,1)'); g.addColorStop(0.18, 'rgba(255,250,228,0.95)'); g.addColorStop(1, 'rgba(255,230,180,0)');
+  x.fillStyle = g; x.beginPath(); x.arc(sx, sy, 150, 0, 7); x.fill();
+  // distant skyline in haze, lighter near the sun
+  let hx = WIN.x0;
+  x.beginPath(); x.moveTo(WIN.x0, WIN.y1);
+  while (hx < WIN.x1) {
+    const bw = 24 + rnd() * 64, bh = 18 + rnd() * 62 + (rnd() < 0.15 ? 50 : 0);
+    x.lineTo(hx, WIN.y1 - bh); x.lineTo(hx + bw, WIN.y1 - bh); hx += bw;
+  }
+  x.lineTo(WIN.x1, WIN.y1); x.closePath();
+  g = x.createRadialGradient(sx, sy, 0, sx, sy, 700);
+  g.addColorStop(0, 'rgba(255,214,190,0.55)'); g.addColorStop(1, 'rgba(190,140,176,0.85)');
+  x.fillStyle = g; x.fill();
+  x.restore();
+
+  // ---- window frame, backlit: warm dark silhouettes
+  x.fillStyle = '#6a4c62';
+  x.fillRect(WIN.x1, -BM, 44, 760 + BM);            // right jamb
+  x.fillRect(WIN.mull - 11, -BM, 22, 700 + BM);      // mullion
+  x.fillRect(-BM, 58, WIN.x1 + BM, 16);              // high transom
+  x.fillStyle = '#f2c9a4'; x.fillRect(-BM, WIN.y1, WIN.x1 + 44 + BM, 12);   // sill top catching light
+  x.fillStyle = '#7d5a70'; x.fillRect(-BM, WIN.y1 + 12, WIN.x1 + 44 + BM, 44);
+
+  // ---- warm light patch on the right wall (the window projected), with the mullion gap
+  x.save();
+  x.globalCompositeOperation = 'screen';
+  const patch = (x0, x1, yTop, yBot, a) => {
+    const gg = x.createLinearGradient(x0, 0, x1, 0);
+    gg.addColorStop(0, `rgba(255,168,110,${a})`); gg.addColorStop(1, `rgba(255,150,120,${a * 0.6})`);
+    x.fillStyle = gg;
+    x.beginPath(); x.moveTo(x0, yTop); x.lineTo(x1, yTop - 70); x.lineTo(x1, yBot - 40); x.lineTo(x0, yBot); x.closePath(); x.fill();
+  };
+  patch(1440, 1640, 470, 720, 0.55); patch(1668, 1990, 452, 700, 0.5);
+  x.restore();
+
+  // ---- monitor on a stand: the gridworld Clawd lives in
+  x.fillStyle = '#3e3448'; x.fillRect(1448, MON.y + MON.h, 40, 220);        // stand
+  x.fillStyle = '#352c3e'; x.fillRect(1380, MON.y + MON.h + 212, 180, 18);
+  // cool glow of the screen on the wall
+  g = x.createRadialGradient(MON.x + MON.w / 2, MON.y + MON.h / 2, 60, MON.x + MON.w / 2, MON.y + MON.h / 2, 520);
+  g.addColorStop(0, 'rgba(170,186,230,0.35)'); g.addColorStop(1, 'rgba(170,186,230,0)');
+  x.fillStyle = g; x.fillRect(MON.x - 400, MON.y - 400, MON.w + 800, MON.h + 800);
+  x.save();
+  x.setTransform(1, MON.shear, 0.0, 1, MON.x + BM, MON.y + BM);
+  x.fillStyle = '#342b3c'; x.fillRect(-16, -16, MON.w + 32, MON.h + 32);
+  x.drawImage(drawGridworld(MON.w, MON.h), 0, 0);
+  x.restore();
+
+  // ---- desk, out of focus
+  g = x.createLinearGradient(0, 728, W, H);
+  g.addColorStop(0, '#d6a58c'); g.addColorStop(0.45, '#a77c84'); g.addColorStop(1, '#5a4768');
+  x.fillStyle = g; x.fillRect(X0, 728, XW, H - 728 + BM);
+  g = x.createLinearGradient(0, 728, 0, H);
+  g.addColorStop(0, 'rgba(255,220,190,0)'); g.addColorStop(1, 'rgba(40,28,52,0.35)');
+  x.fillStyle = g; x.fillRect(X0, 728, XW, H - 728 + BM);
+  x.fillStyle = '#f4cfaa'; x.fillRect(X0, 726, XW, 6);                 // front edge catching light
+  x.save();
+  x.globalCompositeOperation = 'screen';
+  const deskPatch = (xa, xb, xc, xd, a) => {
+    const gg = x.createLinearGradient(0, 732, 0, H);
+    gg.addColorStop(0, `rgba(255,190,130,${a})`); gg.addColorStop(1, `rgba(255,160,120,${a * 0.5})`);
+    x.fillStyle = gg;
+    x.beginPath(); x.moveTo(xa, 732); x.lineTo(xb, 732); x.lineTo(xc, H + BM); x.lineTo(xd, H + BM); x.closePath(); x.fill();
+  };
+  deskPatch(-BM, 262, 560, -BM, 0.5); deskPatch(300, 840, 1400, 620, 0.46);
+  x.restore();
+  // mug and books (right), backlit rims
+  x.fillStyle = '#6d5874'; x.fillRect(1300, 668, 220, 60);
+  x.fillStyle = '#8c6c80'; x.fillRect(1318, 632, 186, 38);
+  x.fillStyle = '#e8b393'; x.fillRect(1318, 632, 186, 4);
+  x.fillStyle = '#7a6480'; x.fillRect(1590, 606, 92, 122);
+  x.fillStyle = '#f0c3a0'; x.fillRect(1590, 606, 6, 122);
+  // plant on the sill (left), leaves glowing with transmitted light
+  for (let i = 0; i < 20; i++) {
+    const bx = 80 + rnd() * 150, by = WIN.y1 - 30;
+    const ang = -Math.PI / 2 + (rnd() - 0.5) * 2.0, l = 80 + rnd() * 150;
+    x.save(); x.translate(bx, by); x.rotate(ang);
+    const gg = x.createLinearGradient(0, -12, 0, 12);
+    gg.addColorStop(0, 'rgba(226,232,150,0.95)'); gg.addColorStop(1, 'rgba(120,150,96,0.95)');
+    x.fillStyle = gg;
+    x.beginPath(); x.ellipse(l * 0.5, 0, l * 0.5, 12 + rnd() * 12, 0, 0, 7); x.fill();
+    x.restore();
+  }
+  x.fillStyle = '#8a5c66'; x.fillRect(86, WIN.y1 - 54, 140, 56);
+  x.fillStyle = '#e9b394'; x.fillRect(86, WIN.y1 - 54, 140, 5);
+  return c;
+}
+
+function drawGridworld(w, h) {
+  const c = mkCanvas(w, h), x = c.getContext('2d');
+  x.fillStyle = '#2e2d33'; x.fillRect(0, 0, w, h);
+  const cols = 9, rows = 5, pad = 22, top = 44;
+  const cs = Math.min((w - 2 * pad) / cols, (h - top - pad) / rows);
+  const ox = (w - cs * cols) / 2, oy = top;
+  const walls = new Set(['2,1', '2,2', '2,3', '6,2', '6,3', '6,4', '4,4', '8,1']);
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    const k = i + ',' + j;
+    x.fillStyle = walls.has(k) ? '#55545a' : ((i + j) % 2 ? '#8c8b90' : '#9b9a9f');
+    x.fillRect(ox + i * cs + 2, oy + j * cs + 2, cs - 4, cs - 4);
+  }
+  x.fillStyle = '#d7d6da'; x.fillRect(ox + 8 * cs + 6, oy + 0 * cs + 6, cs - 12, cs - 12);   // goal
+  x.fillStyle = 'rgba(217,119,87,0.45)';
+  [[0, 2], [1, 3], [2, 4], [3, 4], [4, 3]].forEach(([i, j]) => x.fillRect(ox + i * cs + cs * 0.38, oy + j * cs + cs * 0.38, cs * 0.24, cs * 0.24));
+  x.fillStyle = ORANGE; x.fillRect(ox + 5 * cs + 6, oy + 3 * cs + 6, cs - 12, cs - 12);    // the agent
+  x.fillStyle = '#cfcdd4'; x.font = 'bold 18px Consolas, monospace';
+  x.fillText('EP 000412', pad, 30); x.fillText('STEP 1.28e5', w * 0.4, 30);
+  x.fillStyle = ORANGE; x.fillText('+0.97', w - pad - 58, 30);
+  return c;
+}
+
+// Painterly pass: bristle strokes that take their colour from the underpainting
+// and follow its isophotes; stroke length shrinks near edges so forms stay put.
+function paintStrokes(cv, rnd, count, skip) {
+  const cw = cv.width, ch = cv.height;
+  const ctx = cv.getContext('2d');
+  const src = ctx.getImageData(0, 0, cw, ch).data;
+  const G = 6, gw = Math.ceil(cw / G), gh = Math.ceil(ch / G);
+  const lum = new Float32Array(gw * gh);
+  for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++) {
+    const k = (Math.min(ch - 1, j * G) * cw + Math.min(cw - 1, i * G)) * 4;
+    lum[j * gw + i] = 0.3 * src[k] + 0.59 * src[k + 1] + 0.11 * src[k + 2];
+  }
+  const flow = (px, py) => {
+    const i = Math.max(1, Math.min(gw - 2, Math.round(px / G))), j = Math.max(1, Math.min(gh - 2, Math.round(py / G)));
+    const gx = lum[j * gw + i + 1] - lum[j * gw + i - 1], gy = lum[(j + 1) * gw + i] - lum[(j - 1) * gw + i];
+    return [gx, gy];
+  };
+  const sample = (px, py) => {
+    const k = ((Math.max(0, Math.min(ch - 1, py | 0))) * cw + Math.max(0, Math.min(cw - 1, px | 0))) * 4;
+    return [src[k], src[k + 1], src[k + 2]];
+  };
+  ctx.lineCap = 'round';
+  for (let s = 0; s < count; s++) {
+    const t = s / count;
+    const px = rnd() * cw, py = rnd() * ch;
+    if (skip && skip(px - BM, py - BM)) continue;
+    const col = sample(px, py);
+    let [gx, gy] = flow(px, py);
+    const m = Math.hypot(gx, gy);
+    const drift = -0.12 + 0.35 * Math.sin(px * 0.0031 + py * 0.0047);
+    let a = m > 0.6 ? Math.atan2(gy, gx) + Math.PI / 2 : drift;
+    const wdt = lerp(20, 4, t) * (0.7 + 0.6 * rnd());
+    const edge = Math.min(1, m / 18);
+    const L = wdt * (1.5 + 2.5 * rnd()) / (1 + m * 0.6);
+    const pts = [[px, py]];
+    let cx = px, cy = py;
+    for (let k = 0; k < 3; k++) {
+      cx += Math.cos(a) * L / 3; cy += Math.sin(a) * L / 3;
+      pts.push([cx, cy]);
+      [gx, gy] = flow(cx, cy);
+      if (Math.hypot(gx, gy) > 0.6) {
+        let a2 = Math.atan2(gy, gx) + Math.PI / 2;
+        if (Math.cos(a2 - a) < 0) a2 += Math.PI;
+        a = lerp(a, a2, 0.5);
+      }
+    }
+    const nx = -Math.sin(a), ny = Math.cos(a);
+    const K = 4;
+    const alpha = (0.12 + 0.22 * rnd()) * (1 - 0.6 * edge);
+    for (let b = 0; b < K; b++) {
+      const off = (b / (K - 1) - 0.5) * wdt * 0.75;
+      const jit = (rnd() - 0.5) * 14;
+      ctx.strokeStyle = `rgba(${Math.min(255, col[0] + jit) | 0},${Math.min(255, col[1] + jit) | 0},${Math.min(255, col[2] + jit * 0.8) | 0},${alpha.toFixed(3)})`;
+      ctx.lineWidth = wdt / K * (1.1 + rnd());
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0] + nx * off, pts[0][1] + ny * off);
+      ctx.bezierCurveTo(pts[1][0] + nx * off, pts[1][1] + ny * off, pts[2][0] + nx * off, pts[2][1] + ny * off, pts[3][0] + nx * off * 0.5, pts[3][1] + ny * off * 0.5);
+      ctx.stroke();
+    }
+  }
+}
+
+function paintBackground(rnd) {
+  const under = paintUnder(rnd);
+  // depth of field: the room is far behind the hand
+  const blurred = mkCanvas(under.width, under.height), bx = blurred.getContext('2d');
+  bx.filter = 'blur(7px)'; bx.drawImage(under, 0, 0); bx.filter = 'none';
+  const inMonitor = (px, py) => px > MON.x - 8 && px < MON.x + MON.w + 8 && py > MON.y - 40 && py < MON.y + MON.h + 40;
+  paintStrokes(blurred, rnd, MODE === 'fast' ? 5000 : 42000, inMonitor);
+  const out = mkCanvas(W, H), ox = out.getContext('2d');
+  ox.drawImage(blurred, -BM, -BM);
+  // bokeh
+  ox.globalCompositeOperation = 'screen';
+  const bok = (bxp, byp, r, rgb, a) => {
+    const g = ox.createRadialGradient(bxp, byp, 0, bxp, byp, r);
+    g.addColorStop(0, `rgba(${rgb},${a * 0.9})`); g.addColorStop(0.8, `rgba(${rgb},${a * 0.9})`);
+    g.addColorStop(0.92, `rgba(${rgb},${a * 0.95})`); g.addColorStop(1, `rgba(${rgb},0)`);
+    ox.fillStyle = g; ox.beginPath(); ox.arc(bxp, byp, r, 0, 7); ox.fill();
+  };
+  for (let i = 0; i < 34; i++) {             // sun sparkle through the glass
+    const ang = rnd() * 6.283, dd = 40 + Math.pow(rnd(), 0.7) * 520;
+    const bxp = SUN_PX[0] + Math.cos(ang) * dd * 1.2, byp = SUN_PX[1] + Math.sin(ang) * dd * 0.65;
+    if (byp > WIN.y1 + 20 || bxp > WIN.x1) continue;
+    bok(bxp, byp, 16 + rnd() * 44, rnd() < 0.7 ? '255,224,176' : '255,196,206', 0.08 + rnd() * 0.18);
+  }
+  for (let i = 0; i < 12; i++) bok(980 + rnd() * 700, 700 + rnd() * 60, 6 + rnd() * 12, '255,206,170', 0.12 + rnd() * 0.18);
+  // out-of-focus foreground sparkles near the lens
+  const fg = [[120, 980, 120, 0.10], [300, 1060, 90, 0.08], [60, 820, 70, 0.07]];
+  for (const [fx, fy, fr, fa] of fg) bok(fx, fy, fr, '255,214,176', fa);
+  bok(1540, 760, 7, '255,140,100', 0.6); bok(1770, 452, 6, '180,200,255', 0.5); bok(1795, 452, 6, '180,200,255', 0.35);
+  ox.globalCompositeOperation = 'source-over';
+  return out;
+}
+
+// ---------------------------------------------------------------- Clawd
+function clawdRect() {
+  const w = 18 * CELL, h = 5 * 2 * CELL;
+  const x0 = Math.round(CLAWD_FEET[0] - w / 2), y0 = Math.round(CLAWD_FEET[1] - h);
+  return { x0, y0, w, h };
+}
+function drawClawd(ctx, mask) {
+  const r = clawdRect();
+  const spr = mkCanvas(W, H), sx = spr.getContext('2d');
+  sx.fillStyle = ORANGE;
+  for (let j = 0; j < 5; j++) for (let i = 0; i < 18; i++) {
+    if (CLAWD[j][i] === '#') sx.fillRect(r.x0 + i * CELL, r.y0 + j * 2 * CELL, CELL, 2 * CELL);
+  }
+  // hide the parts of Clawd that are behind the hand
+  sx.globalCompositeOperation = 'destination-out';
+  const m = mkCanvas(W, H), mx = m.getContext('2d');
+  mx.drawImage(mask, 0, 0);
+  const md = mx.getImageData(0, 0, W, H);
+  for (let i = 0; i < md.data.length; i += 4) { const v = md.data[i]; md.data[i + 3] = v > 127 ? 255 : 0; }
+  mx.putImageData(md, 0, 0);
+  sx.drawImage(m, 0, 0);
+  ctx.drawImage(spr, 0, 0);
+}
+function drawClawdGlow(ctx) {
+  const r = clawdRect();
+  const cx = r.x0 + r.w / 2, cy = r.y0 + r.h * 0.55;
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  let g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 300);
+  g.addColorStop(0, 'rgba(255,140,92,0.36)'); g.addColorStop(0.25, 'rgba(255,120,84,0.16)');
+  g.addColorStop(0.6, 'rgba(255,110,90,0.05)'); g.addColorStop(1, 'rgba(255,110,90,0)');
+  ctx.fillStyle = g; ctx.fillRect(cx - 340, cy - 340, 680, 680);
+  // tight halo around the sprite silhouette
+  const halo = mkCanvas(W, H), hx = halo.getContext('2d');
+  hx.fillStyle = '#ff9c70';
+  for (let j = 0; j < 5; j++) for (let i = 0; i < 18; i++) {
+    if (CLAWD[j][i] === '#') hx.fillRect(r.x0 + i * CELL, r.y0 + j * 2 * CELL, CELL, 2 * CELL);
+  }
+  ctx.filter = 'blur(12px)'; ctx.globalAlpha = GLOWV ? 0.65 : 0.85; ctx.drawImage(halo, 0, 0);
+  ctx.filter = 'blur(40px)'; ctx.globalAlpha = 0.85; ctx.drawImage(halo, 0, 0);
+  ctx.filter = 'blur(90px)'; ctx.globalAlpha = 0.6; ctx.drawImage(halo, 0, 0);
+  ctx.filter = 'none'; ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function clawdSparkles(ctx, rnd) {
+  const r = clawdRect();
+  const cx = r.x0 + r.w / 2, cy = r.y0 + r.h * 0.4;
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  for (let i = 0; i < 14; i++) {
+    const up = Math.pow(rnd(), 0.8);
+    const px = cx + (rnd() - 0.5) * (120 + 160 * up), py = cy - 20 - up * 230;
+    const rr = 1.2 + rnd() * 2.2 * (1 - up * 0.5);
+    const al = (0.55 + rnd() * 0.45) * (1 - up * 0.6);
+    const g = ctx.createRadialGradient(px, py, 0, px, py, rr * 4);
+    g.addColorStop(0, `rgba(255,214,160,${al})`); g.addColorStop(0.3, `rgba(255,150,100,${al * 0.55})`); g.addColorStop(1, 'rgba(255,130,90,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(px, py, rr * 4, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- light & post
+function godRays(ctx, rnd, alphaScale) {
+  const L = mkCanvas(W, H), x = L.getContext('2d');
+  const [sx, sy] = SUN_PX;
+  for (let i = 0; i < 8; i++) {
+    const a0 = -0.30 + i * 0.07 + (rnd() - 0.5) * 0.03, wdt = 0.012 + rnd() * 0.028;
+    const g = x.createLinearGradient(sx, sy, sx + Math.cos(a0) * 1800, sy + Math.sin(a0) * 1800);
+    g.addColorStop(0, 'rgba(255,226,180,0.0)'); g.addColorStop(0.1, `rgba(255,220,172,${(0.14 + rnd() * 0.1) * alphaScale})`);
+    g.addColorStop(0.65, `rgba(255,196,168,${0.04 * alphaScale})`); g.addColorStop(1, 'rgba(255,196,168,0)');
+    x.fillStyle = g;
+    x.beginPath(); x.moveTo(sx, sy);
+    x.lineTo(sx + Math.cos(a0 - wdt) * 2100, sy + Math.sin(a0 - wdt) * 2100);
+    x.lineTo(sx + Math.cos(a0 + wdt) * 2100, sy + Math.sin(a0 + wdt) * 2100);
+    x.closePath(); x.fill();
+  }
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  ctx.filter = 'blur(16px)'; ctx.drawImage(L, 0, 0); ctx.filter = 'none';
+  ctx.restore();
+}
+function lensFlare(ctx) {
+  const [sx, sy] = SUN_PX, cx = W / 2, cy = H / 2;
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  // soft anamorphic streak through the sun
+  let g = ctx.createLinearGradient(sx - 900, sy, sx + 900, sy);
+  g.addColorStop(0, 'rgba(255,200,160,0)'); g.addColorStop(0.5, 'rgba(255,226,190,0.22)'); g.addColorStop(1, 'rgba(255,200,160,0)');
+  ctx.fillStyle = g; ctx.filter = 'blur(6px)'; ctx.fillRect(sx - 900, sy - 3, 1800, 6); ctx.filter = 'none';
+  const ghosts = [[0.55, 38, '255,190,150', 0.10], [0.95, 22, '220,200,255', 0.09], [1.35, 70, '255,170,140', 0.06], [1.7, 30, '200,220,255', 0.07]];
+  for (const [t, r, rgb, a] of ghosts) {
+    const gx = sx + (cx - sx) * t * 2, gy = sy + (cy - sy) * t * 2;
+    g = ctx.createRadialGradient(gx, gy, 0, gx, gy, r);
+    g.addColorStop(0, `rgba(${rgb},${a * 0.5})`); g.addColorStop(0.85, `rgba(${rgb},${a})`); g.addColorStop(1, `rgba(${rgb},0)`);
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(gx, gy, r, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+function dustMotes(ctx, rnd, n) {
+  const [sx, sy] = SUN_PX;
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  for (let i = 0; i < n; i++) {
+    const a = -0.32 + rnd() * 0.6, d = 120 + Math.pow(rnd(), 0.9) * 1500;
+    const px = sx + Math.cos(a) * d, py = sy + Math.sin(a) * d;
+    const r = 0.7 + Math.pow(rnd(), 2) * 3.2;
+    const g = ctx.createRadialGradient(px, py, 0, px, py, r * 3);
+    const al = (0.25 + rnd() * 0.6) * (1 - d / 1900);
+    g.addColorStop(0, `rgba(255,246,226,${al})`); g.addColorStop(0.35, `rgba(255,228,196,${al * 0.45})`); g.addColorStop(1, 'rgba(255,228,196,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(px, py, r * 3, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+function bloom(ctx, src) {
+  const w4 = W / 4, h4 = H / 4;
+  const s = mkCanvas(w4, h4), sx = s.getContext('2d');
+  sx.drawImage(src, 0, 0, w4, h4);
+  const id = sx.getImageData(0, 0, w4, h4), d = id.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const l = (d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11) / 255;
+    const k = Math.max(0, (l - 0.68) / 0.32), kk = k * k;
+    d[i] *= kk; d[i + 1] *= kk; d[i + 2] *= kk;
+  }
+  sx.putImageData(id, 0, 0);
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  const b = mkCanvas(w4, h4), bx = b.getContext('2d');
+  bx.filter = 'blur(5px)'; bx.drawImage(s, 0, 0); bx.filter = 'none';
+  ctx.globalAlpha = 0.7; ctx.drawImage(b, 0, 0, W, H);
+  const b2 = mkCanvas(W / 8, H / 8), b2x = b2.getContext('2d');
+  b2x.filter = 'blur(14px)'; b2x.drawImage(s, 0, 0, W / 8, H / 8); b2x.filter = 'none';
+  // halation: tint the wide bloom warm
+  b2x.globalCompositeOperation = 'multiply'; b2x.fillStyle = '#ffb080'; b2x.fillRect(0, 0, W / 8, H / 8);
+  ctx.globalAlpha = 0.55; ctx.drawImage(b2, 0, 0, W, H);
+  ctx.restore();
+}
+function finish(ctx, rnd) {
+  // vignette in a plum tone
+  const g = ctx.createRadialGradient(W * 0.47, H * 0.5, H * 0.38, W * 0.5, H * 0.52, H * 1.1);
+  g.addColorStop(0, 'rgba(90,60,96,0)'); g.addColorStop(1, 'rgba(90,60,96,0.55)');
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+  // grade, grain and a faint canvas weave
+  const img = ctx.getImageData(0, 0, W, H), d = img.data;
+  for (let y = 0; y < H; y++) {
+    for (let xx = 0; xx < W; xx++) {
+      const k = (y * W + xx) * 4;
+      let r = d[k] / 255, gg = d[k + 1] / 255, b = d[k + 2] / 255;
+      const l = r * 0.3 + gg * 0.59 + b * 0.11;
+      // gentle S-curve on luminance
+      const lc = l + 0.35 * (l * l * (3 - 2 * l) - l);
+      const sc = l > 0.001 ? lc / l : 1;
+      r *= sc; gg *= sc; b *= sc;
+      // warm highlights, plum-lavender shadows
+      const hl = Math.max(0, l - 0.55) / 0.45, sh = Math.max(0, 0.45 - l) / 0.45;
+      r += hl * 0.025 + sh * 0.012; gg += hl * 0.008; b += -hl * 0.02 + sh * 0.035;
+      const weave = Math.sin(xx * 1.7) * Math.sin(y * 1.7 + 0.8 * Math.sin(xx * 0.043)) * 1.3;
+      const n = (rnd() - 0.5) * 8 + weave;
+      d[k] = r * 255 + n; d[k + 1] = gg * 255 + n; d[k + 2] = b * 255 + n;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// ================================================================= MAIN
+function main() {
+  const out = document.getElementById('out');
+  const ctx = out.getContext('2d');
+  const rnd = mulberry32(20160812);
+  const rig = buildRig();
+  const cam = cameraBasis();
+  const fp = project(CLAWD_ANCHOR, cam);
+  CLAWD_FEET = [Math.round(fp[0]), Math.round(fp[1])];
+  const hand = renderHand(rig, cam, CLAWD_FEET);
+  if (MODE === 'debug' || MODE === 'hand') {
+    ctx.fillStyle = MODE === 'debug' ? '#6d7480' : '#d8b4b0'; ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(hand.color, 0, 0);
+    if (Q.get('joints')) {
+      ctx.fillStyle = '#0f0';
+      for (const j of rig.J) { const s = project(j, cam); ctx.fillRect(s[0] - 3, s[1] - 3, 6, 6); }
+    }
+    if (MODE === 'hand') { drawClawdGlow(ctx); drawClawd(ctx, hand.mask); }
+    return;
+  }
+  const bg = paintBackground(rnd);
+  ctx.drawImage(bg, 0, 0);
+  godRays(ctx, rnd, 1.35);
+  ctx.drawImage(hand.color, 0, 0);
+  drawClawdGlow(ctx);
+  clawdSparkles(ctx, mulberry32(77));
+  dustMotes(ctx, rnd, 150);
+  lensFlare(ctx);
+  const snap = mkCanvas(W, H); snap.getContext('2d').drawImage(out, 0, 0);
+  bloom(ctx, snap);
+  finish(ctx, rnd);
+  drawClawd(ctx, hand.mask);
+}
+try { main(); } catch (e) {
+  const ctx = document.getElementById('out').getContext('2d');
+  ctx.fillStyle = '#300'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#fff'; ctx.font = '20px monospace';
+  String(e && e.stack || e).split('\n').forEach((l, i) => ctx.fillText(l, 20, 40 + i * 24));
+}
+</script>
+</body></html>

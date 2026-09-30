@@ -1,0 +1,8 @@
+09-style-pixel exit=1 03:39:56
+04b-swarm-contrast exit=1 03:40:17
+01b-pretrain-tokens exit=1 03:40:36
+05-clawd-sprites exit=1 03:40:44
+02b-environment-poly exit=1 03:40:52
+08-style-anime-cel exit=1 03:41:00
+06-style-riso exit=1 03:41:29
+07-style-ligne-claire exit=1 03:41:37

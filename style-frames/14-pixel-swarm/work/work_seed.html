@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Shelter MV - style frame 14 - pixel swarm</title>
+<style>html,body{margin:0;padding:0;background:#0a0a12;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="out" width="1920" height="1080"></canvas>
+<script>
+"use strict";
+// ============================================================================
+// Shelter MV, style frame 14: the swarm as a lantern, in the outside world's
+// pixel style (the 09 night lab). Authored at 480x270 into a palette-index
+// buffer (32 colours), lit through palette ramps with 2x2 Bayer dither only
+// where a ramp steps, then blown up 4x nearest-neighbour.
+// Three nested shells of collector plates hold Alpha Centauri B. Plates sit on
+// sunflower (Fibonacci) lattices; every seam and corner pinhole shows the
+// lit haze inside. The camera sits on the axis where the shells were built to
+// line up: eleven lanes are open through all three, and the light that
+// escapes along them fans into the dust as the spark.
+// Deterministic: one seeded PRNG plus hashed noise, no filtering.
+// ============================================================================
+const T0 = performance.now();
+const W = 480, H = 270, SC = 4;
+const Q = new URLSearchParams(location.search);
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rnd = mulberry32(20260927);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const TAU = 2 * Math.PI;
+
+// ---------------------------------------------------------------- palette ---
+const HEX = [
+  // C0..C12  night ramp, shared with the 09 lab
+  '#0a0a12', '#12121c', '#1a1a28', '#232335', '#2d2e43', '#3a3c54', '#4a4d67',
+  '#5d617b', '#747a92', '#8f95aa', '#adb3c2', '#ccd0da', '#e9eaee',
+  // E0 faintest ember, W0..W8 Claude's light (W5 is exactly #D97757), W9 white heat
+  '#1a1117', '#28191f', '#3f2229', '#5e2e31', '#86403c', '#b0584a', '#d97757', '#eb9a72',
+  '#f6c296', '#fde8cc', '#fffaf1',
+  // P0..P5  the held world: the only pastels in the frame
+  '#9c8cc6', '#e3aac6', '#fcd2ab', '#fff4d8', '#76a193', '#4d7470',
+  // A0, A1  Alpha Centauri A: the one pale cool accent
+  '#8ea3cc', '#d6e2f7',
+];
+const C = Array.from({ length: 13 }, (_, i) => i);
+const E0 = 13, Wc = Array.from({ length: 10 }, (_, i) => 14 + i);       // Wc[9] = white heat
+const P = Array.from({ length: 6 }, (_, i) => 24 + i);
+const A0 = 30, A1 = 31;
+// warm light as one ramp, indexed by level: 0 = space ... 7 = #D97757 ... 11 = white heat
+const WR = [C[0], E0, Wc[0], Wc[1], Wc[2], Wc[3], Wc[4], Wc[5], Wc[6], Wc[7], Wc[8], Wc[9]];
+const RGB = HEX.map(h => [1, 3, 5].map(k => parseInt(h.slice(k, k + 2), 16)));
+
+// ---------------------------------------------------------------- buffers ---
+const IB = new Uint8Array(W * H);          // palette index per native pixel
+function set(x, y, c) {
+  x |= 0; y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  IB[y * W + x] = c;
+}
+const get = (x, y) => IB[y * W + x];
+
+// ------------------------------------------------------------- dithering ---
+// Ordered dither only in narrow transition bands: a continuous level is
+// contrast-stretched around each step, so most pixels land on solid ramp
+// colours and the 2x2 Bayer patterns appear only where a ramp changes.
+const BAY2 = [0.125, 0.625, 0.875, 0.375];
+const thr2 = (x, y) => BAY2[((y & 1) << 1) | (x & 1)];
+function qd(v, x, y, sharp) {
+  sharp = sharp || 2;
+  const b = Math.floor(v);
+  const f = (v - b - 0.5) * sharp + 0.5;
+  return b + (f > thr2(x, y) ? 1 : 0);
+}
+
+// ----------------------------------------------------------------- noise ---
+function hashN(a, b, c, d) {
+  let h = Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 1442695041) + Math.imul(d | 0, 2246822519) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+function vnoise(x, y, s) {
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+  const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
+  const a = hashN(ix, iy, s, 0), b = hashN(ix + 1, iy, s, 0), c = hashN(ix, iy + 1, s, 0), d = hashN(ix + 1, iy + 1, s, 0);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function fbm(x, y, s, oct) {
+  let v = 0, a = 0.5, f = 1, n = 0;
+  for (let o = 0; o < oct; o++) { v += a * vnoise(x * f, y * f, s + o * 17); n += a; f *= 2; a *= 0.5; }
+  return v / n;
+}
+const norm3 = v => { const l = Math.hypot(v[0], v[1], v[2]); return [v[0] / l, v[1] / l, v[2] / l]; };
+
+// ======================================================== scene constants ===
+const CX = 290, CY = 137;                  // Alpha Centauri B, the swarm centre
+const RS = 7.2;                            // the star's disc
+// the eleven lanes: [angle deg (screen, y down), length px, width px, strength]
+const LANES = [
+  [-86, 150, 1.9, 0.90], [-52, 108, 1.3, 0.65], [-21, 176, 2.3, 1.00], [10, 122, 1.5, 0.75],
+  [40, 96, 1.1, 0.55], [94, 140, 2.0, 0.90], [123, 110, 1.3, 0.65], [152, 185, 2.4, 1.00],
+  [184, 100, 1.2, 0.60], [215, 146, 1.9, 0.85], [245, 90, 1.0, 0.50],
+].map(([a, L, w, I], k) => ({ c: Math.cos(a * Math.PI / 180), s: Math.sin(a * Math.PI / 180), L, w, I, k }));
+// three nested shells, inner to outer. Plates sit on a Fibonacci (sunflower)
+// lattice whose pole faces the camera. Each shell has its own plate count,
+// seam width, pinholes where plates meet, and a few missing plates.
+//   R radius, N plates on the whole sphere, seam half-width px, miss fraction,
+//   open: half-angle (deg) of the opening each shell leaves around the camera
+//   axis (the way the camera came out), h haze per px inside it
+const SH = [
+  { R: 24, N: 230, seam: 0.70, miss: 0.16, open: 27, seed: 11, h: 0.036 },
+  { R: 34, N: 300, seam: 0.80, miss: 0.12, open: 25, seed: 23, h: 0.040 },
+  { R: 45, N: 250, seam: 0.58, miss: 0.10, open: 29, seed: 77, h: 0.030 },
+];
+const NS = SH.length, R_OUT = SH[NS - 1].R;
+const BACK = [5.7, 5.0, 4.4];              // lit inside face of each back half
+// the held world: a small bubble inside the swarm, seen through one porthole
+const BUB = { x: 13.5, y: 23.4, r: 6.5 };
+const PORT = BUB.r + 1.8;
+// Alpha Centauri A, and home
+const STAR_A = [66, 44];
+const SUN = [54, 226];
+const LA = norm3([-0.78, -0.52, 0.35]);    // light direction toward A
+const OPEN = norm3([0.10, -0.12, 1]);     // the nested openings, a little off the camera axis
+
+// ================================================================ shells ===
+// Each plate is its Voronoi cell on the sphere, found by clipping in the
+// plate's tangent plane, shrunk by the seam, then drawn as a crisp polygon:
+// straight edges, one flat colour, like a hand-built tile.
+function fillPoly(pts, fn) {
+  let ya = Infinity, yb = -Infinity;
+  for (const p of pts) { ya = Math.min(ya, p[1]); yb = Math.max(yb, p[1]); }
+  for (let y = Math.max(0, Math.floor(ya)); y <= Math.min(H - 1, Math.ceil(yb)); y++) {
+    const yc = y + 0.5, xs = [];
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xa, y0_] = pts[i], [xb, y1_] = pts[j];
+      if ((y0_ <= yc && y1_ > yc) || (y1_ <= yc && y0_ > yc)) xs.push(xa + (yc - y0_) / (y1_ - y0_) * (xb - xa));
+    }
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const xa = Math.ceil(xs[k] - 0.5), xb = Math.floor(xs[k + 1] - 0.5);
+      for (let x = Math.max(0, xa); x <= Math.min(W - 1, xb); x++) fn(x, y);
+    }
+  }
+}
+function clipHalf(poly, A, B, K) {         // keep a*A + b*B <= K
+  const out = [];
+  for (let m = 0; m < poly.length; m++) {
+    const p0 = poly[m], p1 = poly[(m + 1) % poly.length];
+    const f0 = K - (p0[0] * A + p0[1] * B), f1 = K - (p1[0] * A + p1[1] * B);
+    if (f0 >= 0) out.push(p0);
+    if ((f0 >= 0) !== (f1 >= 0)) { const t = f0 / (f0 - f1); out.push([p0[0] + t * (p1[0] - p0[0]), p0[1] + t * (p1[1] - p0[1])]); }
+  }
+  return out;
+}
+function randRot(r) {
+  const u1 = r(), u2 = r(), u3 = r();
+  const x = Math.sqrt(1 - u1) * Math.sin(TAU * u2), y = Math.sqrt(1 - u1) * Math.cos(TAU * u2);
+  const z = Math.sqrt(u1) * Math.sin(TAU * u3), w = Math.sqrt(u1) * Math.cos(TAU * u3);
+  return [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+          2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+          2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)];
+}
+for (const [k, S] of SH.entries()) {
+  const GA = Math.PI * (3 - Math.sqrt(5)), M = randRot(mulberry32(S.seed));
+  S.n = S.N;                               // the lattice's poles are turned away from the camera
+  S.pts = new Float64Array(S.n * 3);
+  for (let i = 0; i < S.n; i++) {
+    const z = 1 - (2 * i + 1) / S.N, r = Math.sqrt(1 - z * z), ph = i * GA;
+    const p = [r * Math.cos(ph), r * Math.sin(ph), z];
+    S.pts[i * 3] = M[0] * p[0] + M[1] * p[1] + M[2] * p[2];
+    S.pts[i * 3 + 1] = M[3] * p[0] + M[4] * p[1] + M[5] * p[2];
+    S.pts[i * 3 + 2] = M[6] * p[0] + M[7] * p[1] + M[8] * p[2];
+  }
+  S.fid = new Int32Array(W * H).fill(-1);   // plate id per pixel, front half
+  const cell = Math.sqrt(4 * Math.PI / S.N), cosLim = Math.cos(3.2 * cell), ins = S.seam / S.R;
+  const order = Array.from({ length: S.n }, (_, i) => i).filter(i => S.pts[i * 3 + 2] > -0.1)
+    .sort((a, b) => S.pts[a * 3 + 2] - S.pts[b * 3 + 2]);                // far plates first
+  for (const i of order) {
+    if (hashN(k, i, 7, 3) < S.miss) continue;                       // a missing plate
+    if (S.pts[i * 3] * OPEN[0] + S.pts[i * 3 + 1] * OPEN[1] + S.pts[i * 3 + 2] * OPEN[2] > Math.cos(S.open * Math.PI / 180)) continue;
+    const p = [S.pts[i * 3], S.pts[i * 3 + 1], S.pts[i * 3 + 2]];
+    let e1 = norm3(Math.abs(p[2]) < 0.9 ? [-p[1], p[0], 0] : [0, -p[2], p[1]]);
+    const e2 = [p[1] * e1[2] - p[2] * e1[1], p[2] * e1[0] - p[0] * e1[2], p[0] * e1[1] - p[1] * e1[0]];
+    let poly = [[-2 * cell, -2 * cell], [2 * cell, -2 * cell], [2 * cell, 2 * cell], [-2 * cell, 2 * cell]];
+    for (let j = 0; j < S.n && poly.length; j++) {
+      if (j === i) continue;
+      const q = [S.pts[j * 3], S.pts[j * 3 + 1], S.pts[j * 3 + 2]];
+      const c = p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+      if (c < cosLim) continue;
+      const A = e1[0] * q[0] + e1[1] * q[1] + e1[2] * q[2], B = e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2];
+      poly = clipHalf(poly, A, B, (1 - c) - ins * Math.hypot(A, B));
+    }
+    if (poly.length < 3) continue;
+    const img = poly.map(([a, b]) => {
+      const v = norm3([p[0] + a * e1[0] + b * e2[0], p[1] + a * e1[1] + b * e2[1], p[2] + a * e1[2] + b * e2[2]]);
+      let ix = v[0] * S.R, iy = v[1] * S.R;
+      if (v[2] < 0) { const r = Math.hypot(ix, iy); ix *= S.R / r; iy *= S.R / r; }  // tuck round the limb
+      return [CX + ix, CY + iy];
+    });
+    fillPoly(img, (x, y) => { S.fid[y * W + x] = i; });
+  }
+}
+// Front-half plate under pixel (x, y) on shell k: a plate id, or -1 for a gap.
+function frontPlate(k, x, y, rho) {
+  const S = SH[k];
+  return S.fid[y * W + x];
+}
+// The lanes run close to the sky plane, so where they leave the swarm they
+// show as notches in the outer rim, the inner shells' openings lined up behind.
+const NOTCH = l => ({ w: 0.5 * l.w + 1.0, d: 2.5 + 2.0 * l.I });
+function notchAt(dx, dy, rho) {
+  for (const l of LANES) {
+    const n = NOTCH(l);
+    if (rho < R_OUT - n.d) continue;
+    const along = dx * l.c + dy * l.s;
+    if (along > 0 && Math.abs(-dx * l.s + dy * l.c) < n.w) return l.k;
+  }
+  return -1;
+}
+// light running out along a lane, seen through whatever gaps lie over it
+function laneGlow(dx, dy, rho) {
+  let g = 0;
+  for (const l of LANES) {
+    const along = dx * l.c + dy * l.s;
+    if (along <= 0) continue;
+    const t = -dx * l.s + dy * l.c, wd = 0.8 + 0.7 * l.w;
+    g = Math.max(g, l.I * Math.exp(-0.5 * (t / wd) * (t / wd)) * (0.35 + 0.65 * rho / R_OUT));
+  }
+  return g;
+}
+
+// ================================================================= space ===
+// near-black, a faint Milky Way band running up from home (lower left)
+const MW_A = -35 * Math.PI / 180, MW_C = Math.cos(MW_A), MW_S = Math.sin(MW_A);
+function mwAt(x, y) {
+  const rx = x - SUN[0], ry = y - SUN[1];
+  const along = rx * MW_C + ry * MW_S, across = -rx * MW_S + ry * MW_C;
+  const wob = 9 * (fbm(along / 70, 0.5, 5, 2) - 0.5);
+  const d = (across - wob) / 24;
+  let v = Math.exp(-d * d * 1.7) * (0.3 + 1.0 * fbm(x / 20, y / 20, 9, 3));
+  v -= 0.55 * Math.exp(-Math.pow((across - wob + 5) / 5.5, 2)) * fbm(x / 11, y / 11, 21, 2);   // dark lane
+  return v;
+}
+const MWV = new Float32Array(W * H);
+for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+  const v = mwAt(x, y); MWV[y * W + x] = v;
+  set(x, y, C[clamp(qd(1.75 * v, x, y, 2), 0, 2)]);
+}
+// stars at three brightness levels, denser in the band
+(function stars() {
+  for (let k = 0; k < 2600; k++) {
+    const x = (rnd() * W) | 0, y = (rnd() * H) | 0, m = MWV[y * W + x];
+    if (rnd() > 0.16 + 0.8 * clamp(m, 0, 1)) continue;
+    const b = rnd();
+    if (b < 0.74) set(x, y, C[3 + ((rnd() * 2) | 0)]);
+    else if (b < 0.94) set(x, y, C[6 + ((rnd() * 2) | 0)]);
+    else if (b < 0.988) set(x, y, C[9 + ((rnd() * 2) | 0)]);
+    else { set(x, y, C[11]); for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (get(x + ox, y + oy) < C[4]) set(x + ox, y + oy, C[4]); }
+  }
+})();
+// Alpha Centauri A: bright, cool, far from the swarm
+(function starA() {
+  const [ax, ay] = STAR_A;
+  for (let y = ay - 18; y <= ay + 18; y++) for (let x = ax - 18; x <= ax + 18; x++) {
+    const d = Math.hypot(x - ax, y - ay);
+    const v = 2.6 * Math.pow(clamp(1 - d / 17, 0, 1), 1.7);
+    const k = qd(v, x, y, 2);
+    if (k >= 1 && get(x, y) < C[k + 1]) set(x, y, C[k + 1]);
+  }
+  const arm = [A1, A0, C[9], C[7], C[6], C[5], C[4]];
+  for (let s = 1; s < arm.length; s++) {
+    set(ax + s, ay, arm[s]); set(ax - s, ay, arm[s]);
+    if (s < arm.length - 1) { set(ax, ay + s, arm[s + 1]); set(ax, ay - s, arm[s + 1]); }
+  }
+  for (const [ox, oy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) { set(ax + ox, ay + oy, C[7]); set(ax + 2 * ox, ay + 2 * oy, C[4]); }
+  set(ax, ay, C[12]); set(ax + 1, ay, A1); set(ax - 1, ay, A1); set(ax, ay + 1, A1); set(ax, ay - 1, A1);
+})();
+// home: the Sun, a faint point at the end of Cassiopeia's W, as it looks from Alpha Centauri
+(function home() {
+  const [sx, sy] = SUN;
+  [[8, -6], [14, -1], [21, -7], [27, -2], [34, -9]].forEach(([ox, oy], k) => set(sx + ox, sy + oy, C[k === 2 ? 8 : 7]));
+  for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) set(sx + ox, sy + oy, C[3]);
+  set(sx, sy, C[10]);
+})();
+
+// ================================================= light in the dust ======
+// Outside the outer shell: a glow hugging the silhouette (light leaking through
+// all the small gaps) and, where the gaps line up, eleven shafts. Each shaft is
+// hot and narrow at its lane, then fans out soft into the dust and fades.
+for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+  const dx = x + 0.5 - CX, dy = y + 0.5 - CY, rho = Math.hypot(dx, dy);
+  if (rho < R_OUT) continue;
+  const e = rho - R_OUT;
+  const halo = 2.9 * Math.exp(-e / 2.5) + 1.3 * Math.exp(-e / 15);
+  let core = 0, fan = 0;
+  for (const l of LANES) {
+    const s = dx * l.c + dy * l.s;
+    if (s <= 0) continue;
+    const t = Math.abs(-dx * l.s + dy * l.c);
+    const r0 = R_OUT - NOTCH(l).d;         // the shaft starts in its notch
+    const u = (s - r0) / (l.L - r0);
+    if (u >= 1) continue;
+    const uu = Math.max(u, 0);
+    const wc = (0.7 + 0.5 * l.w) * Math.pow(1 - uu, 0.6);
+    core = Math.max(core, 8.2 * (0.55 + 0.45 * l.I) * Math.exp(-uu / 0.16) * Math.exp(-0.5 * (t / wc) * (t / wc)));
+    const dust = 0.72 + 0.56 * vnoise(s / 13, t / 2.2 + 37 * l.k, 3);
+    const sb = (1.3 + 1.05 * l.w) * (1 - 0.72 * uu);           // the ray body tapers
+    const sf = (2.2 + 1.0 * l.w) * (1 + 1.4 * uu);             // its faint dust fan widens
+    fan = Math.max(fan, 6.4 * l.I * Math.pow(1 - uu, 0.95) * Math.exp(-0.5 * (t / sb) * (t / sb)) * dust,
+      2.2 * l.I * Math.pow(1 - uu, 1.3) * Math.exp(-0.5 * (t / sf) * (t / sf)) * dust);
+  }
+  const v = Math.max(Math.max(halo, fan) + 0.3 * Math.min(halo, fan), core);
+  const k = qd(v, x, y, 2);
+  if (k >= 1) {
+    const cur = get(x, y);
+    if (k >= 3 || cur <= C[2]) set(x, y, WR[clamp(k, 1, 10)]);
+  }
+}
+
+// =============================================================== lantern ===
+// Cast straight into the swarm: the front halves of the shells from the
+// outside in (collecting the lit haze between them), then the held world, the
+// star, and the lit inside face of whichever back half the sight line reaches.
+const K_PLATE = 1, K_GLOW = 2, K_STAR = 3, K_BUB = 4;
+const KIND = new Uint8Array(W * H), LEV = new Float32Array(W * H);
+const SHI = new Int8Array(W * H).fill(-1), PLI = new Int32Array(W * H).fill(-1);
+const x0 = Math.floor(CX - R_OUT - 1), x1 = Math.ceil(CX + R_OUT + 1), y0 = Math.floor(CY - R_OUT - 1), y1 = Math.ceil(CY + R_OUT + 1);
+for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+  const dx = x + 0.5 - CX, dy = y + 0.5 - CY, r2 = dx * dx + dy * dy;
+  if (r2 >= R_OUT * R_OUT) continue;
+  const i = y * W + x, rho = Math.sqrt(r2);
+  const ln = notchAt(dx, dy, rho);
+  const inPort = (dx - BUB.x) ** 2 + (dy - BUB.y) ** 2 < PORT * PORT;
+  let hit = false, haze = 0;
+  for (let k = NS - 1; k >= 0; k--) {
+    const S = SH[k]; if (rho >= S.R) continue;
+    const id = (ln >= 0 || inPort) ? -1 : frontPlate(k, x, y, rho);
+    if (id >= 0) {
+      KIND[i] = K_PLATE; SHI[i] = k; PLI[i] = k * 1000 + id; hit = true;
+      if (k === NS - 1) {                  // outer plates: flat-shaded by A's cool light
+        const j = id * 3, Pt = S.pts;
+        const lam = Math.max(0, Pt[j] * LA[0] + Pt[j + 1] * LA[1] + Pt[j + 2] * LA[2]);
+        LEV[i] = 1.2 + 2.8 * Math.pow(lam, 1.5) + 0.6 * (hashN(k, id, 5, 1) - 0.5);
+      } else {                             // inner plates: warm bounce, plus the haze in front
+        LEV[i] = (k === 0 ? 4.6 : 3.6) + 0.7 * (hashN(k, id, 5, 1) - 0.5) + haze;
+      }
+      break;
+    }
+    // through shell k's front half: haze until the next shell in, or the mid-plane
+    const zk = Math.sqrt(S.R * S.R - r2);
+    const zn = (k > 0 && rho < SH[k - 1].R) ? Math.sqrt(SH[k - 1].R ** 2 - r2) : 0;
+    haze += S.h * (zk - zn);
+  }
+  if (hit) continue;
+  const bx = dx - BUB.x, by = dy - BUB.y;
+  if (bx * bx + by * by < BUB.r * BUB.r) { KIND[i] = K_BUB; continue; }
+  if (r2 < RS * RS) { KIND[i] = K_STAR; LEV[i] = 10.1 + 1.4 * Math.sqrt(1 - r2 / (RS * RS)); continue; }
+  let kb = 0; while (kb < NS - 1 && rho >= SH[kb].R) kb++;
+  haze += SH[kb].h * Math.sqrt(SH[kb].R ** 2 - r2);
+  let lev = BACK[kb] + haze + 2.2 * laneGlow(dx, dy, rho);
+  if (ln >= 0) lev += 1.2;
+  KIND[i] = K_GLOW; SHI[i] = kb; LEV[i] = lev;
+}
+// palette mapping
+for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+  const i = y * W + x, k = KIND[i];
+  if (!k || k === K_BUB) continue;
+  if (k === K_PLATE && SHI[i] === NS - 1) set(x, y, C[clamp(Math.round(LEV[i]), 1, 5)]);
+  else if (k === K_PLATE) set(x, y, WR[clamp(Math.round(LEV[i]), 1, 11)]);
+  else set(x, y, WR[clamp(qd(LEV[i], x, y, 3), 1, 11)]);
+}
+// warm lips: a plate pixel whose neighbour toward the star is strong light
+(function rims() {
+  const warmOf = i => (KIND[i] === K_PLATE && SHI[i] === NS - 1) ? 0 : (KIND[i] === K_BUB ? 8 : LEV[i]);
+  const out = [];
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = y * W + x;
+    if (KIND[i] !== K_PLATE) continue;
+    const dx = x + 0.5 - CX, dy = y + 0.5 - CY, d = Math.hypot(dx, dy) || 1;
+    const qx = Math.round(x - dx / d), qy = Math.round(y - dy / d), j = qy * W + qx;
+    if (KIND[j] === K_PLATE && SHI[j] >= SHI[i]) continue;
+    const ln = warmOf(j), own = warmOf(i);
+    if (ln >= 6.5 && ln > own + 2) out.push([x, y, Math.min(ln - 1.6, 9)]);
+  }
+  for (const [x, y, v] of out) set(x, y, WR[clamp(Math.round(v), 1, 11)]);
+})();
+// cool rim on the outer shell's limb where it turns toward A
+(function rimA() {
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = y * W + x;
+    if (KIND[i] !== K_PLATE || SHI[i] !== NS - 1) continue;
+    const dx = x + 0.5 - CX, dy = y + 0.5 - CY, rho = Math.hypot(dx, dy);
+    if (rho < R_OUT - 1.25) continue;
+    const lam = (dx / rho) * LA[0] + (dy / rho) * LA[1];
+    if (lam > 0.55) set(x, y, lam > 0.85 ? A0 : C[7]);
+    else if (lam > 0.2) set(x, y, C[5]);
+  }
+})();
+
+// ======================================================== the held world ===
+// a soap-film bubble with a pastel sunset and a hill in it, hand-placed
+const BUBBLE = [
+  '....abbba....',
+  '..abLLLLLba..',
+  '.aLLLLLLLLLb.',
+  '.bKKKKKKKKKL.',
+  'aKKKKKKKKKKKL',
+  'bEEEEEEEESSEL',
+  'bEEEEEEESSSEL',
+  'bGGGEEEEESSEL',
+  'aGGGGGGEEEEEL',
+  '.GGGGGGGGGGD.',
+  '.aDGGGGGGGDD.',
+  '..aDDDDDDDD..',
+  '....LDDDL....',
+];
+const BUB_KEY = { a: Wc[8], b: P[3], L: P[0], K: P[1], E: P[2], S: P[3], G: P[4], D: P[5] };
+(function bubble() {
+  const bx0 = Math.round(CX + BUB.x - BUBBLE[0].length / 2), by0 = Math.round(CY + BUB.y - BUBBLE.length / 2);
+  for (let r = 0; r < BUBBLE.length; r++) for (let c = 0; c < BUBBLE[r].length; c++) {
+    const v = BUB_KEY[BUBBLE[r][c]];
+    if (v !== undefined) set(bx0 + c, by0 + r, v);
+  }
+})();
+
+// ================================================================ output ===
+(function blit() {
+  const cv = document.getElementById('out');
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(W * SC, H * SC);
+  const d = img.data;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const [r, g, b] = RGB[IB[y * W + x]];
+    for (let j = 0; j < SC; j++) {
+      let o = ((y * SC + j) * W * SC + x * SC) * 4;
+      for (let i = 0; i < SC; i++) { d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255; o += 4; }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const ms = (performance.now() - T0).toFixed(1);
+  document.title = 'render ' + ms + ' ms';
+  console.log('render ms', ms);
+})();
+</script>
+</body></html>

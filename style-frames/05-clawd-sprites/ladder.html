@@ -1,0 +1,270 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#131211;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script src="clawd-sprites.js"></script>
+<script>
+'use strict';
+// Clawd evolution ladder (ladder.png): six rungs of fidelity, one silhouette.
+const S = window.ClawdSprites;
+const W = 1920, H = 1080;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const WARM = '245,240,232', OR = '#D97757';
+const FONT = 'Consolas, monospace';
+const U = 14;                       // px per glyph unit (one glyph pixel is U x 2U)
+
+// ---------------------------------------------------------------- color helpers
+const hex = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const C_OR = hex('#D97757'), C_PEACH = hex('#F6B899'), C_WHITE = hex('#FFF4E6'), C_DEEP = hex('#9C4535'),
+      C_EMBER = hex('#C45F43'), C_GOLD = hex('#FFD9A8');
+
+// ---------------------------------------------------------------- SDF kit (units; glyph box is 18 x 10)
+function sdRoundBox(px, py, cx, cy, hx, hy, r) {
+  const qx = Math.abs(px - cx) - hx + r, qy = Math.abs(py - cy) - hy + r;
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+}
+function smin(a, b, k) {
+  if (k <= 0) return Math.min(a, b);
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.min(a, b) - h * h * k * 0.25;
+}
+// iq's exact 2D uneven capsule: a ray from a (radius ra) to b (radius rb).
+function sdRay(px, py, ax, ay, bx, by, ra, rb) {
+  px -= ax; py -= ay; bx -= ax; by -= ay;
+  const h = bx * bx + by * by;
+  let qx = (px * by - py * bx) / h, qy = (px * bx + py * by) / h;
+  qx = Math.abs(qx);
+  const b = ra - rb, cx = Math.sqrt(Math.max(h - b * b, 1e-6)), cy = b;
+  const k = cx * qy - cy * qx, m = cx * qx + cy * qy, n = qx * qx + qy * qy;
+  if (k < 0) return Math.sqrt(h * n) - ra;
+  if (k > cx) return Math.sqrt(h * (n + 1 - 2 * qy)) - rb;
+  return m - ra;
+}
+const LEGS = [4.5, 6.5, 11.5, 13.5];
+// Clawd silhouette: body + arm bar + four legs, minus two eye slots. o = rounding / fillet params.
+function clawd(x, y, o) {
+  let d = sdRoundBox(x, y, 9, 4, 6, 4, o.rb);
+  d = smin(d, sdRoundBox(x, y, 9, 5, 8, 1, o.ra), o.k);
+  for (const lx of LEGS) d = smin(d, sdRoundBox(x, y, lx, 8.75, 0.5, 1.25, o.rl), o.kl);
+  const eye = Math.min(sdRoundBox(x, y, 5.5, 3, 0.5, 1, o.re), sdRoundBox(x, y, 12.5, 3, 0.5, 1, o.re));
+  return { d: Math.max(d, -eye), eye, body: d };
+}
+
+// ---------------------------------------------------------------- the burst (rungs 5, 6)
+// Rays map onto limbs: two arms (horizontal), four legs (a split fan downward), five from the head.
+const RAYS = [
+  { a: 0,    len: 8.3, w: 0.80, from: [17, 5] },
+  { a: 47,   len: 7.0, w: 0.62, from: [13.5, 10] },
+  { a: 63,   len: 7.9, w: 0.66, from: [11.5, 10] },
+  { a: 116,  len: 7.5, w: 0.64, from: [6.5, 10] },
+  { a: 133,  len: 6.6, w: 0.60, from: [4.5, 10] },
+  { a: 180,  len: 8.7, w: 0.80, from: [1, 5] },
+  { a: -151, len: 6.2, w: 0.66, from: [3.6, 0.4] },
+  { a: -121, len: 7.8, w: 0.72, from: [6.2, 0] },
+  { a: -92,  len: 8.9, w: 0.76, from: [9, 0] },
+  { a: -61,  len: 7.1, w: 0.70, from: [11.8, 0] },
+  { a: -31,  len: 6.6, w: 0.66, from: [14.4, 0.4] },
+];
+const CEN = [9, 4.6];
+function burst(x, y, t) {
+  // t = 0: rays sprout from the limbs; t = 1: they radiate from the center.
+  let d = 1e9;
+  for (const r of RAYS) {
+    const th = r.a * Math.PI / 180, dx = Math.cos(th), dy = Math.sin(th);
+    const ax = r.from[0] + (CEN[0] - r.from[0]) * t, ay = r.from[1] + (CEN[1] - r.from[1]) * t;
+    const L = r.len * (0.42 + 0.58 * t) - (1 - t) * 0.0;
+    const bx = ax + dx * L, by = ay + dy * L;
+    d = smin(d, sdRay(x, y, ax, ay, bx, by, r.w * (0.75 + 0.42 * t), 0.06 + 0.2 * t), 0.35);
+  }
+  return d;
+}
+
+// ---------------------------------------------------------------- rendering a rung from an SDF shader
+// shade(x, y) returns [r, g, b, a] (0..255, alpha 0..1) in glyph units; box is in glyph units.
+function renderSDF(shade, box) {
+  const [x0, y0, x1, y1] = box;
+  const w = Math.ceil((x1 - x0) * U), h = Math.ceil((y1 - y0) * U);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'), img = g.createImageData(w, h), D = img.data;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const x = x0 + (i + 0.5) / U, y = y0 + (j + 0.5) / U;
+    const col = shade(x, y);
+    if (!col || col[3] <= 0) continue;
+    const k = (j * w + i) * 4;
+    D[k] = col[0]; D[k + 1] = col[1]; D[k + 2] = col[2]; D[k + 3] = Math.round(clamp(col[3], 0, 1) * 255);
+  }
+  g.putImageData(img, 0, 0);
+  return { canvas: c, x0, y0 };
+}
+const cover = dUnits => clamp(0.5 - dUnits * U, 0, 1);       // analytic AA from a distance in units
+
+// Rung 3: clean vector. Flat orange, a whisper of top light.
+const V3 = { rb: 0.7, ra: 0.98, rl: 0.48, re: 0.46, k: 0.32, kl: 0.18 };
+function shadeVector(x, y) {
+  const { d } = clawd(x, y, V3);
+  const a = cover(d);
+  if (a <= 0) return null;
+  const c = mix(hex('#E07F5F'), hex('#D4704F'), clamp(y / 10, 0, 1));
+  return [c[0], c[1], c[2], a];
+}
+
+// Rung 4: luminous geometric. Chamfered bevel with crisp miters, inner light, eyes lit from within.
+const V4 = { rb: 0.25, ra: 0.3, rl: 0.2, re: 0.18, k: 0, kl: 0 };
+const L4 = (() => { const v = [-0.5, -0.78, 0.75], n = Math.hypot(...v); return v.map(q => q / n); })();
+function shadeLuminous(x, y) {
+  const s = clawd(x, y, V4);
+  const d = s.d;
+  if (s.eye < 0.02 && s.body < 0) {
+    // inside an eye slot: light pours out, hottest at the center
+    const e = clamp(-s.eye / 0.5, 0, 1);
+    const c = mix(C_GOLD, C_WHITE, e);
+    return [c[0], c[1], c[2], cover(s.eye - 0.02) * 0 + 1];
+  }
+  const a = cover(d);
+  if (a <= 0) return null;
+  const di = -d, bev = 0.85;
+  let c;
+  if (di < bev) {
+    const e = 0.01, gx = clawd(x + e, y, V4).d - clawd(x - e, y, V4).d, gy = clawd(x, y + e, V4).d - clawd(x, y - e, V4).d;
+    const gl = Math.hypot(gx, gy) || 1;
+    const nx = gx / gl, ny = gy / gl, nz = 1.0, nl = Math.hypot(nx, ny, nz);
+    const diff = Math.max(0, (nx * L4[0] + ny * L4[1] + nz * L4[2]) / nl);
+    c = mix(C_DEEP, C_PEACH, Math.pow(diff, 1.6));
+    // bevels around the eyes face inward toward the light source inside: warm them
+    if (s.eye < 0.9) c = mix(c, C_GOLD, 0.35 * (1 - s.eye / 0.9));
+  } else {
+    const glow = sstep(0.7, 3.2, di), top = clamp(1 - y / 8, 0, 1);
+    c = mix(C_OR, C_PEACH, 0.12 + 0.38 * glow + 0.18 * top);
+    c = mix(c, C_WHITE, 0.10 * glow * top);
+  }
+  return [c[0], c[1], c[2], a];
+}
+
+// Rung 5: radiant. The body turns to light and the eyes go dark; beams of light leave the limbs
+// along the directions the spark's rays will take.
+const V5 = { rb: 0.6, ra: 0.95, rl: 0.45, re: 0.4, k: 0.3, kl: 0.18 };
+const SC5 = 0.88;
+function shadeRadiant(x, y) {
+  const s = clawd((x - CEN[0]) / SC5 + CEN[0], (y - CEN[1]) / SC5 + CEN[1], V5);
+  const body = s.body * SC5, eye = s.eye * SC5;
+  const aBody = cover(Math.max(body, -eye));
+  let beam = 0;
+  for (const r of RAYS) {
+    const th = r.a * Math.PI / 180, dx = Math.cos(th), dy = Math.sin(th);
+    const ax = (r.from[0] - CEN[0]) * SC5 + CEN[0], ay = (r.from[1] - CEN[1]) * SC5 + CEN[1];
+    const L = r.len * (dy > 0.5 ? 0.46 : 0.62);
+    const dr = sdRay(x, y, ax - dx * 0.7, ay - dy * 0.7, ax + dx * L, ay + dy * L, r.w * 0.78, 0.05);
+    const h = clamp(((x - ax) * dx + (y - ay) * dy) / L, 0, 1);
+    beam = Math.max(beam, cover(dr) * Math.pow(1 - h, 1.25));
+  }
+  if (aBody <= 0 && beam <= 0) return null;
+  const di = -body;
+  let c = mix(C_PEACH, C_WHITE, sstep(0.2, 3.0, di) * 0.9);
+  c = mix(C_OR, c, sstep(0.0, 0.55, di));                  // orange rim, hot interior
+  const b = mix(C_OR, C_PEACH, 0.35);
+  const a = aBody + beam * (1 - aBody);
+  const k = aBody / Math.max(a, 1e-6);
+  const o = mix(b, c, k);
+  return [o[0], o[1], o[2], a];
+}
+
+// Rung 6: the spark. Eleven tapered rays around a small core that keeps the two eyes.
+function shadeSpark(x, y) {
+  const rays = burst(x, y, 1);
+  const core = sdRoundBox(x, y, CEN[0], CEN[1], 1.9, 1.35, 1.2);
+  const eye = Math.min(sdRoundBox(x, y, CEN[0] - 1.0, CEN[1] - 0.1, 0.21, 0.44, 0.2),
+                       sdRoundBox(x, y, CEN[0] + 1.0, CEN[1] - 0.1, 0.21, 0.44, 0.2));
+  const d = Math.max(smin(rays, core, 0.8), -eye);
+  const a = cover(d);
+  if (a <= 0) return null;
+  const r = Math.hypot(x - CEN[0], (y - CEN[1]) * 1.1);
+  let c = mix(hex('#F2A385'), C_OR, sstep(1.2, 4.2, r));
+  c = mix(c, C_EMBER, sstep(5.5, 9, r) * 0.6);
+  return [c[0], c[1], c[2], a];
+}
+
+// ---------------------------------------------------------------- background
+ctx.fillStyle = '#131211'; ctx.fillRect(0, 0, W, H);
+{
+  const g = ctx.createRadialGradient(1710, 300, 20, 1710, 300, 900);
+  g.addColorStop(0, 'rgba(217,119,87,0.16)'); g.addColorStop(0.35, 'rgba(217,119,87,0.05)'); g.addColorStop(1, 'rgba(217,119,87,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // the pixel grid dissolves as fidelity rises (left to right)
+  for (let y = 12; y < H; y += 24) for (let x = 12; x < W; x += 24) {
+    const a = 0.06 * (1 - sstep(300, 1100, x));
+    if (a > 0.003) { ctx.fillStyle = `rgba(${WARM},${a})`; ctx.fillRect(x, y, 1, 1); }
+  }
+  const v = ctx.createRadialGradient(W / 2, H / 2, 300, W / 2, H / 2, 1250);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,0.45)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+}
+
+function txt(s, x, y, size, alpha, o = {}) {
+  ctx.font = `${o.bold ? 'bold ' : ''}${size}px ${FONT}`;
+  ctx.fillStyle = o.color || `rgba(${WARM},${alpha})`;
+  ctx.textAlign = o.align || 'left';
+  ctx.letterSpacing = (o.ls || 0) + 'px';
+  const w = ctx.measureText(s).width;
+  ctx.fillText(s, x, y);
+  ctx.letterSpacing = '0px';
+  return w;
+}
+
+// ---------------------------------------------------------------- rungs
+const RUNGS = [
+  { name: 'GLYPH',    sub: '18×5 · 1-bit' },
+  { name: 'PIXEL',    sub: '36×10 · 5-tone ramp' },
+  { name: 'VECTOR',   sub: 'smooth silhouette' },
+  { name: 'LUMINOUS', sub: 'bevel · inner light' },
+  { name: 'RADIANT',  sub: 'limbs become rays' },
+  { name: 'SPARK',    sub: '11 rays · the eyes stay' },
+];
+const t0 = performance.now();
+RUNGS.forEach((r, i) => {
+  const cx = 210 + i * 300, sy = 790 - i * 78;           // center x, step (ground) y
+  const gx = cx - 9 * U, gy = sy - 10 * U;              // glyph box top-left in px
+  // step
+  const grad = ctx.createLinearGradient(cx - 150, 0, cx + 150, 0);
+  grad.addColorStop(0, `rgba(${WARM},0)`); grad.addColorStop(0.5, `rgba(${WARM},0.28)`); grad.addColorStop(1, `rgba(${WARM},0)`);
+  ctx.fillStyle = grad; ctx.fillRect(cx - 150, sy + 6, 300, 1);
+  // label
+  txt(String(i + 1).padStart(2, '0'), cx - 60, sy + 40, 12, 1, { color: OR, bold: true });
+  txt(r.name, cx - 34, sy + 40, 13, 0.9, { ls: 3 });
+  txt(r.sub, cx - 60, sy + 60, 11, 0.4);
+
+  if (i === 0) S.drawSprite(ctx, S.GLYPH, gx, gy, U, 2 * U);
+  if (i === 1) S.drawSprite(ctx, S.PX2, gx, gy, U / 2, U);
+  if (i >= 2) {
+    const shader = [null, null, shadeVector, shadeLuminous, shadeRadiant, shadeSpark][i];
+    const lift = i === 5 ? 1.6 : (i === 4 ? 1.2 : 0);
+    const box = i >= 4 ? [-1.5, -5.5, 19.5, 15.5] : [-0.5, -0.5, 18.5, 10.5];
+    const R = renderSDF(shader, box);
+    const px = gx + R.x0 * U, py = gy + R.y0 * U - lift * U;
+    if (i >= 3) {                                        // bloom: two blurred additive passes
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      ctx.filter = 'blur(10px)'; ctx.globalAlpha = i === 3 ? 0.35 : 0.5; ctx.drawImage(R.canvas, px, py);
+      ctx.filter = 'blur(36px)'; ctx.globalAlpha = i === 3 ? 0.3 : 0.45; ctx.drawImage(R.canvas, px, py);
+      ctx.restore();
+    }
+    ctx.drawImage(R.canvas, px, py);
+    if (i >= 3) {
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.filter = 'blur(3px)'; ctx.globalAlpha = 0.25;
+      ctx.drawImage(R.canvas, px, py); ctx.restore();
+    }
+  }
+});
+const ms = performance.now() - t0;
+
+// ---------------------------------------------------------------- titles
+txt('CLAWD', 56, 92, 30, 0.95, { bold: true, ls: 6 });
+txt('evolution ladder · fidelity tracks capability', 196, 92, 15, 0.45, { ls: 1 });
+txt('KEPT ON EVERY RUNG', 56, 980, 11, 0.5, { ls: 2 });
+txt('two eyes · two arms · four legs in two pairs · #D97757 · the 18:10 footprint', 56, 1002, 13, 0.62);
+txt('resolution → dimension → light', 1864, 1002, 13, 0.45, { align: 'right' });
+document.title = 'ladder ' + ms.toFixed(0) + ' ms';
+</script>
+</body></html>

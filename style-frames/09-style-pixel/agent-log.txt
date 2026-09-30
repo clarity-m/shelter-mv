@@ -1,0 +1,19 @@
+You've hit your session limit · resets 4am (America/New_York)
+I finished the pixel-art style frame of the harness scene. It's a night lab at 480x270, scaled 4x to 1920x1080, with 30 colors, and I checked that every native pixel is an exact 4x4 block. Clawd glows inside jointed ribs that curl up like two cupped hands, one researcher leans in with a stylus with her face lit only by him, and the other stands back with a mug watching a gray gridworld and an eval curve at 0.62. It reads in about a second, Clawd is clearly the focal point, and his light is the only saturated color, so "color = capability" comes through directly. The weak spot is the humans. They're charming at about 25 px, but the hands are 8-pixel mittens and the second researcher is stiff, so tender close-ups would need a real pixel artist; the empty cabinet in the lower third is dead space too. A frame takes about 0.3–0.5 s to draw and about 4 s including Chrome startup, which already fits the 3–5 s budget; I think this style fits the fidelity-dial idea best of the four, and I'd use it for the early acts rather than the whole video.
+
+Files are in `C:\Users\USER\Projects\shelter-mv\style-frames\09-style-pixel\`:
+- frame.png
+- detail.png (1:1 crops of both researchers)
+- frame.html
+- pass1.png–pass6.png
+- NOTES.md
+Revision done: frame-v2.png is the final, and the v1 files are unchanged (checksums match). Both researchers are faceless now. The one at the bench has a smooth face shaped only by Clawd's warm light, and the bowed head and careful stylus hand carry the tenderness; the one at the monitor has an oval lit cyan by the screen, a slightly bowed head, and both hands cradling the mug. I took your optional suggestion and doubled Clawd (32x20 pixels, still crisp and grid-aligned), and he reads far better; the trade-off is that his pixels are now coarser than the world's, so I'd make that a fixed rule for the whole pixel section. The harness is now two cupped hands, each with three fingers and a thumb, knuckles and tips that hook inward over him, and it only grew about 10%. Up close the fingers look slightly stripey, and the two-handed mug grip is a small blob at 1:1.
+
+The last two sentences of NOTES.md also cover render time and the checks. If you prefer native-size Clawd, v2-pass1.png shows it and `frame-v2.html?cs=1` renders it. I also changed two pronouns in the v1 notes to "their".
+
+Files are in `C:\Users\USER\Projects\shelter-mv\style-frames\09-style-pixel\`:
+- frame-v2.png
+- frame-v2.html
+- v2-pass1.png – v2-pass4.png
+- detail-v2.png (both figures at 1:1)
+- NOTES.md (v2 section appended)

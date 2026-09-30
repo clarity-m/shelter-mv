@@ -1,0 +1,198 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#161514;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script src="clawd-sprites.js"></script>
+<script>
+'use strict';
+// Clawd model sheet (sprites.png). Everything is drawn from clawd-sprites.js.
+const S = window.ClawdSprites;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const W = 1920, H = 1080;
+const BG = '#161514', WARM = '245,240,232', OR = '#D97757';
+const FONT = 'Consolas, monospace';
+
+function txt(s, x, y, size, alpha, o = {}) {
+  ctx.font = `${o.bold ? 'bold ' : ''}${size}px ${FONT}`;
+  ctx.fillStyle = o.color || `rgba(${WARM},${alpha})`;
+  ctx.textAlign = o.align || 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.letterSpacing = (o.ls || 0) + 'px';
+  const w = ctx.measureText(s).width;
+  ctx.fillText(s, x, y);
+  ctx.letterSpacing = '0px';
+  return w;
+}
+const rectA = (x, y, w, h, a) => { ctx.fillStyle = `rgba(${WARM},${a})`; ctx.fillRect(x, y, w, h); };
+const hline = (x0, x1, y, a) => rectA(x0, y, x1 - x0, 1, a);
+const vline = (x, y0, y1, a) => rectA(x, y0, 1, y1 - y0, a);
+
+function section(num, title, x, y, sub) {
+  txt(num, x, y, 13, 1, { bold: true, color: OR, ls: 1 });
+  const w = txt(title, x + 30, y, 13, 0.9, { ls: 3 });
+  if (sub) txt(sub, x + 30 + w + 18, y, 12, 0.36);
+}
+function label(s, x, y) { txt(s, x, y, 11, 0.5, { ls: 2 }); }
+
+// ---------------------------------------------------------------- background
+ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H);
+for (let y = 12; y < H; y += 24) for (let x = 12; x < W; x += 24) rectA(x, y, 1, 1, 0.04);
+
+// ---------------------------------------------------------------- header
+txt('CLAWD', 56, 58, 30, 0.95, { bold: true, ls: 6 });
+txt('model sheet · Shelter MV', 196, 58, 15, 0.45, { ls: 1 });
+txt('glyph 18×5 · pixel 1:2 · #D97757 · every sprite a 22×8 frame on one ground line · data in clawd-sprites.js',
+    1864, 58, 13, 0.4, { align: 'right' });
+hline(56, 1864, 78, 0.1);
+
+// ---------------------------------------------------------------- 01 canon
+section('01', 'CANON', 56, 114);
+{
+  const pw = 18, ph = 36, x0 = 96, y0 = 164;
+  for (let r = 0; r <= 5; r++) hline(x0, x0 + 18 * pw + 1, y0 + r * ph, 0.08);
+  for (let c = 0; c <= 18; c++) vline(x0 + c * pw, y0, y0 + 5 * ph + 1, 0.08);
+  S.drawSprite(ctx, S.GLYPH, x0, y0, pw, ph);
+  for (let r = 0; r < 5; r++) txt('r' + r, x0 - 12, y0 + r * ph + 23, 11, 0.32, { align: 'right' });
+  const tag = (r, s) => txt('← ' + s, x0 + 18 * pw + 12, y0 + r * ph + 23, 12, 0.6);
+  tag(1, 'eyes'); tag(2, 'arms'); tag(4, 'legs');
+  const dy = y0 - 14;
+  hline(x0, x0 + 18 * pw, dy, 0.3); vline(x0, dy - 4, dy + 5, 0.3); vline(x0 + 18 * pw, dy - 4, dy + 5, 0.3);
+  ctx.fillStyle = BG; ctx.fillRect(x0 + 9 * pw - 18, dy - 7, 36, 14);
+  txt('18', x0 + 9 * pw, dy + 4, 12, 0.6, { align: 'center' });
+  const cy = y0 + 5 * ph + 26;
+  ctx.fillStyle = OR; ctx.fillRect(x0, cy, 9, 18);
+  txt('1 pixel = 1 wide : 2 tall, a terminal quadrant block', x0 + 20, cy + 14, 12, 0.5);
+}
+{ // key
+  const y = 438;
+  label('KEY', 56, y - 20);
+  const keys = [['#', 'D97757', 'body'], ['o', 'hole', 'eyes'], ['w', 'F5F0E8', 'spark'], ['g', '8F8A82', 'block'],
+                ['p', 'F4A2B3', 'blush'], ['b', '8CCBF2', 'tear'], ['y', 'FFD483', 'light']];
+  keys.forEach(([k, hex, name], i) => {
+    const x = 96 + i * 62, sy = y - 12;
+    if (k === 'o') {
+      ctx.strokeStyle = `rgba(${WARM},0.35)`; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, sy + 0.5, 21, 21);
+      ctx.save(); ctx.beginPath(); ctx.rect(x, sy, 22, 22); ctx.clip();
+      for (let t = -22; t < 22; t += 6) { ctx.beginPath(); ctx.moveTo(x + t, sy + 22); ctx.lineTo(x + t + 22, sy); ctx.stroke(); }
+      ctx.restore();
+    } else { ctx.fillStyle = S.PALETTE[k]; ctx.fillRect(x, sy, 22, 22); }
+    txt(`'${k}'`, x + 28, sy + 10, 11, 0.7);
+    txt(name, x + 28, sy + 22, 10, 0.4);
+  });
+}
+{ // at size
+  const y = 548;
+  label('AT SIZE', 56, y - 46);
+  let x = 96;
+  [[1, 2], [2, 4], [3, 6], [4, 8], [6, 12]].forEach(([pw, ph]) => {
+    S.drawSprite(ctx, S.GLYPH, x, y - 5 * ph, pw, ph);
+    txt(`${pw}×${ph}`, x, y + 20, 11, 0.38);
+    x += 18 * pw + 26;
+  });
+}
+
+// ---------------------------------------------------------------- 02 emotes
+section('02', 'EMOTES', 560, 114, 'two holes · arm tips · legs · one-pixel offsets · accents sparingly');
+const NOTES = {
+  neutral: 'canon', blink: 'holes filled, 2-3 frames', happy: 'arch eyes, arms up',
+  sad: 'low eyes, slumped, tear', surprised: 'tall eyes, arms up, !', sleepy: 'low slits, slack arms, z',
+  determined: '\\ / eyes, fists, stance', curious: 'o.O eyes, head tilt', love: 'arch eyes, blush, heart',
+  wonder: 'tall eyes, arms lifted', shy: 'eyes down-aside, blush', thinking: 'eyes aside, hand up',
+  content: 'cup eyes, blush', bittersweet: 'arch eyes, one tear',
+};
+{
+  const x0 = 560, cw = 186, pw = 8, ph = 16;
+  S.EMOTE_ORDER.forEach((name, i) => {
+    const col = i % 7, row = (i / 7) | 0;
+    const cx = x0 + col * cw + cw / 2, gy = 282 + row * 200;
+    hline(cx - 80, cx + 80, gy + 3, 0.12);
+    S.drawFrame(ctx, S.EMOTES[name], cx, gy, pw, ph);
+    const n = String(i + 1).padStart(2, '0');
+    txt(n, cx - 80, gy + 28, 11, 1, { color: OR });
+    txt(name, cx - 58, gy + 28, 14, 0.9);
+    txt(NOTES[name], cx - 80, gy + 46, 11, 0.36);
+  });
+  const y = 606;
+  label('AT 3×6 PX', 560, y - 52);
+  S.EMOTE_ORDER.forEach((name, i) => S.drawFrame(ctx, S.EMOTES[name], x0 + 48 + i * 93, y, 3, 6));
+}
+
+// ---------------------------------------------------------------- 03 motion
+section('03', 'MOTION', 56, 650, 'frames at 6×12 px · dx / dy offsets live in the data, not the grid');
+{
+  const pw = 6, ph = 12, cell = 128, gap = 40;
+  function strip(name, info, frames, x, gy, opt = {}) {
+    const ly = gy - (opt.head || 150);
+    txt(name, x, ly, 12, 0.88, { ls: 2 });
+    txt(info, x, ly + 17, 11, 0.36);
+    const n = frames.length;
+    hline(x, x + n * cell - 10, gy + 3, 0.12);
+    frames.forEach((g, i) => {
+      const cx = x + i * cell + 59;
+      if (opt.before) opt.before(i, cx, gy);
+      S.drawFrame(ctx, g, cx, gy, pw, ph, null, opt.dx ? opt.dx[i] : 0, opt.dy ? opt.dy[i] : 0);
+      txt(opt.labels ? opt.labels[i] : String(i + 1), cx, gy + 22, 11, 0.36, { align: 'center' });
+    });
+    return x + n * cell + gap;
+  }
+  const M = S.MOTION;
+  let x = 56, gy = 852;
+  x = strip('WALK', '8 fps · dx 0 0 +1 +1, +2 per loop', M.walk.frames, x, gy, { dx: M.walk.dx });
+  const hopX = x;
+  x = strip('HOP', '12 fps · dy 0 0 3 1 0', M.hop.frames, x, gy, { dy: M.hop.dy });
+  ctx.fillStyle = `rgba(${WARM},0.3)`;
+  for (let i = 0; i < 4; i++) {
+    const ax = hopX + i * cell + 59, bx = ax + cell;
+    const ay = gy - 44 - M.hop.dy[i] * ph, by = gy - 44 - M.hop.dy[i + 1] * ph;
+    for (let t = 0.22; t < 0.8; t += 0.12) {
+      const px = ax + (bx - ax) * t, py = ay + (by - ay) * t - Math.sin(t * Math.PI) * 12 - 26;
+      ctx.fillRect(Math.round(px), Math.round(py), 2, 2);
+    }
+  }
+  x = strip('SIT', 'legs tucked, arms rest', M.sit.frames, x, gy);
+  x = strip('SIT ON EDGE', '3 fps · swung leg foreshortens', M.sitEdge.frames, x, gy, {
+    before: (i, cx, g) => {
+      const seat = g - 2 * ph;
+      const grad = ctx.createLinearGradient(0, seat, 0, seat + 30);
+      grad.addColorStop(0, 'rgba(245,240,232,0.07)'); grad.addColorStop(1, 'rgba(245,240,232,0)');
+      ctx.fillStyle = grad; ctx.fillRect(cx - 58, seat, 116, 30);
+      rectA(cx - 58, seat, 116, 1, 0.4);
+    },
+  });
+  x = 56; gy = 1026;
+  x = strip('WAVE', '6 fps · loop A B C B', M.wave.frames.slice(0, 3), x, gy, { labels: ['A', 'B', 'C'], head: 128 });
+  x = strip('CARRY', 'block on head', M.carry.frames, x, gy, { head: 128 });
+  x = strip('HOLD', 'cradled light', M.hold.frames, x, gy, { head: 128 });
+  x = strip('SLEEP', '2 fps · cup eyes, z drifts up', M.sleep.frames, x, gy, { head: 128 });
+  x = strip('LOOK UP', '4 fps · head lifts, then tiptoe', M.lookUp.frames, x, gy, { head: 128 });
+}
+
+// ---------------------------------------------------------------- face kit
+{
+  const x0 = 1536, y0 = 916;
+  label('FACE KIT', x0, y0 - 18);
+  txt('carve into any pose', x0 + 96, y0 - 18, 11, 0.32);
+  const K = [
+    ['open',   ['..############..', '..##o######o##..', '################', '..############..']],
+    ['closed', ['..############..', '..############..', '################', '..############..']],
+    ['slit',   ['..############..', '..#ooo####ooo#..', '################', '..############..']],
+    ['arch',   ['..############..', '..#ooo####ooo#..', '###o#o####o#o###', '..############..']],
+    ['cup',    ['..############..', '..#o#o####o#o#..', '###ooo####ooo###', '..############..']],
+    ['tall',   ['..############..', '..##o######o##..', '####o######o####', '..############..']],
+    ['low',    ['..############..', '..############..', '####o######o####', '..############..']],
+    ['side',   ['..############..', '..###o######o#..', '################', '..############..']],
+    ['o.O',    ['..############..', '..###o######o#..', '############o###', '..############..']],
+    ['\\ /',   ['..############..', '..##o######o##..', '#####o####o#####', '..############..']],
+    ['+ blush', ['..############..', '..############..', '####o######o####', '..#pp######pp#..']],
+    ['+ tear', ['..############..', '..############..', '####o######o####', '..##b#########..']],
+  ];
+  K.forEach(([name, g], i) => {
+    const c = i % 3, r = (i / 3) | 0;
+    const x = x0 + c * 112, y = y0 + r * 36;
+    S.drawSprite(ctx, g, x, y, 3, 6);
+    txt(name, x + 56, y + 17, 11, 0.45);
+  });
+}
+</script>
+</body></html>

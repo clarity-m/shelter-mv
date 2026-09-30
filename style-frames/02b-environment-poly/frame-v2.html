@@ -1,0 +1,1495 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Shelter MV / style frame 02b / environment, low-poly</title>
+<style>
+html,body{margin:0;padding:0;background:#141413;overflow:hidden}
+canvas{display:block}
+#log{position:absolute;left:0;top:0;margin:0;color:#fff;font:14px monospace;white-space:pre;display:none}
+</style></head>
+<body>
+<canvas id="out" width="1920" height="1080"></canvas>
+<pre id="log"></pre>
+<pre id="png" style="display:none"></pre>
+<script>
+"use strict";
+// ============================================================================
+// Style frame 02b v2: "Environment showcase", low-poly revision (instrumental drop, mid-arc).
+// v2: Clawd is a 3D solid (the glyph extruded, lit by the scene) at knee-to-waist height of the
+// trees, and the sky has fewer, lighter, softer clouds.
+// One geometry language from the foreground to the horizon: flat-shaded triangles.
+// Tessellation density is capability: land Clawd has learned is subdivided finer,
+// coloured and painted; untouched land stays coarse grey facets with a clean wireframe.
+// Pipeline: JS builds the meshes (jittered strip triangulation, then adaptive
+// crack-free 1-to-4 subdivision driven by the learned field) -> WebGL2 raster:
+// cascaded shadow maps, planar water reflection, main pass (colour + aux) at 2x.
+// Learned facets are painted in the fragment shader (short canvas-space strokes that
+// follow each facet's slope, clipped to the facet, so edges stay crisp) -> readback ->
+// screen-space stroke pass for sky and clouds only (flow-aligned ribbons sampling the
+// underpainting) -> post (bloom, god rays, grade, weave, grain) -> crisp pixel Clawd
+// + sparse HUD in 2D. Clawd is geometry now, rendered crisp (never painted).
+// Deterministic: all randomness from seeded PRNGs / integer hashes.
+// ============================================================================
+const W = 1920, H = 1080;
+const Q = new URLSearchParams(location.search);
+const SS = +(Q.get('ss') || 2);          // supersampling factor for the scene pass
+const PAINT = Q.get('paint') !== '0';
+const DBG = +(Q.get('dbg') || 0);
+const LOG = []; const log = (s) => LOG.push(s);
+const T0 = performance.now();
+const lap = (s) => log(s + ': ' + (performance.now() - T0).toFixed(0) + ' ms');
+
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const deg = Math.PI / 180;
+const v3 = {
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2], mul: (a, s) => [a[0] * s, a[1] * s, a[2] * s],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  norm: (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+};
+const dirFromAzEl = (az, el) => [Math.sin(az * deg) * Math.cos(el * deg), Math.sin(el * deg), Math.cos(az * deg) * Math.cos(el * deg)];
+const f3 = (a) => `vec3(${a.map(x => (+x).toFixed(6)).join(',')})`;
+const f1 = (x) => (+x).toFixed(6);
+const clamp01 = (x) => x < 0 ? 0 : (x > 1 ? 1 : x);
+const sstep = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const mix = (a, b, t) => a + (b - a) * t;
+const mix3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
+// ---------------------------------------------------------------- integer hashes + noise (JS side: terrain, fields)
+function hashu(x) { x ^= x >>> 16; x = Math.imul(x, 0x7feb352d); x ^= x >>> 15; x = Math.imul(x, 0x846ca68b); x ^= x >>> 16; return x >>> 0; }
+function h2(i, j) { return (hashu(Math.imul(i, 0x8da6b343) ^ hashu((Math.imul(j, 0xd8163841) + 0x9e3779b9) | 0)) >>> 8) / 16777216; }
+function h3(i, j, k) { return (hashu(Math.imul(i, 0x8da6b343) ^ hashu(Math.imul(j, 0xd8163841) ^ hashu((Math.imul(k, 0xcb1ab31f) + 0x9e3779b9) | 0))) >>> 8) / 16777216; }
+const hq = (x, z, k) => h3(Math.round(x * 512), Math.round(z * 512), k);   // hash of a position (quantised)
+function gnoise(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+  const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10), uy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+  const g = (i, j, dx, dy) => { const a = h2(i, j) * 6.2831853; return Math.cos(a) * dx + Math.sin(a) * dy; };
+  const a = g(ix, iy, fx, fy), b = g(ix + 1, iy, fx - 1, fy), c = g(ix, iy + 1, fx, fy - 1), d = g(ix + 1, iy + 1, fx - 1, fy - 1);
+  const ab = a + (b - a) * ux, cd = c + (d - c) * ux;
+  return ab + (cd - ab) * uy;
+}
+function fbmG(x, y, oct) { let s = 0, a = 0.5; for (let i = 0; i < oct; i++) { s += a * gnoise(x, y); const nx = (0.8 * x - 0.6 * y) * 2.03 + 17.3, ny = (0.6 * x + 0.8 * y) * 2.03 + 9.1; x = nx; y = ny; a *= 0.5; } return s; }
+function ridged(x, y, oct) { let s = 0, a = 0.55, w = 1; for (let i = 0; i < oct; i++) { let n = 1 - Math.abs(gnoise(x, y) * 1.5); n *= n; s += a * n * w; w = clamp01(n * 1.6); const nx = (0.8 * x - 0.6 * y) * 2.02 + 11.7, ny = (0.6 * x + 0.8 * y) * 2.02 + 5.3; x = nx; y = ny; a *= 0.5; } return s; }
+
+// ---------------------------------------------------------------- camera
+const CAM = [0, 8.0, 0];
+const PITCH = 3.4 * deg;
+const VFOV = 32 * deg;
+const FOC = (H / 2) / Math.tan(VFOV / 2);
+const FWD = [0, -Math.sin(PITCH), Math.cos(PITCH)];
+const UP = [0, Math.cos(PITCH), Math.sin(PITCH)];
+const RIGHT = [1, 0, 0];
+function project(p) { const d = v3.sub(p, CAM); const zc = v3.dot(d, FWD); return [W / 2 + FOC * v3.dot(d, RIGHT) / zc, H / 2 - FOC * v3.dot(d, UP) / zc, zc]; }
+
+// ---------------------------------------------------------------- scene constants
+const SUN = dirFromAzEl(8.5, 1.6);      // the visible low sun
+const KEY = dirFromAzEl(22, 23);        // key light used on the land (painter's cheat)
+const WATER = -0.3;
+const CLAWD = [-4.3, 4.3, 26.0];         // Clawd's feet, on the spawn pad
+const CLAWD_S = 0.075;                   // world size of one glyph pixel-width (glyph pixels are 1 wide x 2 tall)
+const CLAWD_D = 4;                       // extrusion depth, in pixel-widths
+const CLAWD_YAW = -8 * deg;              // turned a touch so the key-lit right-hand walls show
+const CLAWD_H = 10 * CLAWD_S;            // 0.75 units: knee-to-waist height of the trees around him
+const PADC = [CLAWD[0], CLAWD[2]], PADH = CLAWD[1], PADR = 0.72;
+const CLAWD_ZC = v3.dot(v3.sub(CLAWD, CAM), FWD);
+const CLAWD_WPX = 18 * CLAWD_S * FOC / CLAWD_ZC;   // on-screen width in pixels (about 97)
+const XL = -27.0, XR = 33.0;             // episode walls
+
+// ---------------------------------------------------------------- terrain field (JS)
+// river centre line x(z): an S that leads from the foot of Clawd's knoll to the lake under the sun
+const RIVER = [[-1.75, 22.0], [-0.9, 26], [1.4, 31], [4.6, 36], [6.1, 40.5], [5.6, 46], [3.9, 53], [3.0, 60], [3.2, 67.5], [5.0, 76], [8.6, 88], [13.2, 102], [16.8, 117], [18.8, 134], [19.9, 152], [21.5, 172], [26, 200], [31, 225], [36, 250]];
+function riverX(z) {
+  const N = RIVER.length;
+  if (z <= RIVER[0][1]) return RIVER[0][0] + (z - RIVER[0][1]) * 0.2;
+  if (z >= RIVER[N - 1][1]) return RIVER[N - 1][0] + (z - RIVER[N - 1][1]) * 0.2;
+  let i = 0; while (RIVER[i + 1][1] < z) i++;
+  const t = (z - RIVER[i][1]) / (RIVER[i + 1][1] - RIVER[i][1]);
+  const p0 = RIVER[Math.max(0, i - 1)][0], p1 = RIVER[i][0], p2 = RIVER[i + 1][0], p3 = RIVER[Math.min(N - 1, i + 2)][0];
+  return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
+}
+function riverDist(x, z) { const s = (riverX(z + 0.5) - riverX(z - 0.5)); return (x - riverX(z)) / Math.sqrt(1 + s * s); }
+const LAKEC = [38, 262], LAKER = [40, 48];
+const KNOLL = [-4.4, 26.6], KNR = [7.0, 6.2];
+
+function Tbase(x, z) {
+  const dx = riverDist(x, z);
+  const wv = 11 + z * 0.09;
+  const valley = 1 - Math.exp(-dx * dx / (wv * wv));
+  let h = -0.1 + 5.2 * valley;
+  h += 2.3 * fbmG(x * 0.045 + 3.1, z * 0.045 + 7.7, 5);
+  { const u = (x + 21) / 9.5, v = (z - 50) / 9; h += 3.4 * Math.exp(-(u * u + v * v)); }       // grey hill, left
+  { const u = (x - 25) / 12, v = (z - 58) / 11; h += 2.2 * Math.exp(-(u * u + v * v)); }       // broad grey swell, right
+  // Clawd's knoll: a dome with a nearly flat crown for the spawn pad
+  { const u = (x - KNOLL[0]) / (x > KNOLL[0] ? 8.8 : 6.4), v = (z - KNOLL[1]) / (z > KNOLL[1] ? 7.0 : 7.6); const r = Math.sqrt(u * u + v * v);
+    h = mix(h, PADH - 0.035 - 2.4 * Math.max(0, r - 0.36) ** 2, sstep(1.08, 0.36, r));
+    h += 0.95 * fbmG(x * 0.5 + 5.3, z * 0.5 + 1.7, 3) * sstep(0.40, 0.60, r) * (1 - sstep(0.9, 1.2, r)); }
+  // river channel
+  { const rw = 0.85 + z * 0.021;
+    const ch = sstep(rw + 1.7, rw, Math.abs(dx));
+    h = mix(h, -1.6, ch); }
+  // lake
+  if (z > 150) { const u = (x - LAKEC[0]) / LAKER[0], v = (z - LAKEC[1]) / LAKER[1]; h = mix(h, -2.6, sstep(1.0, 0.72, Math.sqrt(u * u + v * v))); }
+  // distant ranges
+  if (z > 380) {
+    const az = Math.atan2(x, z);
+    const rg = ridged(x * 0.0045 + 1.3, z * 0.0045 + 4.1, 5);
+    const notch = 1 - 0.7 * Math.exp(-Math.pow((az - 0.148) / 0.075, 2));          // a low gap where the sun sets
+    const bandB = sstep(430, 600, z) * (1 - sstep(880, 1080, z));
+    h += mix(58, 18, sstep(-0.26, 0.24, az)) * rg * bandB * notch;
+    { const u = (x + 560) / 400, v = (z - 1380) / 250; h += 125 * Math.exp(-(u * u + v * v)) * (0.62 + 0.5 * ridged(x * 0.0042 + 7.1, z * 0.0042 + 2.2, 5)); }
+    const bandD = sstep(1150, 1350, z) * (1 - sstep(2000, 2300, z));
+    h += mix(46, 14, sstep(-0.2, 0.3, az)) * rg * bandD * notch;
+  }
+  return h;
+}
+
+// where Clawd's learning has reached (0..1)
+function learnedAt(x, z) {
+  const dx = x - CLAWD[0], dz = z - CLAWD[2];
+  const sx = dx * (dx > 0 ? 0.92 : 1.0), sz = dz * (dz > 0 ? 0.55 : 1.1);
+  const r = Math.hypot(sx, sz);
+  const ang = Math.atan2(dz, dx);
+  const R = 9.0 * (1 + 0.16 * Math.sin(ang * 3 + 0.7) + 0.08 * Math.sin(ang * 7 + 2.1)) + 2.6 * fbmG(x * 0.11 + 4, z * 0.11 + 4, 3);
+  const m = 1 - sstep(R - 3.5, R + 1.0, r);
+  // the colour has run down the river toward the lake
+  const d = Math.abs(riverDist(x, z)) + 2.6 * fbmG(x * 0.06, z * 0.06, 2);
+  const lw = 1.3 + z * 0.058;
+  const lobe = (1 - sstep(lw, lw * 1.9, d)) * sstep(18, 24, z) * (1 - 0.25 * sstep(90, 170, z));
+  let lk = 0;
+  if (z > 140) { const u = (x - LAKEC[0]) / (LAKER[0] * 1.2), v = (z - LAKEC[1]) / (LAKER[1] * 1.25); lk = (1 - sstep(0.8, 1.1, Math.hypot(u, v))) * 0.9; }
+  return Math.max(m, lobe * 0.92, lk);
+}
+
+// ---------------------------------------------------------------- triangle buffer (non-indexed, per-face attributes)
+// per vertex: pos f32x3 | normal i8x4 | colour u8x4 (sRGB albedo, emission) | ext u8x4 (mask, paint, frontier, rand)
+class TriBuf {
+  constructor(cap) { this.n = 0; this.P = null; this.alloc(cap || 4096); }
+  alloc(cap) {
+    const P = new Float32Array(cap * 9), N = new Int8Array(cap * 12), C = new Uint8ClampedArray(cap * 12), E = new Uint8ClampedArray(cap * 12);
+    if (this.P) { P.set(this.P); N.set(this.N); C.set(this.C); E.set(this.E); }
+    this.P = P; this.N = N; this.C = C; this.E = E; this.cap = cap;
+  }
+  // ref: a point the face normal must point away from (null: normal points up). nrm: optional shading normal override
+  add(a, b, c, col, ext, ref, nrm) {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const l = Math.hypot(nx, ny, nz); if (l < 1e-14) return -1;
+    nx /= l; ny /= l; nz /= l;
+    let flip;
+    if (ref) { const cx = (a[0] + b[0] + c[0]) / 3 - ref[0], cy = (a[1] + b[1] + c[1]) / 3 - ref[1], cz = (a[2] + b[2] + c[2]) / 3 - ref[2]; flip = nx * cx + ny * cy + nz * cz < 0; }
+    else flip = ny < 0;
+    if (flip) { nx = -nx; ny = -ny; nz = -nz; }
+    if (nrm) { nx = nrm[0]; ny = nrm[1]; nz = nrm[2]; }
+    if (this.n >= this.cap) this.alloc(this.cap * 2);
+    const i = this.n++, o = i * 9, P = this.P;
+    P[o] = a[0]; P[o + 1] = a[1]; P[o + 2] = a[2]; P[o + 3] = b[0]; P[o + 4] = b[1]; P[o + 5] = b[2]; P[o + 6] = c[0]; P[o + 7] = c[1]; P[o + 8] = c[2];
+    const q = i * 12, N = this.N, C = this.C, E = this.E;
+    const n0 = Math.round(nx * 127), n1 = Math.round(ny * 127), n2 = Math.round(nz * 127);
+    for (let k = 0; k < 12; k += 4) {
+      N[q + k] = n0; N[q + k + 1] = n1; N[q + k + 2] = n2; N[q + k + 3] = 0;
+      C[q + k] = col[0] * 255; C[q + k + 1] = col[1] * 255; C[q + k + 2] = col[2] * 255; C[q + k + 3] = (col[3] || 0) * 255;
+      E[q + k] = ext[0] * 255; E[q + k + 1] = ext[1] * 255; E[q + k + 2] = ext[2] * 255; E[q + k + 3] = ext[3] * 255;
+    }
+    return i;
+  }
+}
+
+// ---------------------------------------------------------------- terrain mesh
+// Level 0: rows of jittered vertices whose spacing grows with depth (roughly constant screen
+// size), zipped into strips. Each level-0 triangle gets a level L from the learned field and is
+// split 1-to-4 L times. Shared edges are split at the same (jittered) points from both sides;
+// a new edge vertex only takes its true height if both neighbours are fine enough, otherwise it
+// stays on the coarse edge, so the mesh never cracks.
+const TSTAT = { l0: 0, facets: 0, lev: [0, 0, 0, 0] };
+function buildTerrain() {
+  const TB = new TriBuf(1 << 17);
+  const rows = [];
+  const S = 0.10, Z0 = 6.0, ASP = 1.3;
+  let z = 13.0, k = 0, vid = 0;
+  while (z < 4200) {
+    const dx = S * (z + Z0), dz = dx * ASP;
+    const x0 = -0.64 * z - 26, x1 = 0.76 * z + 36;
+    const n = Math.max(2, Math.ceil((x1 - x0) / dx));
+    const row = [];
+    for (let i = 0; i <= n; i++) {
+      const jx = (i > 0 && i < n) ? (h3(i, k, 1) - 0.5) * 0.72 * dx : 0;
+      const jz = k > 0 ? (h3(i, k, 2) - 0.5) * 0.56 * dz : 0;
+      const x = x0 + i * (x1 - x0) / n + jx, zz = z + jz;
+      row.push({ p: [x, Tbase(x, zz), zz], id: vid++ });
+    }
+    rows.push(row);
+    z += dz; k++;
+  }
+  const tris = [];
+  const d2 = (a, b) => (a.p[0] - b.p[0]) ** 2 + (a.p[2] - b.p[2]) ** 2;
+  for (let r = 0; r < rows.length - 1; r++) {
+    const A = rows[r], B = rows[r + 1];
+    let i = 0, j = 0;
+    while (i < A.length - 1 || j < B.length - 1) {
+      let advA;
+      if (i >= A.length - 1) advA = false; else if (j >= B.length - 1) advA = true;
+      else advA = d2(A[i + 1], B[j]) < d2(A[i], B[j + 1]);
+      if (advA) { tris.push([A[i], A[i + 1], B[j]]); i++; } else { tris.push([A[i], B[j + 1], B[j]]); j++; }
+    }
+  }
+  TSTAT.l0 = tris.length;
+  // levels
+  const L = new Int8Array(tris.length);
+  tris.forEach((t, ti) => {
+    const cx = (t[0].p[0] + t[1].p[0] + t[2].p[0]) / 3, cz = (t[0].p[2] + t[1].p[2] + t[2].p[2]) / 3;
+    const th = h2(t[0].id * 7 + t[1].id, t[2].id * 13 + 5);
+    if (cz > 330) { L[ti] = 2; return; }                                   // distant ranges: resolved, in haze
+    const lmax = cz < 85 ? 3 : 2;
+    const m = learnedAt(cx, cz);
+    L[ti] = Math.max(0, Math.min(lmax, Math.round(m * lmax + (th - 0.5) * 0.9)));
+  });
+  const ek = (a, b) => a.id < b.id ? a.id * 4194304 + b.id : b.id * 4194304 + a.id;
+  const cap = new Map();
+  tris.forEach((t, ti) => { for (let e = 0; e < 3; e++) { const key = ek(t[e], t[(e + 1) % 3]); const prev = cap.get(key); cap.set(key, prev === undefined ? L[ti] : Math.min(prev, L[ti])); } });
+  // subdivision
+  const midV = (p, q, d, cp) => {
+    let s = p, t = q; if (p[0] > q[0] || (p[0] === q[0] && p[2] > q[2])) { s = q; t = p; }
+    const j = 0.5 + (hq(s[0] + t[0], s[2] + t[2], 3) - 0.5) * 0.26;
+    const x = s[0] + (t[0] - s[0]) * j, zz = s[2] + (t[2] - s[2]) * j;
+    const y = d <= cp ? Tbase(x, zz) : s[1] + (t[1] - s[1]) * j;
+    return [x, y, zz];
+  };
+  const sub = (a, b, c, d, Lv, cab, cbc, cca) => {
+    if (d === Lv) { emitFacet(TB, a, b, c, Lv); return; }
+    const e = d + 1;
+    const mab = midV(a, b, e, cab), mbc = midV(b, c, e, cbc), mca = midV(c, a, e, cca);
+    sub(a, mab, mca, e, Lv, cab, Lv, cca);
+    sub(mab, b, mbc, e, Lv, cab, cbc, Lv);
+    sub(mca, mbc, c, e, Lv, Lv, cbc, cca);
+    sub(mab, mbc, mca, e, Lv, Lv, Lv, Lv);
+  };
+  tris.forEach((t, ti) => {
+    TSTAT.lev[L[ti]]++;
+    sub(t[0].p, t[1].p, t[2].p, 0, L[ti], cap.get(ek(t[0], t[1])), cap.get(ek(t[1], t[2])), cap.get(ek(t[2], t[0])));
+  });
+  TSTAT.facets = TB.n;
+  return TB;
+}
+// per-facet material: learned facets are coloured, untouched ones grey
+function emitFacet(TB, a, b, c, Lv) {
+  const cx = (a[0] + b[0] + c[0]) / 3, cy = (a[1] + b[1] + c[1]) / 3, cz = (a[2] + b[2] + c[2]) / 3;
+  const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+  const nx = uy * vz - uz * vy, ny0 = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+  const ny = Math.abs(ny0) / (Math.hypot(nx, ny0, nz) || 1);
+  const r1 = hq(cx, cz, 11), r2 = hq(cx, cz, 12), r3 = hq(cx, cz, 13), th = hq(cx, cz, 14), rnd = hq(cx, cz, 15);
+  const far = cz > 330;
+  const m = learnedAt(cx, cz);
+  const g = m - (th * 0.45 + 0.28);
+  let lt = sstep(0.0, 0.08, g);
+  let front = lt * (1 - sstep(0.0, 0.16, g));
+  let col;
+  if (far) {
+    const fm = sstep(0.48, 0.62, 0.5 + fbmG(cx * 0.02, cz * 0.02, 3)) * (1 - sstep(18, 50, cy));
+    col = mix3([0.47, 0.63, 0.36], [0.24, 0.38, 0.28], fm);
+    col = mix3(col, [0.56, 0.52, 0.50], sstep(0.82, 0.62, ny));
+    const sl = 54 + 16 * fbmG(cx * 0.01, cz * 0.01, 3);
+    col = mix3(col, [0.96, 0.95, 0.97], sstep(sl, sl + 6, cy) * sstep(0.45, 0.7, ny));
+    if (cy < 0.2) col = [0.80, 0.74, 0.60];
+    lt = Math.max(lt, 1.0); front = 0;
+  } else {
+    const gA = [0.50, 0.65, 0.40], gB = [0.60, 0.70, 0.42], gC = [0.38, 0.54, 0.42];
+    let gr = mix3(mix3(gA, gB, r1), gC, r2 * 0.6);
+    col = gr;
+    if (cy < 0.7) col = mix3([0.88, 0.80, 0.62], gr, sstep(0.1, 0.7, cy));            // sandy banks
+    if (cy < WATER + 0.1) col = [0.62, 0.57, 0.46];                                    // river bed
+    col = mix3(col, [0.62, 0.52, 0.42], sstep(0.66, 0.46, ny) * 0.75 * (1 - sstep(1.2, 2.2, cy)));   // earth banks along the water
+    col = mix3(col, mix3(col, [0.26, 0.42, 0.30], 0.5), sstep(0.7, 0.45, ny) * sstep(1.2, 2.2, cy));   // steep grass: deeper green
+    if (Lv >= 2 && cy > 0.7 && ny > 0.93 && r3 < 0.03 && Math.hypot(cx - PADC[0], cz - PADC[1]) > 4.5) col = r1 < 0.45 ? [0.98, 0.72, 0.80] : (r1 < 0.8 ? [1.0, 0.97, 0.90] : [0.99, 0.86, 0.45]);   // flower patches
+  }
+  const gv = 0.55 + (rnd - 0.5) * 0.06;
+  col = mix3([gv, gv, gv], col, lt);
+  let mask = far ? Math.max(m, 0.55) : lt;
+  let paint = mix(0.05, 0.95, lt);
+  if (cz > 200) paint = Math.max(paint, sstep(200, 420, cz) * 0.95);
+  paint *= mix(0.35, 1, sstep(1.2, 3.0, Math.hypot(cx - PADC[0], cz - PADC[1])));
+  TB.add(a, b, c, [col[0], col[1], col[2], 0], [mask, paint, front, rnd], null);
+}
+
+// ground height of the actual (piecewise-linear) terrain mesh, for placing props
+function heightIndex(TB, x0, x1, z0, z1, cs) {
+  const nx = Math.ceil((x1 - x0) / cs), nz = Math.ceil((z1 - z0) / cs);
+  const cells = new Array(nx * nz); for (let i = 0; i < cells.length; i++) cells[i] = [];
+  const P = TB.P;
+  for (let t = 0; t < TB.n; t++) {
+    const o = t * 9;
+    const mnx = Math.min(P[o], P[o + 3], P[o + 6]), mxx = Math.max(P[o], P[o + 3], P[o + 6]), mnz = Math.min(P[o + 2], P[o + 5], P[o + 8]), mxz = Math.max(P[o + 2], P[o + 5], P[o + 8]);
+    if (mxx < x0 || mnx > x1 || mxz < z0 || mnz > z1) continue;
+    const i0 = Math.max(0, Math.floor((mnx - x0) / cs)), i1 = Math.min(nx - 1, Math.floor((mxx - x0) / cs));
+    const j0 = Math.max(0, Math.floor((mnz - z0) / cs)), j1 = Math.min(nz - 1, Math.floor((mxz - z0) / cs));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) cells[j * nx + i].push(t);
+  }
+  return (x, z) => {
+    const i = Math.floor((x - x0) / cs), j = Math.floor((z - z0) / cs);
+    if (i >= 0 && j >= 0 && i < nx && j < nz) {
+      for (const t of cells[j * nx + i]) {
+        const o = t * 9;
+        const ax = P[o], az = P[o + 2], bx = P[o + 3], bz = P[o + 5], cx = P[o + 6], cz = P[o + 8];
+        const den = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+        if (Math.abs(den) < 1e-12) continue;
+        const w0 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / den, w1 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / den, w2 = 1 - w0 - w1;
+        if (w0 >= -1e-6 && w1 >= -1e-6 && w2 >= -1e-6) return w0 * P[o + 1] + w1 * P[o + 4] + w2 * P[o + 7];
+      }
+    }
+    return Tbase(x, z);
+  };
+}
+
+// ---------------------------------------------------------------- water mesh (flat, faceted shading normals)
+function buildWater() {
+  const WB = new TriBuf(1 << 14);
+  const rows = [];
+  let z = 15.0, k = 0;
+  while (z < 360) {
+    const dx = 0.032 * (z + 6), dz = dx * 1.15;
+    const x0 = -12, x1 = 22 + 0.3 * z;
+    const n = Math.max(2, Math.ceil((x1 - x0) / dx));
+    const row = [];
+    for (let i = 0; i <= n; i++) {
+      const jx = (i > 0 && i < n) ? (h3(i, k, 21) - 0.5) * 0.7 * dx : 0;
+      const jz = k > 0 ? (h3(i, k, 22) - 0.5) * 0.5 * dz : 0;
+      const x = x0 + i * (x1 - x0) / n + jx, zz = z + jz;
+      row.push([x, WATER, zz, Tbase(x, zz)]);
+    }
+    rows.push(row); z += dz; k++;
+  }
+  const d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[2] - b[2]) ** 2;
+  const emit = (a, b, c) => {
+    if (Math.min(a[3], b[3], c[3]) > WATER + 0.25) return;
+    const cx = (a[0] + b[0] + c[0]) / 3, cz = (a[2] + b[2] + c[2]) / 3;
+    const depth = Math.max(0, WATER - Tbase(cx, cz));
+    const m = learnedAt(cx, cz);
+    const th = hq(cx, cz, 31), rnd = hq(cx, cz, 32);
+    const lt = sstep(0.0, 0.12, m - (th * 0.5 + 0.1));
+    // gentle wave field + per-facet jitter: each facet catches the light differently
+    const wv = Math.sin(cz * 0.9 + 1.7 * Math.sin(cx * 0.35)) * 0.035;
+    const tx = (hq(cx, cz, 33) - 0.5) * 0.13 + wv * 0.4, tz = (hq(cx, cz, 34) - 0.5) * 0.10 + wv;
+    const nrm = v3.norm([tx, 1, tz]);
+    let body = mix3([0.50, 0.62, 0.56], [0.13, 0.26, 0.36], sstep(0.15, 2.0, depth));
+    const gv = 0.36; body = mix3([gv, gv, gv + 0.02], body, lt);
+    WB.add(a, b, c, [body[0], body[1], body[2], clamp01(depth / 3)], [Math.max(lt, 0.0), mix(0.3, 0.9, lt), 0, rnd], null, nrm);
+  };
+  for (let r = 0; r < rows.length - 1; r++) {
+    const A = rows[r], B = rows[r + 1];
+    let i = 0, j = 0;
+    while (i < A.length - 1 || j < B.length - 1) {
+      let advA;
+      if (i >= A.length - 1) advA = false; else if (j >= B.length - 1) advA = true;
+      else advA = d2(A[i + 1], B[j]) < d2(A[i], B[j + 1]);
+      if (advA) { emit(A[i], A[i + 1], B[j]); i++; } else { emit(A[i], B[j + 1], B[j]); j++; }
+    }
+  }
+  return WB;
+}
+
+// ---------------------------------------------------------------- low-poly primitives
+const ICOS = (() => {
+  const t = (1 + Math.sqrt(5)) / 2;
+  let V = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map(v3.norm);
+  let F = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+  const out = [{ V, F }];
+  for (let s = 0; s < 3; s++) {
+    const V2 = V.slice(), F2 = [], cache = new Map();
+    const mid = (a, b) => { const k = a < b ? a * 65536 + b : b * 65536 + a; if (cache.has(k)) return cache.get(k); const m = v3.norm(v3.mul(v3.add(V[a], V[b]), 0.5)); V2.push(m); cache.set(k, V2.length - 1); return V2.length - 1; };
+    for (const [a, b, c] of F) { const ab = mid(a, b), bc = mid(b, c), ca = mid(c, a); F2.push([a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]); }
+    V = V2; F = F2; out.push({ V, F });
+  }
+  return out;
+})();
+// T(a, b, c, col, em, learned, paint, ref) appends one face
+function lpSphere(T, c, r, sub, col, em, Ln, Pn, jit, rng, xform) {
+  const { V, F } = ICOS[sub];
+  const pts = V.map(v => { const s = 1 + (jit ? (rng() - 0.5) * jit : 0); let p = [c[0] + v[0] * r * s, c[1] + v[1] * r * s, c[2] + v[2] * r * s]; if (xform) p = xform(p); return p; });
+  F.forEach(f => T(pts[f[0]], pts[f[1]], pts[f[2]], col, em, Ln, Pn, c));
+}
+function lpPrism(T, a, b, r, n, col, em, Ln, Pn, capA, capB, twist, rb) {
+  const ax = v3.sub(b, a); const u = v3.norm(ax);
+  const t0 = Math.abs(u[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const e1 = v3.norm(v3.cross(u, t0)), e2 = v3.cross(u, e1);
+  const ring = (c, rr) => { const o = []; for (let i = 0; i < n; i++) { const g = (i + 0.5) / n * 2 * Math.PI + (twist || 0); o.push(v3.add(c, v3.add(v3.mul(e1, Math.cos(g) * rr), v3.mul(e2, Math.sin(g) * rr)))); } return o; };
+  const ra = ring(a, r), rbb = ring(b, rb === undefined ? r : rb); const mid = v3.mul(v3.add(a, b), 0.5);
+  for (let i = 0; i < n; i++) { const j = (i + 1) % n; T(ra[i], ra[j], rbb[j], col, em, Ln, Pn, mid); T(ra[i], rbb[j], rbb[i], col, em, Ln, Pn, mid); }
+  const cap = (rg, c, dir, kind, rr) => { if (rr <= 1e-6) return; const apex = kind ? v3.add(c, v3.mul(u, dir * rr * 0.9)) : c; for (let i = 0; i < n; i++) T(rg[i], rg[(i + 1) % n], apex, col, em, Ln, Pn, mid); };
+  cap(ra, a, -1, capA, r); cap(rbb, b, 1, capB, rb === undefined ? r : rb);
+}
+function lpCapsule(T, a, b, r, n, col, em, Ln, Pn) {
+  const u = v3.norm(v3.sub(b, a));
+  const t0 = Math.abs(u[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const e1 = v3.norm(v3.cross(u, t0)), e2 = v3.cross(u, e1);
+  const ring = (c, rr) => { const o = []; for (let i = 0; i < n; i++) { const g = (i + 0.5) / n * 2 * Math.PI; o.push(v3.add(c, v3.add(v3.mul(e1, Math.cos(g) * rr), v3.mul(e2, Math.sin(g) * rr)))); } return o; };
+  const mid = v3.mul(v3.add(a, b), 0.5);
+  const rings = [[v3.add(a, v3.mul(u, -r * 0.78)), r * 0.62], [a, r], [b, r], [v3.add(b, v3.mul(u, r * 0.78)), r * 0.62]].map(([c, rr]) => ring(c, rr));
+  for (let k = 0; k < 3; k++) for (let i = 0; i < n; i++) { const j = (i + 1) % n; T(rings[k][i], rings[k][j], rings[k + 1][j], col, em, Ln, Pn, mid); T(rings[k][i], rings[k + 1][j], rings[k + 1][i], col, em, Ln, Pn, mid); }
+  const pa = v3.add(a, v3.mul(u, -r)), pb = v3.add(b, v3.mul(u, r));
+  for (let i = 0; i < n; i++) { const j = (i + 1) % n; T(rings[0][i], rings[0][j], pa, col, em, Ln, Pn, mid); T(rings[3][i], rings[3][j], pb, col, em, Ln, Pn, mid); }
+}
+function lpBox(T, c, half, rot, col, em, Ln, Pn) {
+  const cs = Math.cos(rot), sn = Math.sin(rot);
+  const v = [];
+  for (let i = 0; i < 8; i++) { const x = (i & 1 ? 1 : -1) * half[0], y = (i & 2 ? 1 : -1) * half[1], z = (i & 4 ? 1 : -1) * half[2]; v.push([c[0] + cs * x - sn * z, c[1] + y, c[2] + sn * x + cs * z]); }
+  [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]].forEach(q => { T(v[q[0]], v[q[1]], v[q[2]], col, em, Ln, Pn, c); T(v[q[0]], v[q[2]], v[q[3]], col, em, Ln, Pn, c); });
+}
+
+// ---------------------------------------------------------------- props: agents, trees, spawn pad
+function buildProps(gh) {
+  const PB = new TriBuf(1 << 15);
+  const S = (h) => { const n = parseInt(h.slice(1), 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
+  const RF = mulberry32(77);
+  const T = (a, b, c, col, em, Ln, Pn, ref) => PB.add(a, b, c, [col[0], col[1], col[2], em || 0], [Ln, Pn, 0, RF()], ref);
+  const R = mulberry32(21);
+  const grey = S('#e0e0e0'), greyJ = S('#eeeeee');
+  // spawn pad: a low hexagonal plinth with a warm ring
+  {
+    const y0 = gh(PADC[0], PADC[1]) - 0.35;
+    lpPrism(T, [PADC[0], y0, PADC[1]], [PADC[0], PADH, PADC[1]], PADR, 6, S('#c8bcaa'), 0.0, 1, 0.2, 0, 0, Math.PI / 6);
+    const r0 = PADR * 0.78, r1 = PADR * 0.90, y = PADH + 0.006;
+    for (let i = 0; i < 6; i++) {
+      const g0 = (i / 6) * 2 * Math.PI + Math.PI / 6, g1 = ((i + 1) / 6) * 2 * Math.PI + Math.PI / 6;
+      const p = (r, g) => [PADC[0] + Math.cos(g) * r, y, PADC[1] + Math.sin(g) * r];
+      T(p(r0, g0), p(r1, g0), p(r1, g1), S('#fff1dc'), 0.9, 1, 0.1, [PADC[0], y - 1, PADC[1]]);
+      T(p(r0, g0), p(r1, g1), p(r0, g1), S('#fff1dc'), 0.9, 1, 0.1, [PADC[0], y - 1, PADC[1]]);
+    }
+  }
+  // humanoid stick walker mid-stride; dir = +1 walks toward +x
+  const walker = (x, z, col, jc, Ln, dir, Pn) => {
+    const y = gh(x, z), d = dir || 1, P = Pn === undefined ? 0.06 : Pn;
+    const hip = [x, y + 0.78, z], sh = [x + 0.05 * d, y + 1.28, z], head = [x + 0.07 * d, y + 1.49, z];
+    const kneeL = [x + 0.22 * d, y + 0.42, z + 0.05], footL = [x + 0.30 * d, y + 0.05, z + 0.06];
+    const kneeR = [x - 0.12 * d, y + 0.40, z - 0.05], footR = [x - 0.36 * d, y + 0.08, z - 0.06];
+    const elbL = [x - 0.12 * d, y + 1.02, z + 0.12], handL = [x - 0.2 * d, y + 0.82, z + 0.15];
+    const elbR = [x + 0.22 * d, y + 1.05, z - 0.12], handR = [x + 0.34 * d, y + 0.88, z - 0.12];
+    lpPrism(T, hip, sh, 0.09, 6, col, 0, Ln, P, 1, 1);
+    lpSphere(T, head, 0.12, 1, jc, 0, Ln, P);
+    [[hip, kneeL, 0.062], [kneeL, footL, 0.052], [hip, kneeR, 0.062], [kneeR, footR, 0.052], [sh, elbL, 0.048], [elbL, handL, 0.042], [sh, elbR, 0.048], [elbR, handR, 0.042]]
+      .forEach(([a, b, r]) => lpPrism(T, a, b, r, 5, col, 0, Ln, P, 1, 1));
+    [hip, kneeL, kneeR].forEach(p => lpSphere(T, p, 0.07, 0, jc, 0, Ln, P));
+  };
+  const ant = (x, z, col, Ln, ph) => {
+    const y = gh(x, z);
+    lpSphere(T, [x, y + 0.42, z], 0.21, 1, col, 0, Ln, 0.06);
+    const phase = ph || [0.3, -0.25, -0.2, 0.35];
+    [[1, 1], [-1, 1], [1, -1], [-1, -1]].forEach(([sx, sz], i) => {
+      const hp = [x + sx * 0.16, y + 0.42, z + sz * 0.16];
+      const kn = [x + sx * 0.45, y + 0.58 + phase[i] * 0.2, z + sz * 0.45];
+      const ft = [x + sx * 0.72, gh(x + sx * 0.72, z + sz * 0.7) + 0.04 + Math.max(phase[i], 0) * 0.2, z + sz * 0.7];
+      lpPrism(T, hp, kn, 0.052, 5, col, 0, Ln, 0.06, 1, 1); lpPrism(T, kn, ft, 0.046, 5, col, 0, Ln, 0.06, 1, 1);
+    });
+  };
+  const capsule = (x, z, col, Ln, Pn, s) => {
+    const y = gh(x, z), k = s || 1;
+    lpCapsule(T, [x, y + 0.22 * k, z], [x, y + 0.64 * k, z], 0.21 * k, 10, col, 0, Ln, Pn);
+    lpSphere(T, [x + 0.13 * k, y + 0.64 * k, z - 0.13 * k], 0.05 * k, 0, S('#f4efe6'), 0.5, Ln, Pn);
+  };
+  const tree = (x, z, Ln, s, kind) => {
+    const y = gh(x, z) - 0.05;
+    const learned = Ln > 0.5;
+    const trunk = learned ? S('#80634a') : S('#b3b3b3');
+    const leaf = learned ? (R() < 0.5 ? S('#5f9a58') : S('#7fae62')) : S('#cdcdcd');
+    const P = learned ? 0.85 : 0.06;
+    if (kind === 1) {   // conifer: stacked low-poly cones
+      lpPrism(T, [x, y, z], [x, y + 0.5 * s, z], 0.07 * s, 5, trunk, 0, Ln, P, 0, 0);
+      const lf = learned ? S('#4f8a5a') : S('#c6c6c6');
+      lpPrism(T, [x, y + 0.35 * s, z], [x, y + 1.35 * s, z], 0.48 * s, 7, lf, 0, Ln, P, 0, 0, R() * 3, 0.0);
+      lpPrism(T, [x, y + 0.95 * s, z], [x, y + 1.95 * s, z], 0.36 * s, 7, lf, 0, Ln, P, 0, 0, R() * 3, 0.0);
+      return;
+    }
+    lpPrism(T, [x, y, z], [x, y + 0.95 * s, z], 0.075 * s, 5, trunk, 0, Ln, P, 0, 0);
+    lpSphere(T, [x, y + 1.18 * s, z], 0.48 * s, 1, leaf, 0, Ln, P, 0.22, R);
+    lpSphere(T, [x + 0.26 * s, y + 1.0 * s, z - 0.1 * s], 0.32 * s, 0, leaf, 0, Ln, P, 0.2, R);
+    lpSphere(T, [x - 0.22 * s, y + 1.03 * s, z + 0.12 * s], 0.3 * s, 0, leaf, 0, Ln, P, 0.2, R);
+  };
+
+  // --- learned: a capsule pushing a cube toward its goal flag, a walker on the far bank
+  {
+    const [px, pz] = [-1.9, 36.6];
+    capsule(px, pz, S('#b9a8dc'), 0.95, 0.55);
+    const [cx, cz] = [-1.25, 36.75]; const yc = gh(cx, cz);
+    lpBox(T, [cx, yc + 0.23, cz], [0.23, 0.23, 0.23], 0.35, S('#eadcbc'), 0, 0.95, 0.55);
+    const [gx, gz] = [0.2, 39.4]; const yg = gh(gx, gz);
+    lpPrism(T, [gx, yg - 0.05, gz], [gx, yg + 0.03, gz], 0.38, 10, S('#fff2dc'), 0.9, 0.95, 0.5, 0, 0);
+    lpPrism(T, [gx, yg, gz], [gx, yg + 0.98, gz], 0.02, 5, S('#f3eee4'), 0, 0.95, 0.5, 0, 0);
+    lpBox(T, [gx + 0.18, yg + 0.86, gz], [0.17, 0.09, 0.01], 0, S('#f6b8c8'), 0.2, 0.95, 0.5);
+  }
+  walker(9.2, 47.5, S('#9cc3e6'), S('#eee8de'), 0.9, -1, 0.5);
+  // --- untouched agents training on the grey land (kept sparse on the right)
+  ant(-16.0, 50.0, S('#e4e4e4'), 0.0);
+  walker(-22.0, 59.0, grey, greyJ, 0.0, 1);
+  capsule(-12.5, 63.0, grey, 0.0, 0.06);
+  lpBox(T, [-17.5, gh(-17.5, 67) + 0.28, 67], [0.28, 0.28, 0.28], 0.5, S('#d4d4d4'), 0, 0.0, 0.06);
+  {   // hopper, right
+    const x = -26.0, z = 62.0, y = gh(x, z) + 0.55; const col = S('#dcdcdc');
+    const top = [x, y + 1.3, z], hip = [x + 0.05, y + 0.85, z], knee = [x - 0.1, y + 0.45, z], ankle = [x + 0.02, y + 0.08, z], toe = [x + 0.3, y + 0.02, z];
+    lpPrism(T, top, hip, 0.075, 6, col, 0, 0.0, 0.06, 1, 1); lpPrism(T, hip, knee, 0.06, 6, col, 0, 0.0, 0.06, 1, 1);
+    lpPrism(T, knee, ankle, 0.05, 6, col, 0, 0.0, 0.06, 1, 1); lpPrism(T, ankle, toe, 0.055, 6, col, 0, 0.0, 0.06, 1, 1);
+  }
+  lpSphere(T, [24.0, gh(24, 70) + 0.3, 70.0], 0.3, 1, S('#d6d6d6'), 0, 0.0, 0.06);
+  lpBox(T, [27.5, gh(27.5, 82) + 0.3, 82.0], [0.3, 0.3, 0.3], 0.6, S('#d0d0d0'), 0, 0.0, 0.06);
+  // --- trees
+  const treesL = [[-6.5, 27.9, 1.3, 0], [-9.0, 35.2, 0.95, 1], [-1.2, 31.4, 0.8, 0], [2.4, 44.8, 0.9, 0], [8.6, 57.6, 1.0, 1], [-3.8, 44.0, 0.9, 0], [10.8, 40.6, 0.85, 0], [6.8, 66.0, 0.9, 0]];
+  treesL.forEach(t => tree(t[0], t[1], 1, t[2], t[3]));
+  const treesG = [[-19.0, 44.0, 1.0, 0], [-25.5, 52.5, 1.1, 1], [-14.0, 71.0, 1.0, 0], [-30.0, 70.0, 1.2, 1]];
+  treesG.forEach(t => tree(t[0], t[1], 0, t[2], t[3]));
+  // --- many small capsule agents training further out (multiplicity)
+  const RS = mulberry32(99); let n = 0;
+  while (n < 28) {
+    const z = 55 + RS() * 95, x = -30 + RS() * 44;
+    if (Math.abs(riverDist(x, z)) < 5 || learnedAt(x, z) > 0.2) continue;
+    capsule(x, z, S('#e2e2e2'), 0.0, 0.06, 0.9); n++;
+  }
+  return PB;
+}
+// Clawd in 3D: the 18x5 glyph extruded into a solid
+const CLAWD_ROWS = [
+  '...############...',
+  '...##.######.##...',
+  '.################.',
+  '...############...',
+  '....#.#....#.#....',
+];
+// Pixels are 1 wide x 2 tall and CLAWD_D widths deep. Hard edges, no bevels; the eye holes are punched
+// through. Each wall quad carries per-vertex ambient occlusion: a corner is concave (dark) when the
+// diagonal cell on the wall's open side is filled (under the arms, above the legs, inside the eyes).
+function buildClawd3D() {
+  const B = new TriBuf(1024), AO = [];
+  const on = (c, r) => c >= 0 && c < 18 && r >= 0 && r < 5 && CLAWD_ROWS[r][c] === '#';
+  const s = CLAWD_S, hd = CLAWD_D / 2, cy = Math.cos(CLAWD_YAW), sy = Math.sin(CLAWD_YAW);
+  // local X across the glyph (left to right seen from the front), Y up, Z depth (front face at -hd)
+  const P = (X, Y, Z) => [CLAWD[0] + (X * cy - Z * sy) * s, CLAWD[1] + Y * s, CLAWD[2] + (X * sy + Z * cy) * s];
+  const N = (X, Y, Z) => [X * cy - Z * sy, Y, X * sy + Z * cy];
+  const col = [0xD9 / 255, 0x77 / 255, 0x57 / 255, 0], ext = [1, 0, 0, 0.5];
+  const quad = (a, b, c, d, n, ao) => {
+    if (B.add(a, b, c, col, ext, null, n) >= 0) AO.push(ao[0], ao[1], ao[2]);
+    if (B.add(a, c, d, col, ext, null, n) >= 0) AO.push(ao[0], ao[2], ao[3]);
+  };
+  const K = 0.42;
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 18; c++) {
+    if (!on(c, r)) continue;
+    const X0 = c - 9, X1 = c - 8, Y0 = (4 - r) * 2, Y1 = Y0 + 2;
+    quad(P(X0, Y0, -hd), P(X1, Y0, -hd), P(X1, Y1, -hd), P(X0, Y1, -hd), N(0, 0, -1), [1, 1, 1, 1]);
+    quad(P(X0, Y0, hd), P(X0, Y1, hd), P(X1, Y1, hd), P(X1, Y0, hd), N(0, 0, 1), [1, 1, 1, 1]);
+    if (!on(c + 1, r)) { const t = on(c + 1, r - 1) ? K : 1, b = on(c + 1, r + 1) ? K : 1;
+      quad(P(X1, Y0, -hd), P(X1, Y0, hd), P(X1, Y1, hd), P(X1, Y1, -hd), N(1, 0, 0), [b, b, t, t]); }
+    if (!on(c - 1, r)) { const t = on(c - 1, r - 1) ? K : 1, b = on(c - 1, r + 1) ? K : 1;
+      quad(P(X0, Y0, hd), P(X0, Y0, -hd), P(X0, Y1, -hd), P(X0, Y1, hd), N(-1, 0, 0), [b, b, t, t]); }
+    if (!on(c, r - 1)) { const l = on(c - 1, r - 1) ? K : 1, rr = on(c + 1, r - 1) ? K : 1;
+      quad(P(X0, Y1, -hd), P(X1, Y1, -hd), P(X1, Y1, hd), P(X0, Y1, hd), N(0, 1, 0), [l, rr, rr, l]); }
+    if (!on(c, r + 1)) { const l = on(c - 1, r + 1) ? K : 1, rr = on(c + 1, r + 1) ? K : 1;
+      quad(P(X0, Y0, hd), P(X1, Y0, hd), P(X1, Y0, -hd), P(X0, Y0, -hd), N(0, -1, 0), [l, rr, rr, l]); }
+  }
+  return { B, AO: new Float32Array(AO) };
+}
+
+// ---------------------------------------------------------------- clouds: faceted cumulus far away
+function buildClouds() {
+  const CB = new TriBuf(1 << 15);
+  const R = mulberry32(7);
+  const T = (a, b, c, col, em, Ln, Pn, ref) => CB.add(a, b, c, [1, 1, 1, 0], [0.72, 0.85, 0, R()], ref);
+  // one puff: angular position (deg), angular radius (deg), depth offset (deg), flattened base elevation (deg)
+  const puff = (az, el, r, zc, D, base, sub, stretch, squash) => {
+    const dir = dirFromAzEl(az, el), dist = D * (1 - zc * deg * 0.9);
+    const c = v3.add(CAM, v3.mul(dir, dist));
+    const rw = r * deg * dist;
+    const baseY = CAM[1] + dist * Math.tan(base * deg);
+    const eaz = [Math.cos(az * deg), 0, -Math.sin(az * deg)];
+    lpSphere(T, c, rw, sub, null, 0, 0, 0, 0.12, R, (p) => {
+      let q = p;
+      if (stretch) { const d = v3.sub(p, c); const a = v3.dot(d, eaz); q = v3.add(p, v3.mul(eaz, a * (stretch - 1))); q[1] = c[1] + (q[1] - c[1]) * (squash || 0.32); }
+      if (q[1] < baseY) q = [q[0], baseY + (R() - 0.5) * rw * 0.03, q[2]];
+      return q;
+    });
+  };
+  const cumulus = (azC, base, w, h, n, lean, D, sub) => {
+    for (let i = 0; i < n; i++) {
+      const v = Math.pow(R(), 1.15);
+      const half = 0.5 * w * Math.sqrt(Math.max(0.04, 1 - Math.pow(v, 1.7)));
+      const u = R() * 2 - 1;
+      const r = w * (0.075 + 0.11 * R()) * (1.12 - 0.5 * v);
+      const az = azC + u * half * 0.82 + lean * v * h;
+      const el = base + r * 0.55 + v * h;
+      const zc = w * 0.34 * Math.sqrt(Math.max(0, 1 - u * u)) * (1 - 0.35 * v) + r * 0.35 * R();
+      puff(az, el, r * 1.15, zc, D, base, r > 1.0 ? (sub || 1) : 1);
+    }
+  };
+  cumulus(25, 2.5, 11, 3.4, 15, -0.05, 5200, 2);   // a light cumulus bank low on the right (v1 had a heavy tower)
+  cumulus(-24, 3.2, 8.5, 2.4, 10, 0.08, 5000, 2);  // companion over the snow massif
+  cumulus(-6, 6.3, 3.6, 1.0, 6, 0.0, 5000, 1);     // one small fair-weather puff
+  cumulus(-43, 2.0, 6, 1.6, 7, 0.0, 5000, 1);
+  cumulus(41, 1.6, 5, 1.4, 6, 0.0, 5000, 1);
+  // high, thin faceted cirrus: a light presence in the upper right, no weight
+  [[17, 9.4, 1.4, 6.5], [27, 11.4, 1.2, 5.5], [34, 8.4, 1.0, 5.0], [8, 12.4, 0.9, 5.5]].forEach(([az, el, r, st]) => puff(az, el, r, 0, 5600, el - 5, 1, st, 0.16));
+  // thin stratus bands low across the sun
+  [[-6, 1.05, 1.1, 5.0], [6, 1.9, 0.8, 5.5], [15, 1.3, 0.9, 4.5], [-18, 1.6, 1.0, 4.0], [25, 2.2, 0.8, 4.0]].forEach(([az, el, r, st]) => puff(az, el, r, 0, 4800, el - 5, 1, st));
+  return CB;
+}
+
+// ---------------------------------------------------------------- GLSL
+const GLSL_COMMON = `
+precision highp float; precision highp int;
+const float PI = 3.14159265;
+const float WATER = ${f1(WATER)};
+const vec3 SUN = ${f3(SUN)};
+const vec3 KEY = ${f3(KEY)};
+const vec3 CLAWD = ${f3(CLAWD)};
+uint hashu(uint x){ x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; x ^= x >> 16u; return x; }
+float hash21(ivec2 p){ return float(hashu(uint(p.x)*0x8da6b343u ^ hashu(uint(p.y)*0xd8163841u + 0x9e3779b9u)) >> 8u) * (1.0/16777216.0); }
+float vnoise(vec2 p){ vec2 i = floor(p), f = p - i; ivec2 ii = ivec2(i); vec2 u = f*f*(3.0-2.0*f);
+  return mix(mix(hash21(ii),hash21(ii+ivec2(1,0)),u.x), mix(hash21(ii+ivec2(0,1)),hash21(ii+ivec2(1,1)),u.x), u.y); }
+const mat2 ROT = mat2(0.80, 0.60, -0.60, 0.80);
+float fbmV(vec2 p, int oct){ float s=0.0, a=0.5, n=0.0; for(int i=0;i<8;i++){ if(i>=oct) break; s += a*vnoise(p); n += a; p = ROT*p*2.03 + vec2(17.3, 9.1); a *= 0.5; } return s/n; }
+vec3 lin(vec3 c){ return pow(max(c, 0.0), vec3(2.2)); }
+float lum(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+`;
+
+const MAIN_VS = `#version 300 es
+layout(location=0) in vec3 aPos; layout(location=1) in vec4 aNrm; layout(location=2) in vec4 aCol; layout(location=3) in vec4 aExt;
+layout(location=4) in float aAO;
+uniform vec3 uCam, uFwd, uRight, uUp; uniform float uF; uniform int uMirror; uniform int uKind;
+out vec3 vWP; flat out vec3 vN; flat out vec4 vCol; flat out vec4 vExt; out vec3 vBary; out float vAO;
+const float WATER = ${f1(WATER)};
+const float NEARP = 0.3, FARP = 9000.0;
+void main(){
+  int k = gl_VertexID - 3*(gl_VertexID/3);
+  vBary = vec3(k == 0 ? 1.0 : 0.0, k == 1 ? 1.0 : 0.0, k == 2 ? 1.0 : 0.0);
+  vCol = aCol; vExt = aExt; vAO = aAO;
+  if (uKind == 4) { vWP = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); gl_Position = vec4(aPos.xy, 0.0, 1.0); return; }
+  vec3 p = aPos; vec3 n = aNrm.xyz;
+  if (uMirror == 1) { p.y = 2.0*WATER - p.y; n.y = -n.y; }
+  vWP = p; vN = n;
+  vec3 d = p - uCam; float zc = dot(d, uFwd);
+  float A = (FARP + NEARP)/(FARP - NEARP), B = -2.0*FARP*NEARP/(FARP - NEARP);
+  gl_Position = vec4(dot(d, uRight)*uF/${W / 2}.0, dot(d, uUp)*uF/${H / 2}.0, A*zc + B, zc);
+}`;
+
+const MAIN_FS = `#version 300 es
+${GLSL_COMMON}
+precision highp sampler2DShadow;
+in vec3 vWP; flat in vec3 vN; flat in vec4 vCol; flat in vec4 vExt; in vec3 vBary; in float vAO;
+uniform int uKind, uMirror, uRaw, uDbg;
+uniform vec3 uCam, uFwd, uRight, uUp; uniform float uF; uniform vec2 uRes;
+uniform sampler2DShadow uSh0, uSh1, uSh2;
+uniform vec3 uLX, uLY, uLZ, uLC0, uLC1, uLC2, uLE0, uLE1, uLE2, uLB;
+uniform sampler2D uRefl, uWall;
+layout(location=0) out vec4 oCol;
+layout(location=1) out vec4 oAux;
+
+const vec3 KEYCOL = vec3(1.00, 0.83, 0.64) * 2.35;
+const vec3 SKYCOL = vec3(0.42, 0.50, 0.88) * 0.30;
+const vec3 BNCCOL = vec3(0.60, 0.46, 0.36) * 0.16;
+const vec3 FILLDIR = normalize(vec3(-0.35, 0.30, -1.0));
+const vec3 FILLCOL = vec3(0.50, 0.48, 0.82) * 0.22;
+const vec3 CLAWDCOL = vec3(0.851, 0.467, 0.341);
+const float FOGD = 0.00100;
+const float XL = ${f1(XL)}, XR = ${f1(XR)};
+
+// ---------------- sky
+vec2 skyQ(vec3 rd){ return vec2(degrees(atan(rd.x, rd.z)), degrees(asin(clamp(rd.y, -1.0, 1.0)))); }
+vec3 skyGrad(vec3 rd, bool tight){
+  vec2 q = skyQ(rd);
+  float e = max(q.y, 0.0);
+  float cs = max(dot(rd, SUN), 0.0);
+  vec3 hor = vec3(0.90, 0.54, 0.30);
+  vec3 low = vec3(0.78, 0.42, 0.44);
+  vec3 mid = vec3(0.27, 0.23, 0.52);
+  vec3 zen = vec3(0.030, 0.058, 0.24);
+  vec3 c = mix(hor, low, smoothstep(0.0, 2.6, e));
+  c = mix(c, mid, smoothstep(2.0, 6.0, e));
+  c = mix(c, zen, smoothstep(5.0, 12.5, e));
+  float sunSide = 0.5 + 0.5*dot(normalize(rd.xz + 1e-5), normalize(SUN.xz));
+  c += vec3(0.26, 0.11, 0.00) * (1.0 - smoothstep(0.0, 6.0, e)) * sunSide * sunSide;
+  c += vec3(1.00, 0.46, 0.14) * pow(cs, 9.0)*0.22 + vec3(1.00, 0.60, 0.22) * pow(cs, 110.0)*0.40;
+  if (tight) {
+    c += vec3(1.00, 0.78, 0.46) * pow(cs, 2500.0)*1.0;
+    c += vec3(1.00, 0.95, 0.85) * smoothstep(0.999955, 0.999975, cs)*28.0;
+  }
+  return c;
+}
+vec3 skyColor(vec3 rd){
+  vec3 c = skyGrad(rd, true);
+  vec2 q = skyQ(rd);
+  float ci = fbmV(vec2(q.x*0.11, q.y*0.9 + q.x*0.05) + 7.0, 5);
+  float cm = smoothstep(0.58, 0.80, ci) * smoothstep(7.0, 12.0, q.y);
+  c = mix(c, vec3(1.05, 0.78, 0.80), cm*0.35);
+  return c;
+}
+vec3 hazeColor(vec3 rd){
+  vec3 r = normalize(vec3(rd.x, 0.03, rd.z));
+  float daz = abs(degrees(atan(rd.x, rd.z) - atan(SUN.x, SUN.z)));
+  vec3 warm = skyGrad(r, false);
+  vec3 cool = vec3(0.46, 0.46, 0.72);
+  warm = mix(vec3(lum(warm)), warm, 1.25) * 0.86;
+  return mix(cool, warm, smoothstep(44.0, 6.0, daz)*0.8 + 0.2);
+}
+
+// ---------------- shadows (three cascades)
+float pcf(sampler2DShadow s, vec3 uvz, float tx){
+  float a = 0.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) a += texture(s, vec3(uvz.xy + vec2(float(i), float(j))*tx, uvz.z));
+  return a/9.0;
+}
+float shadowAt(vec3 p, vec3 n){
+  vec3 q = p + n*0.03;
+  vec3 d = q - uLC0; vec3 ls = vec3(dot(d, uLX), dot(d, uLY), dot(d, uLZ))/uLE0;
+  if (max(abs(ls.x), abs(ls.y)) < 0.985 && abs(ls.z) < 1.0) return pcf(uSh0, ls*0.5 + 0.5 - vec3(0.0, 0.0, uLB.x), 2.2/4096.0);
+  d = q - uLC1; ls = vec3(dot(d, uLX), dot(d, uLY), dot(d, uLZ))/uLE1;
+  if (max(abs(ls.x), abs(ls.y)) < 0.985 && abs(ls.z) < 1.0) return pcf(uSh1, ls*0.5 + 0.5 - vec3(0.0, 0.0, uLB.y), 1.6/4096.0);
+  d = q - uLC2; ls = vec3(dot(d, uLX), dot(d, uLY), dot(d, uLZ))/uLE2;
+  if (max(abs(ls.x), abs(ls.y)) < 0.985 && abs(ls.z) < 1.0) return pcf(uSh2, ls*0.5 + 0.5 - vec3(0.0, 0.0, uLB.z), 1.0/2048.0);
+  return 1.0;
+}
+float blobShadow(vec2 q, vec2 c, vec2 r){ vec2 d = (q - c)/r; return 1.0 - smoothstep(0.55, 1.0, length(d)); }
+float cloudShade(vec3 p){
+  vec2 q = p.xz;
+  float e = fbmV(q*0.10 + 3.3, 3) - 0.5;
+  vec2 qe = q + e*7.0;
+  float cs = 0.0;
+  cs = max(cs, blobShadow(qe, vec2(15.0, 27.0), vec2(9.5, 8.0)));         // grey land, right foreground
+  cs = max(cs, blobShadow(q + e*14.0, vec2(-13.0, 102.0), vec2(22.0, 46.0)));   // grey plain behind Clawd
+  cs = max(cs, blobShadow(qe, vec2(-11.0, 58.0), vec2(10.5, 14.0)));             // the slope right behind Clawd's head
+  cs = max(cs, blobShadow(qe, vec2(-28.0, 46.0), vec2(12.0, 12.0)));             // left edge: frame the view
+  cs = max(cs, blobShadow(q + e*14.0, vec2(30.0, 96.0), vec2(14.0, 26.0)));     // grey swell, right
+  cs = max(cs, blobShadow(q + e*30.0, vec2(-50.0, 120.0), vec2(30.0, 34.0)));
+  cs = max(cs, blobShadow(q + e*90.0, vec2(-170.0, 640.0), vec2(170.0, 90.0)));
+  cs = max(cs, blobShadow(q + e*90.0, vec2(260.0, 820.0), vec2(160.0, 90.0)));
+  cs *= smoothstep(6.0, 11.0, length(p.xz - CLAWD.xz));
+  return 1.0 - 0.88*cs;
+}
+
+// ---------------- lighting
+vec3 lightSurf(vec3 p, vec3 n, vec3 alb, float ao, float sh){
+  float dif = max(dot(n, KEY), 0.0) * mix(0.10, 1.0, sh);
+  float sky = 0.55 + 0.45*n.y;
+  float bnc = clamp(0.5 - 0.5*n.y, 0.0, 1.0);
+  vec3 c = alb * (KEYCOL*dif + SKYCOL*sky*ao + BNCCOL*bnc*ao + FILLCOL*max(dot(n, FILLDIR), 0.0)*ao);
+  // soft orange bounce off Clawd onto the ground, and the warm pool of the spawn plate
+  vec3 lc = CLAWD + vec3(0.0, ${f1(CLAWD_H * 0.45)}, 0.0) - p; float dl = length(lc);
+  float gl = (0.35 + 0.65*max(dot(n, lc/dl), 0.0)) / (1.0 + dl*dl*1.4);
+  c += alb * CLAWDCOL * gl * 1.8;
+  c += alb * vec3(1.0, 0.82, 0.55) * 0.40 * exp(-dl*dl*0.10) * max(n.y, 0.0) * (0.25 + 0.75*sh);
+  // contact shadow: soft occlusion on the plate right around his feet
+  vec2 cq = (p.xz - CLAWD.xz) / vec2(${f1(CLAWD_S * 9.5)}, ${f1(CLAWD_S * 4.5)});
+  c *= 1.0 - 0.45 * exp(-dot(cq, cq)*1.3) * (1.0 - smoothstep(0.02, 0.4, abs(p.y - CLAWD.y)));
+  return c;
+}
+// painted facet: short parallel strokes in canvas space, oriented along the facet's slope (water: horizontal).
+// Facet edges stay crisp, so learned land is painted without leaving the low-poly language.
+float hsh(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7)))*43758.5453); }
+vec2 toScr(vec3 q){ vec3 d = q - uCam; float z = dot(d, uFwd); return vec2(dot(d, uRight), dot(d, uUp))*uF/z; }
+vec3 paintFacet(vec3 base, vec3 p, vec3 n, float rnd, float t, float amt, bool water){
+  vec2 dir2 = vec2(1.0, 0.0);
+  if (!water) {
+    vec3 dh = vec3(0.0, 1.0, 0.0) - n*n.y; float sl = length(dh);
+    float a = rnd*6.2831853;
+    vec3 fd = vec3(cos(a), 0.0, sin(a)); fd = fd - n*dot(fd, n);
+    vec3 d3 = normalize(mix(normalize(fd + 1e-5), dh/max(sl, 1e-4), smoothstep(0.10, 0.35, sl)));
+    vec2 s = toScr(p + d3*0.02*t) - toScr(p);
+    if (length(s) > 1e-6) dir2 = normalize(s);
+  }
+  vec2 fc = gl_FragCoord.xy * (${W}.0/uRes.x);
+  vec2 pr = vec2(-dir2.y, dir2.x);
+  float u = dot(fc, dir2), v = dot(fc, pr);
+  vec3 c = base;
+  for (int k = 0; k < 2; k++) {
+    float w = k == 0 ? 5.5 : 3.4;
+    float vv = v/w + rnd*13.0 + float(k)*0.37;
+    float row = floor(vv), fr = fract(vv);
+    float off = hsh(vec3(row, rnd*91.0, float(k)))*60.0;
+    float Ls = mix(14.0, 40.0, hsh(vec3(row, 3.1, rnd*17.0 + float(k))));
+    float su = (u + off)/Ls;
+    float seg = floor(su), f = fract(su);
+    float hs = hsh(vec3(row, seg, rnd*57.0 + float(k)*7.0));
+    float body = smoothstep(0.0, 0.14, f) * (1.0 - smoothstep(0.72, 1.0, f)) * smoothstep(0.0, 0.3, fr) * (1.0 - smoothstep(0.7, 1.0, fr));
+    float val = (hs - 0.5)*0.26;
+    vec3 tint = mix(vec3(1.06, 1.0, 0.91), vec3(0.93, 0.99, 1.08), hsh(vec3(seg, row, 5.0 + float(k))));
+    float bristle = vnoise(vec2(u*0.10, v*1.4 + hs*40.0)) - 0.5;
+    vec3 sc = base*(1.0 + val + bristle*0.16)*tint;
+    c = mix(c, sc, body*amt*(k == 0 ? 0.9 : 0.55));
+  }
+  return c;
+}
+float edgeLine(float w){ vec3 d = fwidth(vBary); vec3 a = smoothstep(d*(w - 0.6), d*(w + 0.6), vBary); return 1.0 - min(min(a.x, a.y), a.z); }
+
+vec3 cloudLit(vec3 n, float rnd, vec3 dc){
+  float az = atan(dc.x, dc.z), el = asin(clamp(dc.y, -1.0, 1.0));
+  float saz = atan(SUN.x, SUN.z), sel = asin(SUN.y);
+  vec2 ts = vec2(saz - az, sel - el);
+  float dsun = degrees(length(ts));
+  vec3 eaz = vec3(cos(az), 0.0, -sin(az));
+  vec3 eel = vec3(-sin(az)*sin(el), cos(el), -cos(az)*sin(el));
+  vec3 L = normalize(normalize(ts.x*eaz + ts.y*eel) + 0.15*dc);
+  float nl = dot(n, L);
+  float facet = smoothstep(-0.70, 0.90, nl);        // wide ramp: neighbouring facets differ gently
+  float pos = clamp(exp(-dsun*0.10)*1.25 + (1.0 - smoothstep(3.0, 9.0, degrees(el)))*0.30, 0.0, 1.0);
+  float lit = clamp(facet*0.75 + pos*0.50 - 0.22, 0.0, 1.0);
+  float up = clamp(n.y, 0.0, 1.0), dn = clamp(-n.y, 0.0, 1.0);
+  vec3 shadowC = vec3(0.12, 0.115, 0.31);
+  vec3 topC = vec3(0.23, 0.26, 0.55);
+  vec3 litC = vec3(1.36, 0.80, 0.47);
+  vec3 underC = vec3(0.92, 0.48, 0.44);
+  vec3 c = mix(shadowC, topC, up*0.8);
+  c = mix(c, underC, dn*0.7);
+  c = mix(c, litC, lit);
+  float sunProx = exp(-dsun*0.12);
+  float rim = pow(1.0 - abs(dot(n, -dc)), 2.0);
+  c += vec3(1.5, 1.05, 0.70) * rim * smoothstep(0.1, 0.7, nl) * (0.08 + 1.6*sunProx);
+  c = mix(c, vec3(1.25, 0.88, 0.62), sunProx*0.35);
+  c = mix(c, c*vec3(0.88, 0.92, 1.08), smoothstep(6.0, 16.0, degrees(el))*0.6);
+  return c * (0.955 + 0.09*rnd);
+}
+vec3 applyWalls(vec3 col, vec3 rd, float tF){
+  for (int k = 0; k < 2; k++) {
+    float X = k == 0 ? XL : XR;
+    float tw = (X - uCam.x)/rd.x;
+    if (tw > 0.0 && tw < tF) {
+      vec3 p = uCam + rd*tw;
+      if (p.z > 4.0 && p.z < 195.0) {
+        float g = texture(uWall, vec2(p.z/200.0, k == 0 ? 0.25 : 0.75)).r;
+        float y = p.y - g;
+        if (y > 0.0 && y < 7.0) {
+          float pw = tw / uF * 1.3;
+          float a = 0.07 * (1.0 - smoothstep(0.0, 6.5, y));
+          vec2 gg = abs(fract(vec2(p.z, p.y)/vec2(2.0, 1.0) + 0.5) - 0.5)*vec2(2.0, 1.0);
+          float gl = 1.0 - smoothstep(pw*0.5, pw*1.4, min(gg.x, gg.y));
+          a += gl * 0.16 * (1.0 - smoothstep(0.0, 6.0, y));
+          a *= 1.0 - smoothstep(80.0, 150.0, p.z);
+          vec3 wc = mix(vec3(1.0, 0.95, 0.9), hazeColor(rd), 0.3) * 1.1;
+          col = mix(col, wc, a);
+        }
+      }
+    }
+  }
+  return col;
+}
+vec3 aces(vec3 x){ return clamp((x*(2.51*x + 0.03))/(x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
+
+void main(){
+  bool mir = uMirror == 1;
+  vec3 col; float mask = 0.72, paint = 1.0, mat = 0.0, tF = 1e5, shd = 1.0;
+  vec3 rd, p = vec3(0.0);
+  if (uKind == 4) {
+    vec2 fc = gl_FragCoord.xy * (${W}.0 / uRes.x);
+    rd = normalize(uFwd*uF + uRight*(fc.x - ${W / 2}.0) + uUp*(fc.y - ${H / 2}.0));
+    vec3 rs = mir ? vec3(rd.x, -rd.y, rd.z) : rd;
+    col = skyColor(rs);
+    // faint skybox lattice high above: the sky is part of the environment too
+    vec2 q = skyQ(rs);
+    float pwd = degrees(1.0/uF) * 1.2;
+    vec2 gq = abs(fract(q/vec2(6.0, 3.0) + 0.5) - 0.5)*vec2(6.0, 3.0);
+    float gl = 1.0 - smoothstep(pwd*0.4, pwd*1.1, min(gq.x, gq.y));
+    col = mix(col, col*1.08 + vec3(0.02), gl * smoothstep(8.0, 16.0, q.y) * 0.5);
+    col = mix(vec3(lum(col)), col, 0.80);
+  } else {
+    p = vWP; vec3 n = normalize(vN);
+    if (mir) { p.y = 2.0*WATER - p.y; n.y = -n.y; if (p.y < WATER - 0.02) discard; }
+    rd = normalize(vWP - uCam);
+    vec3 rv = mir ? vec3(rd.x, -rd.y, rd.z) : rd;
+    tF = length(vWP - uCam);
+    mask = vExt.x; paint = vExt.y;
+    float front = vExt.z, rnd = vExt.w;
+    if (uKind == 0) {                 // terrain
+      vec3 alb = lin(vCol.rgb) * (0.93 + 0.14*rnd);
+      if (!mir) alb = paintFacet(alb, p, n, rnd, tF, mask, false);
+      shd = shadowAt(p, n);
+      float sh = shd * cloudShade(p);
+      col = lightSurf(p, n, alb, 1.0, sh);
+      float e = edgeLine(1.25);
+      col = mix(col, col*0.55 + vec3(0.02, 0.02, 0.03), e*(1.0 - mask)*0.8);      // wireframe on untouched facets
+      col += front * vec3(1.0, 0.80, 0.56) * 0.30;
+      float pw = tF / uF * 1.4;
+      float bl = min(abs(p.x - XL), abs(p.x - XR));
+      float dash = step(0.35, fract(p.z*0.25));
+      col = mix(col, vec3(1.05, 0.98, 0.9), (1.0 - smoothstep(pw*0.8, pw*2.5 + 0.05, bl)) * dash * 0.8 * step(p.z, 190.0));
+      mat = p.z > 330.0 ? 0.5 : 0.25;
+    } else if (uKind == 1) {          // water
+      vec2 suv = gl_FragCoord.xy / uRes;
+      vec2 off = vec2(n.x, n.z) * vec2(0.07, 0.15);
+      vec3 refl = texture(uRefl, clamp(suv + off, vec2(0.001), vec2(0.999))).rgb;
+      float cosv = clamp(dot(-rd, n), 0.0, 1.0);
+      float fres = 0.02 + 0.98*pow(1.0 - cosv, 5.0);
+      shd = shadowAt(p, vec3(0.0, 1.0, 0.0));
+      float sh = shd * cloudShade(p);
+      vec3 body = lin(vCol.rgb) * (SKYCOL*1.1 + KEYCOL*0.22*sh);
+      refl *= mix(1.0, 0.52, smoothstep(45.0, 180.0, tF));
+      col = mix(body, min(refl, vec3(1.6))*0.72, clamp(fres*1.05, 0.0, 1.0));
+      vec3 rr = reflect(rd, n);
+      col += vec3(1.0, 0.86, 0.62) * pow(max(dot(rr, SUN), 0.0), 500.0) * 3.5 * sh;
+      col = paintFacet(col, p, vec3(0.0, 1.0, 0.0), rnd, tF, mask*0.8, true);
+      col += edgeLine(1.0) * 0.025 * mask;
+      mat = 0.75;
+    } else if (uKind == 2) {          // props
+      vec3 alb = lin(vCol.rgb) * (0.95 + 0.10*rnd);
+      shd = shadowAt(p, n);
+      float sh = shd * cloudShade(p);
+      col = lightSurf(p, n, alb, 1.0, sh);
+      float fr = pow(1.0 - max(dot(-rv, n), 0.0), 3.0);
+      col += fr * vec3(1.0, 0.85, 0.7) * 0.30 * alb;
+      col += alb * vCol.a * 3.0;
+      col = mix(col, col*0.72, edgeLine(1.0)*(1.0 - mask)*0.6);
+      mat = 1.0;
+    } else if (uKind == 5) {          // Clawd: the glyph as a solid; crisp, never painted, lit by the scene
+      vec3 alb = lin(vCol.rgb);
+      shd = shadowAt(p, n);
+      float ao = vAO * mix(0.5, 1.0, smoothstep(0.0, ${f1(CLAWD_S * 2.2)}, p.y - ${f1(PADH)}));   // contact occlusion at the feet
+      float dif = max(dot(n, KEY), 0.0) * shd;
+      float sky = 0.55 + 0.45*n.y;
+      col = alb * (KEYCOL*dif*1.6 + SKYCOL*sky*ao*1.2 + FILLCOL*max(dot(n, FILLDIR), 0.0)*ao);
+      // warm bounce from the sunlit crown and the glowing spawn plate keeps the backlit face terracotta
+      col += alb * vec3(1.0, 0.72, 0.52) * (0.28 + 0.50*max(dot(n, normalize(vec3(-0.1, -0.5, -1.0))), 0.0)) * ao;
+      mask = 1.0; paint = 0.0; mat = 0.9;
+    } else {                          // clouds
+      col = cloudLit(n, rnd, rv);
+      mat = 0.05; tF = 1e5;
+    }
+    if (uKind != 3) {
+      float fd = 1.0 - exp(-tF*FOGD*exp(-max(p.y, 0.0)*0.004));
+      float sat = mix(0.16, 1.0, mask);
+      col = mix(vec3(lum(col)), col, sat);
+      col = mix(col, hazeColor(rv), fd);
+    }
+  }
+  if (!mir) col = applyWalls(col, rd, tF);
+  if (uRaw == 1) { oCol = vec4(col, 1.0); oAux = vec4(0.0); return; }
+  vec3 o = pow(aces(col * 0.95), vec3(1.0/2.2));
+  if (uDbg == 1) o = vec3(mask);
+  if (uDbg == 2) o = vec3(paint);
+  if (uDbg == 3) o = vec3(shd);
+  if (uDbg == 4) o = vec3(uKind == 4 || uKind == 3 ? 0.5 : cloudShade(p));
+  oCol = vec4(o, 1.0);
+  oAux = vec4(mask, tF/(tF + 60.0), mat, (uKind == 4 || uKind == 3) ? paint : 0.0);
+}`;
+
+const SHADOW_VS = `#version 300 es
+layout(location=0) in vec3 aPos;
+uniform vec3 uLC, uLE, uLX, uLY, uLZ;
+void main(){ vec3 d = aPos - uLC; gl_Position = vec4(dot(d, uLX)/uLE.x, dot(d, uLY)/uLE.y, dot(d, uLZ)/uLE.z, 1.0); }`;
+const SHADOW_FS = `#version 300 es
+precision highp float;
+void main(){}`;
+
+const VS_FULL = `#version 300 es
+void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+
+const DOWN_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uA; uniform sampler2D uB; uniform int uS;
+layout(location=0) out vec4 o0; layout(location=1) out vec4 o1;
+void main(){ ivec2 p = ivec2(gl_FragCoord.xy)*uS; vec4 a = vec4(0.0), b = vec4(0.0);
+  for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) { if (x >= uS || y >= uS) continue; a += texelFetch(uA, p + ivec2(x,y), 0); b += texelFetch(uB, p + ivec2(x,y), 0); }
+  float n = float(uS*uS); o0 = a/n; o1 = b/n; }`;
+
+// ---------------------------------------------------------------- GL helpers
+function glSetup() {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const gl = c.getContext('webgl2', { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true });
+  if (!gl) throw new Error('no webgl2');
+  if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('no float color buffers');
+  gl.getExtension('OES_texture_float_linear');
+  return gl;
+}
+function prog(gl, vs, fs) {
+  const mk = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error('shader: ' + gl.getShaderInfoLog(x)); return x; };
+  const p = gl.createProgram(); gl.attachShader(p, mk(gl.VERTEX_SHADER, vs)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('link: ' + gl.getProgramInfoLog(p));
+  return p;
+}
+function tex(gl, w, h, ifmt, fmt, type, filt, data) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, type, data || null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filt); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filt);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+function fbo(gl, texs, depthRB) {
+  const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  texs.forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0));
+  if (depthRB) gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthRB);
+  gl.drawBuffers(texs.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
+  const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (st !== gl.FRAMEBUFFER_COMPLETE) throw new Error('fbo incomplete ' + st);
+  return f;
+}
+function depthRB(gl, w, h) { const r = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, r); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h); return r; }
+function U(gl, p, name) { return gl.getUniformLocation(p, name); }
+function readRGBA8(gl, w, h, attachment) {
+  gl.readBuffer(gl.COLOR_ATTACHMENT0 + (attachment || 0));
+  const px = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const out = new Uint8Array(w * h * 4); const row = w * 4;
+  for (let y = 0; y < h; y++) out.set(px.subarray((h - 1 - y) * row, (h - y) * row), y * row);   // flip to top-down
+  return out;
+}
+function upload(gl, B) {
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const n = B.n * 3;
+  const buf = (data, loc, size, type, norm) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, type, norm, 0, 0); };
+  buf(B.P.subarray(0, n * 3), 0, 3, gl.FLOAT, false);
+  buf(B.N.subarray(0, n * 4), 1, 4, gl.BYTE, true);
+  buf(new Uint8Array(B.C.buffer, 0, n * 4), 2, 4, gl.UNSIGNED_BYTE, true);
+  buf(new Uint8Array(B.E.buffer, 0, n * 4), 3, 4, gl.UNSIGNED_BYTE, true);
+  gl.bindVertexArray(null);
+  return { vao, count: n };
+}
+function uploadSky(gl) {
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  return { vao, count: 3 };
+}
+// orthographic light frustum fitted around a world box (plus a margin toward the light for casters)
+const LZ = v3.mul(KEY, -1), LX = v3.norm(v3.cross([0, 1, 0], LZ)), LY = v3.cross(LZ, LX);
+function fitCascade(x0, x1, y0, y1, z0, z1, margin) {
+  const mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9];
+  for (let i = 0; i < 8; i++) {
+    const p = [i & 1 ? x1 : x0, i & 2 ? y1 : y0, i & 4 ? z1 : z0];
+    const l = [v3.dot(p, LX), v3.dot(p, LY), v3.dot(p, LZ)];
+    for (let k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], l[k]); mx[k] = Math.max(mx[k], l[k]); }
+  }
+  mn[2] -= margin;
+  const c = [0.5 * (mn[0] + mx[0]), 0.5 * (mn[1] + mx[1]), 0.5 * (mn[2] + mx[2])];
+  const e = [0.5 * (mx[0] - mn[0]), 0.5 * (mx[1] - mn[1]), 0.5 * (mx[2] - mn[2])];
+  const cw = v3.add(v3.add(v3.mul(LX, c[0]), v3.mul(LY, c[1])), v3.mul(LZ, c[2]));
+  return { c: cw, e };
+}
+
+// ---------------------------------------------------------------- painterly pass (JS: flow field + stroke geometry)
+function boxBlur(src, w, h, r, ch) {
+  const tmp = new Float32Array(src.length), out = new Float32Array(src.length);
+  const k = 1 / (2 * r + 1);
+  for (let y = 0; y < h; y++) for (let c = 0; c < ch; c++) {
+    let acc = 0; const row = y * w;
+    for (let x = -r; x <= r; x++) acc += src[(row + Math.min(w - 1, Math.max(0, x))) * ch + c];
+    for (let x = 0; x < w; x++) { tmp[(row + x) * ch + c] = acc * k; acc += src[(row + Math.min(w - 1, x + r + 1)) * ch + c] - src[(row + Math.max(0, x - r)) * ch + c]; }
+  }
+  for (let x = 0; x < w; x++) for (let c = 0; c < ch; c++) {
+    let acc = 0;
+    for (let y = -r; y <= r; y++) acc += tmp[(Math.min(h - 1, Math.max(0, y)) * w + x) * ch + c];
+    for (let y = 0; y < h; y++) { out[(y * w + x) * ch + c] = acc * k; acc += tmp[(Math.min(h - 1, y + r + 1) * w + x) * ch + c] - tmp[(Math.max(0, y - r) * w + x) * ch + c]; }
+  }
+  return out;
+}
+function gauss(src, w, h, sigma, ch) { const r = Math.max(1, Math.round(sigma * 0.9)); let a = boxBlur(src, w, h, r, ch); a = boxBlur(a, w, h, r, ch); return boxBlur(a, w, h, r, ch); }
+
+function buildStrokes(img, aux) {
+  const N = W * H;
+  const rgb = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) { rgb[i * 3] = img[i * 4] / 255; rgb[i * 3 + 1] = img[i * 4 + 1] / 255; rgb[i * 3 + 2] = img[i * 4 + 2] / 255; }
+  const L = new Float32Array(N);
+  for (let i = 0; i < N; i++) L[i] = 0.3 * rgb[i * 3] + 0.59 * rgb[i * 3 + 1] + 0.11 * rgb[i * 3 + 2];
+  const Lb = gauss(L, W, H, 1.2, 1);
+  const J = new Float32Array(N * 3);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x;
+    const gx = (Lb[i + 1 - W] + 2 * Lb[i + 1] + Lb[i + 1 + W]) - (Lb[i - 1 - W] + 2 * Lb[i - 1] + Lb[i - 1 + W]);
+    const gy = (Lb[i + W - 1] + 2 * Lb[i + W] + Lb[i + W + 1]) - (Lb[i - W - 1] + 2 * Lb[i - W] + Lb[i - W + 1]);
+    J[i * 3] = gx * gx; J[i * 3 + 1] = gx * gy; J[i * 3 + 2] = gy * gy;
+  }
+  const Js = gauss(J, W, H, 4, 3);
+  const ang = new Float32Array(N), gmag = new Float32Array(N);
+  const R0 = mulberry32(5);
+  const wob = new Float32Array(N);
+  { const gw = 64, gh = 36; const g = new Float32Array((gw + 1) * (gh + 1)); for (let i = 0; i < g.length; i++) g[i] = R0() * 2 - 1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const fx = x / W * gw, fy = y / H * gh; const ix = fx | 0, iy = fy | 0, tx = fx - ix, ty = fy - iy; const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+      const a = g[iy * (gw + 1) + ix], b = g[iy * (gw + 1) + ix + 1], c = g[(iy + 1) * (gw + 1) + ix], d = g[(iy + 1) * (gw + 1) + ix + 1]; wob[y * W + x] = (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy; } }
+  for (let i = 0; i < N; i++) {
+    const a = Js[i * 3], b = Js[i * 3 + 1], c = Js[i * 3 + 2];
+    const tr = a + c, det = Math.sqrt((a - c) * (a - c) + 4 * b * b);
+    const l1 = 0.5 * (tr + det), l2 = 0.5 * (tr - det);
+    const co = tr > 1e-7 ? (l1 - l2) / (l1 + l2 + 1e-7) : 0;
+    const th = 0.5 * Math.atan2(2 * b, a - c) + Math.PI / 2;
+    const mat = aux[i * 4 + 2] / 255;
+    const sky = mat < 0.1, cloud = sky ? Math.min(1, mat / 0.05) : 0;
+    const flat = wob[i] * (sky ? 0.22 : 0.35);
+    const e0 = sky ? 0.0025 * (1 - 0.8 * cloud) : 0.0, e1 = sky ? 0.014 * (1 - 0.75 * cloud) : 0.025;
+    const te = Math.min(1, Math.max(0, (tr - e0) / (e1 - e0)));
+    const wgt = sky ? te * te * (3 - 2 * te) : Math.min(1, co * co * 4 + te);
+    const cx = wgt * Math.cos(2 * th) + (1 - wgt) * Math.cos(2 * flat), sy2 = wgt * Math.sin(2 * th) + (1 - wgt) * Math.sin(2 * flat);
+    ang[i] = 0.5 * Math.atan2(sy2, cx); gmag[i] = Math.sqrt(tr);
+  }
+  const refs = [gauss(rgb, W, H, 3.0, 3), gauss(rgb, W, H, 1.4, 3), rgb];
+  const layers = [
+    { r: 9, spacing: 10, maxLen: 8, minLen: 2, alpha: 0.80, ref: 0, thr: 0.09, edgeOnly: 0 },
+    { r: 4.6, spacing: 5.0, maxLen: 8, minLen: 2, alpha: 0.85, ref: 1, thr: 0.075, edgeOnly: 0 },
+    { r: 2.2, spacing: 3.0, maxLen: 6, minLen: 1, alpha: 0.9, ref: 2, thr: 0.065, edgeOnly: 1 },
+  ];
+  const R = mulberry32(1234);
+  const verts = []; const cols = []; const idx = [];
+  let vcount = 0, nStrokes = 0;
+  const sample = (ref, x, y) => { const xi = Math.min(W - 1, Math.max(0, x | 0)), yi = Math.min(H - 1, Math.max(0, y | 0)); const i = (yi * W + xi) * 3; return [ref[i], ref[i + 1], ref[i + 2]]; };
+  for (const Ly of layers) {
+    const ref = refs[Ly.ref];
+    const cand = [];
+    for (let y = Ly.spacing * 0.5; y < H; y += Ly.spacing) for (let x = Ly.spacing * 0.5; x < W; x += Ly.spacing) {
+      const px = x + (R() - 0.5) * Ly.spacing, py = y + (R() - 0.5) * Ly.spacing;
+      const xi = Math.min(W - 1, Math.max(0, px | 0)), yi = Math.min(H - 1, Math.max(0, py | 0)); const i = yi * W + xi;
+      const pm = aux[i * 4 + 3] / 255;
+      if (pm < 0.12 || R() > pm + 0.15) continue;
+      if (Ly.edgeOnly && gmag[i] < 0.06 && R() > 0.25) continue;
+      cand.push([px, py]);
+    }
+    for (let i = cand.length - 1; i > 0; i--) { const j = (R() * (i + 1)) | 0; const t = cand[i]; cand[i] = cand[j]; cand[j] = t; }
+    for (const [x0, y0] of cand) {
+      const c0 = sample(ref, x0, y0);
+      const lum0 = 0.3 * c0[0] + 0.59 * c0[1] + 0.11 * c0[2];
+      const j = 1 + (R() - 0.5) * 0.07;
+      let col = c0.map(v => v * j);
+      if (lum0 > 0.62) col = [col[0] * 1.015, col[1] * 1.0, col[2] * 0.975]; else if (lum0 < 0.36) col = [col[0] * 0.985, col[1] * 0.995, col[2] * 1.03];
+      const ai = ((y0 | 0) * W + (x0 | 0)) * 4;
+      const skyStart = aux[ai + 2] < 26 && aux[ai + 1] > 250;
+      const r = Ly.r * (0.8 + 0.4 * R()) * (skyStart && Ly.ref === 0 ? 0.8 : 1);
+      const pts = [[x0, y0]];
+      let x = x0, y = y0, pdx = 0, pdy = 0;
+      const sgn = R() < 0.5 ? -1 : 1;
+      for (let k = 1; k < Ly.maxLen; k++) {
+        const xi = Math.min(W - 1, Math.max(0, x | 0)), yi = Math.min(H - 1, Math.max(0, y | 0));
+        const a = ang[yi * W + xi];
+        let dx = Math.cos(a) * sgn, dy = Math.sin(a) * sgn;
+        if (k > 1 && dx * pdx + dy * pdy < 0) { dx = -dx; dy = -dy; }
+        if (k > 1) { dx = 0.7 * dx + 0.3 * pdx; dy = 0.7 * dy + 0.3 * pdy; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l; }
+        const nx = x + dx * r * 0.9, ny = y + dy * r * 0.9;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) break;
+        const c2 = sample(refs[2], nx, ny);
+        const dd = Math.abs(c2[0] - c0[0]) + Math.abs(c2[1] - c0[1]) + Math.abs(c2[2] - c0[2]);
+        if (k > Ly.minLen && dd > Ly.thr * (skyStart ? 1.6 : 3)) break;
+        x = nx; y = ny; pdx = dx; pdy = dy; pts.push([x, y]);
+      }
+      if (pts.length < 2) { const a = ang[(y0 | 0) * W + (x0 | 0)]; pts.push([x0 + Math.cos(a) * r * 0.8, y0 + Math.sin(a) * r * 0.8]); }
+      let total = 0; const cum = [0];
+      for (let k = 1; k < pts.length; k++) { total += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]); cum.push(total); }
+      const seed = R();
+      const base = vcount;
+      const cb = col.map(v => Math.max(0, Math.min(255, Math.round(v * 255))));
+      for (let k = 0; k < pts.length; k++) {
+        const a = pts[Math.max(0, k - 1)], b = pts[Math.min(pts.length - 1, k + 1)];
+        let tx = b[0] - a[0], ty = b[1] - a[1]; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
+        const u = cum[k] / (total || 1);
+        const wprof = r * (0.75 + 0.25 * Math.sin(Math.PI * Math.min(1, u * 1.2 + 0.1)));
+        const ext = (k === 0 ? -r * 0.6 : (k === pts.length - 1 ? r * 0.6 : 0));
+        const px = pts[k][0] + tx * ext, py = pts[k][1] + ty * ext;
+        const uu = (cum[k] + ext + r * 0.6) / (total + r * 1.2);
+        verts.push(px - ty * wprof, py + tx * wprof, uu, -1, seed, Ly.alpha);
+        verts.push(px + ty * wprof, py - tx * wprof, uu, 1, seed, Ly.alpha);
+        cols.push(cb[0], cb[1], cb[2], 255, cb[0], cb[1], cb[2], 255);
+        vcount += 2;
+      }
+      for (let k = 0; k < pts.length - 1; k++) { const a = base + 2 * k; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+      nStrokes++;
+    }
+  }
+  return { verts: new Float32Array(verts), cols: new Uint8Array(cols), idx: new Uint32Array(idx), nStrokes };
+}
+
+const STROKE_VS = `#version 300 es
+layout(location=0) in vec2 aPos; layout(location=1) in vec2 aUV; layout(location=2) in vec2 aSA; layout(location=3) in vec4 aCol;
+out vec2 vUV; out float vSeed; out float vA; out vec4 vCol;
+void main(){ vUV = aUV; vSeed = aSA.x; vA = aSA.y; vCol = aCol; vec2 c = aPos/vec2(${W}.0, ${H}.0)*2.0 - 1.0; gl_Position = vec4(c.x, -c.y, 0.0, 1.0); }`;
+const STROKE_FS = `#version 300 es
+precision highp float;
+in vec2 vUV; in float vSeed; in float vA; in vec4 vCol;
+out vec4 o;
+float h1(float x){ return fract(sin(x*127.1 + 3.7)*43758.5453); }
+float n1(float x){ float i = floor(x), f = fract(x); float u = f*f*(3.0-2.0*f); return mix(h1(i), h1(i+1.0), u); }
+void main(){
+  float u = vUV.x, v = vUV.y;
+  float side = 1.0 - smoothstep(0.55, 1.0, abs(v));
+  float head = smoothstep(0.0, 0.12, u);
+  float tail = 1.0 - smoothstep(0.62, 1.0, u)*0.9;
+  float s = vSeed*91.0;
+  float br = n1(v*6.0 + s), br2 = n1(v*19.0 + s*1.7);
+  float bristle = 0.50 + 0.32*br + 0.28*br2;
+  float dry = smoothstep(0.12, 0.5, n1(v*9.0 + s*2.3)*0.8 + 1.0 - u*0.95);
+  float a = clamp(vA*side*head*tail*bristle*dry, 0.0, 1.0);
+  vec3 c = vCol.rgb * (0.95 + 0.10*br2);
+  o = vec4(c*a, a);
+}`;
+
+const RAYS_FS = `#version 300 es
+precision highp float; uniform sampler2D uT; uniform sampler2D uAux; uniform vec2 uSun; uniform vec2 uInv; out vec4 o;
+void main(){ vec2 uv = gl_FragCoord.xy*uInv; vec2 stepv = (uSun - uv)/64.0*0.95; vec3 acc = vec3(0.0); float decay = 1.0; vec2 p = uv;
+  for (int i = 0; i < 64; i++) { p += stepv; float sky = 1.0 - step(0.05, texture(uAux, p).b); vec3 c = texture(uT, p).rgb;
+    float l = dot(c, vec3(0.3,0.59,0.11)); acc += c*smoothstep(0.70, 0.97, l)*sky*decay; decay *= 0.972; }
+  o = vec4(acc/64.0*2.4, 1.0); }`;
+const COPY_FS = `#version 300 es
+precision highp float; uniform sampler2D uT; out vec4 o;
+void main(){ o = texelFetch(uT, ivec2(gl_FragCoord.xy), 0); }`;
+const BRIGHT_FS = `#version 300 es
+precision highp float; uniform sampler2D uT; uniform vec2 uInv; out vec4 o;
+void main(){ vec2 uv = gl_FragCoord.xy*uInv; vec3 c = texture(uT, uv).rgb; float l = dot(c, vec3(0.3,0.59,0.11));
+  float k = smoothstep(0.80, 1.0, l); o = vec4(c*k, 1.0); }`;
+const BLUR_FS = `#version 300 es
+precision highp float; uniform sampler2D uT; uniform vec2 uDir; uniform vec2 uInv; out vec4 o;
+void main(){ vec2 uv = gl_FragCoord.xy*uInv; vec3 s = vec3(0.0); float wsum = 0.0;
+  for (int i = -8; i <= 8; i++) { float w = exp(-float(i*i)/24.0); s += texture(uT, uv + uDir*float(i)*uInv).rgb*w; wsum += w; }
+  o = vec4(s/wsum, 1.0); }`;
+function finalFS(clawdScr) {
+  const gA = CLAWD_WPX * 0.95, gB = CLAWD_WPX * 0.30;   // glow radii scale with his on-screen size
+  return `#version 300 es
+precision highp float;
+uniform sampler2D uCrisp, uPaint, uAux, uB1, uB2, uB3, uRays;
+out vec4 o;
+float hh(vec2 p){ uvec2 q = uvec2(ivec2(p)); uint h = q.x*0x8da6b343u ^ q.y*0xd8163841u; h ^= h >> 13u; h *= 0x5bd1e995u; h ^= h >> 15u; return float(h & 0xffffu)/65535.0; }
+void main(){
+  ivec2 ip = ivec2(gl_FragCoord.xy);
+  vec2 uv = gl_FragCoord.xy/vec2(${W}.0, ${H}.0);
+  vec3 crisp = texelFetch(uCrisp, ip, 0).rgb;
+  vec3 paint = texelFetch(uPaint, ip, 0).rgb;
+  vec4 aux = texelFetch(uAux, ip, 0);
+  vec3 c = mix(crisp, paint, ${PAINT ? 'aux.a' : '0.0'});
+  vec3 b = texture(uB1, uv).rgb*0.30 + texture(uB2, uv).rgb*0.35 + texture(uB3, uv).rgb*0.45;
+  c = 1.0 - (1.0 - c)*(1.0 - b*vec3(1.0, 0.86, 0.72)*0.55);
+  c += texture(uB1, uv).rgb*vec3(0.20, 0.06, 0.02);
+  vec3 rays = texture(uRays, uv).rgb * (1.0 - smoothstep(${f1(H * 0.40)}, ${f1(H * 0.52)}, ${H}.0 - gl_FragCoord.y)) * 0.75;
+  c = 1.0 - (1.0 - c)*(1.0 - rays*vec3(1.0, 0.78, 0.52)*1.05);
+  // Clawd's glow
+  vec2 sp = vec2(gl_FragCoord.x, ${H}.0 - gl_FragCoord.y);
+  vec2 d = (sp - vec2(${f1(clawdScr[0])}, ${f1(clawdScr[1])})) / vec2(1.25, 1.0);
+  float g = exp(-dot(d,d)/(2.0*${f1(gA)}*${f1(gA)}))*0.50 + exp(-dot(d,d)/(2.0*${f1(gB)}*${f1(gB)}))*0.40;
+  g *= 1.0 - 0.85*smoothstep(0.84, 0.88, aux.b)*(1.0 - smoothstep(0.93, 0.97, aux.b));   // glow around him, not over him
+  c = mix(c, c*vec3(1.10, 0.90, 0.78) + vec3(0.10, 0.035, 0.0), clamp(g*1.6, 0.0, 1.0));
+  c = 1.0 - (1.0 - c)*(1.0 - g*vec3(1.0, 0.62, 0.42)*0.6);
+  // grade: lift shadows toward lavender, warm the highlights
+  float l = dot(c, vec3(0.3,0.59,0.11));
+  c += vec3(0.010, 0.006, 0.020)*(1.0 - l);
+  c = mix(c, c*vec3(1.03, 1.0, 0.96), smoothstep(0.5, 1.0, l));
+  c = mix(c, c*c*(3.0 - 2.0*c), 0.55);
+  vec2 q = uv - 0.5; float vig = 1.0 - dot(q*vec2(1.0, 1.25), q*vec2(1.0, 1.25))*0.75 - smoothstep(0.22, 0.5, -q.y)*smoothstep(0.18, 0.5, abs(q.x))*0.30;
+  c *= mix(vec3(1.0), vec3(0.93, 0.9, 1.0), 1.0 - vig) * vig;
+  c = clamp((c - 0.045)/0.965, 0.0, 1.0);   // black point: let the deepest shadows reach near-ink
+  float wv = sin(gl_FragCoord.x*1.9)*sin(gl_FragCoord.y*1.9);
+  float weave = 1.0 + 0.012*wv*(0.6 + 0.4*hh(floor(gl_FragCoord.xy/3.0)));
+  float gr = (hh(gl_FragCoord.xy + 17.0) - 0.5)*0.035;
+  float onClawd = smoothstep(0.84, 0.88, aux.b)*(1.0 - smoothstep(0.93, 0.97, aux.b));
+  c = mix(c*weave + gr, c, onClawd*0.8);   // keep him crisp: no canvas weave or grain over his pixels
+  o = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`;
+}
+
+// ---------------------------------------------------------------- main
+function main() {
+  const gl = glSetup();
+  // --- meshes
+  const TB = buildTerrain();
+  lap('terrain (' + TSTAT.l0 + ' level-0 tris, levels ' + TSTAT.lev.join('/') + ', ' + TSTAT.facets + ' facets)');
+  const gh = heightIndex(TB, -60, 160, 10, 420, 2.0);
+  const WB = buildWater();
+  const PB = buildProps(gh);
+  const CK = buildClawd3D();
+  const CB = buildClouds();
+  lap('water ' + WB.n + ', props ' + PB.n + ', clouds ' + CB.n + ' tris');
+  const mT = upload(gl, TB), mW = upload(gl, WB), mP = upload(gl, PB), mC = upload(gl, CB), mSky = uploadSky(gl);
+  const mK = upload(gl, CK.B);
+  gl.bindVertexArray(mK.vao);
+  { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, CK.AO, gl.STATIC_DRAW); gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, 0, 0); }
+  gl.bindVertexArray(null);
+  gl.vertexAttrib1f(4, 1.0);   // every other mesh reads AO = 1
+  log('clawd ' + CK.B.n + ' tris, ' + CLAWD_WPX.toFixed(0) + ' px wide');
+
+  // --- shadow maps
+  const pSh = prog(gl, SHADOW_VS, SHADOW_FS);
+  const casc = [
+    { ...fitCascade(-32, 44, -3, 12, 14, 86, 60), size: 4096 },
+    { ...fitCascade(-90, 150, -4, 40, 60, 420, 200), size: 4096 },
+    { ...fitCascade(-1100, 1400, -5, 260, 300, 3400, 600), size: 2048 },
+  ];
+  casc.forEach(cs => {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, cs.size, cs.size);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+    const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, t, 0);
+    gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
+    const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (st !== gl.FRAMEBUFFER_COMPLETE) throw new Error('shadow fbo ' + st);
+    gl.viewport(0, 0, cs.size, cs.size);
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1.5, 3.0);
+    gl.useProgram(pSh);
+    gl.uniform3fv(U(gl, pSh, 'uLC'), cs.c); gl.uniform3fv(U(gl, pSh, 'uLE'), cs.e);
+    gl.uniform3fv(U(gl, pSh, 'uLX'), LX); gl.uniform3fv(U(gl, pSh, 'uLY'), LY); gl.uniform3fv(U(gl, pSh, 'uLZ'), LZ);
+    [mT, mP, mK].forEach(m => { gl.bindVertexArray(m.vao); gl.drawArrays(gl.TRIANGLES, 0, m.count); });
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+    cs.tex = t;
+  });
+  gl.bindVertexArray(null);
+  lap('shadow maps');
+
+  // --- wall ground profiles
+  const WN = 512, wallData = new Float32Array(WN * 2);
+  for (let i = 0; i < WN; i++) { const z = (i + 0.5) / WN * 200; wallData[i] = gh(XL, z); wallData[WN + i] = gh(XR, z); }
+  const tWall = tex(gl, WN, 2, gl.R32F, gl.RED, gl.FLOAT, gl.NEAREST, wallData);
+
+  // --- main program + uniforms
+  const pMain = prog(gl, MAIN_VS, MAIN_FS);
+  lap('main compiled');
+  gl.useProgram(pMain);
+  gl.uniform3fv(U(gl, pMain, 'uCam'), CAM); gl.uniform3fv(U(gl, pMain, 'uFwd'), FWD); gl.uniform3fv(U(gl, pMain, 'uRight'), RIGHT); gl.uniform3fv(U(gl, pMain, 'uUp'), UP);
+  gl.uniform1f(U(gl, pMain, 'uF'), FOC);
+  gl.uniform3fv(U(gl, pMain, 'uLX'), LX); gl.uniform3fv(U(gl, pMain, 'uLY'), LY); gl.uniform3fv(U(gl, pMain, 'uLZ'), LZ);
+  casc.forEach((cs, i) => { gl.uniform3fv(U(gl, pMain, 'uLC' + i), cs.c); gl.uniform3fv(U(gl, pMain, 'uLE' + i), cs.e); });
+  gl.uniform3fv(U(gl, pMain, 'uLB'), [0.06 / (2 * casc[0].e[2]), 0.2 / (2 * casc[1].e[2]), 4.0 / (2 * casc[2].e[2])]);
+  gl.uniform1i(U(gl, pMain, 'uDbg'), DBG);
+  const bindMainTex = () => {
+    casc.forEach((cs, i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, cs.tex); gl.uniform1i(U(gl, pMain, 'uSh' + i), i); });
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, tWall); gl.uniform1i(U(gl, pMain, 'uWall'), 3);
+  };
+  const drawKind = (m, kind) => { gl.uniform1i(U(gl, pMain, 'uKind'), kind); gl.bindVertexArray(m.vao); gl.drawArrays(gl.TRIANGLES, 0, m.count); };
+
+  // --- reflection pass (mirrored scene, linear HDR, 1x)
+  const tRefl = tex(gl, W, H, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
+  const fRefl = fbo(gl, [tRefl], depthRB(gl, W, H));
+  const tDummy = tex(gl, 1, 1, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
+  gl.viewport(0, 0, W, H);
+  gl.clearColor(0, 0, 0, 1); gl.clearDepth(1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  bindMainTex();
+  gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, tDummy); gl.uniform1i(U(gl, pMain, 'uRefl'), 4);
+  gl.uniform2f(U(gl, pMain, 'uRes'), W, H);
+  gl.uniform1i(U(gl, pMain, 'uMirror'), 1); gl.uniform1i(U(gl, pMain, 'uRaw'), 1);
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false); drawKind(mSky, 4);
+  gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LESS);
+  drawKind(mT, 0); drawKind(mP, 2); drawKind(mK, 5); drawKind(mC, 3);
+  lap('reflection');
+
+  // --- scene pass at SS
+  const SW = W * SS, SH = H * SS;
+  const tC = tex(gl, SW, SH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
+  const tX = tex(gl, SW, SH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
+  const fScene = fbo(gl, [tC, tX], depthRB(gl, SW, SH));
+  gl.viewport(0, 0, SW, SH);
+  gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(pMain); bindMainTex();
+  gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, tRefl); gl.uniform1i(U(gl, pMain, 'uRefl'), 4);
+  gl.uniform2f(U(gl, pMain, 'uRes'), SW, SH);
+  gl.uniform1i(U(gl, pMain, 'uMirror'), 0); gl.uniform1i(U(gl, pMain, 'uRaw'), 0);
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false); drawKind(mSky, 4);
+  gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+  drawKind(mT, 0); drawKind(mP, 2); drawKind(mK, 5); drawKind(mW, 1); drawKind(mC, 3);
+  gl.disable(gl.DEPTH_TEST);
+  gl.bindVertexArray(null);
+  const px1 = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px1);
+  lap('scene rendered, lost=' + gl.isContextLost() + ' err=' + gl.getError());
+
+  // --- downsample to 1x
+  const tC1 = tex(gl, W, H, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR);
+  const tX1 = tex(gl, W, H, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
+  const fDown = fbo(gl, [tC1, tX1]);
+  const pDown = prog(gl, VS_FULL, DOWN_FS);
+  gl.useProgram(pDown); gl.viewport(0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tC); gl.uniform1i(U(gl, pDown, 'uA'), 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tX); gl.uniform1i(U(gl, pDown, 'uB'), 1);
+  gl.uniform1i(U(gl, pDown, 'uS'), SS);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const img = readRGBA8(gl, W, H, 0);
+  const aux = readRGBA8(gl, W, H, 1);
+  lap('readback');
+
+  // --- painterly strokes
+  const tPaint = tex(gl, W, H, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR);
+  const fPaint = fbo(gl, [tPaint]);
+  const pCopy = prog(gl, VS_FULL, COPY_FS);
+  gl.useProgram(pCopy); gl.viewport(0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tC1); gl.uniform1i(U(gl, pCopy, 'uT'), 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  if (PAINT) {
+    const S = buildStrokes(img, aux);
+    lap('strokes built (' + S.nStrokes + ' strokes, ' + (S.idx.length / 3) + ' tris)');
+    const pStroke = prog(gl, STROKE_VS, STROKE_FS);
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, S.verts, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 24, 0);
+    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 24, 8);
+    gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 24, 16);
+    const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, S.cols, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.UNSIGNED_BYTE, true, 4, 0);
+    const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, S.idx, gl.STATIC_DRAW);
+    gl.useProgram(pStroke);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fPaint);
+    const CH = 300000 * 3;
+    for (let o = 0; o < S.idx.length; o += CH) { gl.drawElements(gl.TRIANGLES, Math.min(CH, S.idx.length - o), gl.UNSIGNED_INT, o * 4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px1); }
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(null);
+    lap('strokes drawn');
+  }
+
+  // --- post
+  const cl = project([CLAWD[0], CLAWD[1] + CLAWD_H * 0.5, CLAWD[2]]);   // his visual centre
+  const tComb = tex(gl, W, H, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR);
+  const fComb = fbo(gl, [tComb]);
+  const mk = (w, h) => { const t = tex(gl, w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR); return { t, f: fbo(gl, [t]), w, h }; };
+  const b1 = mk(W / 2, H / 2), b1t = mk(W / 2, H / 2), b2 = mk(W / 4, H / 4), b2t = mk(W / 4, H / 4), b3 = mk(W / 8, H / 8), b3t = mk(W / 8, H / 8);
+  const pBright = prog(gl, VS_FULL, BRIGHT_FS), pBlur = prog(gl, VS_FULL, BLUR_FS);
+  const pass = (p, target, srcTex, set) => { gl.bindFramebuffer(gl.FRAMEBUFFER, target.f); gl.viewport(0, 0, target.w, target.h); gl.useProgram(p); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, srcTex); gl.uniform1i(U(gl, p, 'uT'), 0); gl.uniform2f(U(gl, p, 'uInv'), 1 / target.w, 1 / target.h); if (set) set(p); gl.drawArrays(gl.TRIANGLES, 0, 3); };
+  const blur = (a, tmp, scale) => { pass(pBlur, tmp, a.t, p => gl.uniform2f(U(gl, p, 'uDir'), scale, 0)); pass(pBlur, a, tmp.t, p => gl.uniform2f(U(gl, p, 'uDir'), 0, scale)); };
+  pass(pBright, b1, tPaint); blur(b1, b1t, 1.0);
+  pass(pBright, b2, b1.t); blur(b2, b2t, 1.5); blur(b2, b2t, 1.5);
+  pass(pBright, b3, b2.t); blur(b3, b3t, 2.0); blur(b3, b3t, 2.0);
+  const sunScr = [W / 2 + FOC * v3.dot(SUN, RIGHT) / v3.dot(SUN, FWD), H / 2 - FOC * v3.dot(SUN, UP) / v3.dot(SUN, FWD)];
+  log('sun at ' + sunScr.map(v => v.toFixed(0)).join(',') + '  clawd at ' + cl.slice(0, 2).map(v => v.toFixed(0)).join(','));
+  const rays = mk(W / 2, H / 2);
+  const pRays = prog(gl, VS_FULL, RAYS_FS);
+  pass(pRays, rays, tPaint, p => { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tX1); gl.uniform1i(U(gl, p, 'uAux'), 1); gl.uniform2f(U(gl, p, 'uSun'), sunScr[0] / W, 1 - sunScr[1] / H); });
+  const pFinal = prog(gl, VS_FULL, finalFS(cl));
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fComb); gl.viewport(0, 0, W, H); gl.useProgram(pFinal);
+  const bindT = (unit, t, name) => { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(U(gl, pFinal, name), unit); };
+  bindT(0, tC1, 'uCrisp'); bindT(1, tPaint, 'uPaint'); bindT(2, tX1, 'uAux'); bindT(3, b1.t, 'uB1'); bindT(4, b2.t, 'uB2'); bindT(5, b3.t, 'uB3'); bindT(6, rays.t, 'uRays');
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const fin = readRGBA8(gl, W, H, 0);
+  lap('post');
+
+  // --- 2D: final image, motes, sparse HUD (Clawd is in the 3D scene now)
+  const out = document.getElementById('out');
+  const ctx = out.getContext('2d');
+  const id = ctx.createImageData(W, H); id.data.set(fin); ctx.putImageData(id, 0, 0);
+  drawMotes(ctx, cl, aux);
+  drawHUD(ctx);
+  if (Q.get('dump') === '1') document.getElementById('png').textContent = out.toDataURL('image/png');
+  lap('done');
+}
+
+function drawMotes(ctx, cl, aux) {
+  const R = mulberry32(777);
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  let n = 0, tries = 0;
+  while (n < 70 && tries < 5000) {
+    tries++;
+    const x = cl[0] + (R() - 0.5) * 1100, y = cl[1] - 40 + (R() - 0.62) * 420;
+    if (x < 0 || x >= W || y < 0 || y >= H) continue;
+    if (Math.abs(x - cl[0]) < CLAWD_WPX * 0.5 + 10 && Math.abs(y - cl[1]) < CLAWD_WPX * 0.28 + 10) continue;   // never over Clawd
+    const i = ((y | 0) * W + (x | 0)) * 4;
+    const learned = aux[i] / 255;
+    if (R() > learned * 0.9 + 0.04) continue;
+    const d = Math.hypot((x - cl[0]) / 1.4, y - cl[1]);
+    if (R() < d / 700) continue;
+    const r = 1.1 + 2.6 * Math.pow(R(), 2.0);
+    const a = 0.25 + 0.45 * R();
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r * 3.2);
+    g.addColorStop(0, `rgba(255,240,208,${a})`);
+    g.addColorStop(0.35, `rgba(255,222,170,${a * 0.45})`);
+    g.addColorStop(1, 'rgba(255,210,160,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 3.2, 0, Math.PI * 2); ctx.fill();
+    n++;
+  }
+  ctx.restore();
+}
+function drawHUD(ctx) {
+  ctx.save();
+  ctx.font = '500 15px Consolas, "Cascadia Mono", "Courier New", monospace';
+  ctx.textBaseline = 'top';
+  try { ctx.letterSpacing = '1.5px'; } catch (e) { }
+  const rows = [['EPISODE', '048 213'], ['REWARD', '+0.847'], ['STEP', '1 204 / 2 000']];
+  const x = 64, y = 56;
+  ctx.fillStyle = 'rgba(245,240,232,0.50)';
+  rows.forEach((r, i) => ctx.fillText(r[0], x, y + i * 22));
+  ctx.fillStyle = 'rgba(245,240,232,0.86)';
+  rows.forEach((r, i) => ctx.fillText(r[1], x + 96, y + i * 22));
+  ctx.restore();
+}
+
+try { main(); } catch (e) {
+  const el = document.getElementById('log'); el.style.display = 'block';
+  LOG.push('ERROR: ' + (e && e.stack ? e.stack : e));
+}
+document.getElementById('log').textContent = LOG.join('\n');
+</script>
+</body></html>

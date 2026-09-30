@@ -1,0 +1,215 @@
+
+// ================================================================ RUNG 5: LIGHT
+// The lit scene becomes a dim ghost; its surfaces are re-drawn as ~300k additive
+// motes sampled from the render (dense on silhouettes, sparse inside), which lift
+// and drift outward the closer they are to Clawd. The grid glows as threads of
+// light. Clawd is the spark: the ladder's 11-ray burst, eyes kept, the new sun.
+const GHOST_FS = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uCol, uAux; uniform vec2 uRes; uniform vec3 uSpark;
+out vec4 o;
+float edgeAt(ivec2 q) {
+  vec4 a = texelFetch(uAux, q, 0);
+  float e = 0.0;
+  for (int k = 0; k < 8; k++) {
+    float an = float(k) * 0.785398;
+    ivec2 d = ivec2(round(vec2(cos(an), sin(an)) * 2.0));
+    vec4 b = texelFetch(uAux, q + d, 0);
+    if (abs(floor(b.x) - floor(a.x)) > 0.5 || abs(b.y - a.y) > 0.08 * min(a.y, b.y)) e += 0.125;
+  }
+  return e;
+}
+void main() {
+  ivec2 q = ivec2(gl_FragCoord.xy);
+  vec3 c = texelFetch(uCol, q, 0).rgb;
+  vec4 a = texelFetch(uAux, q, 0);
+  int mat = int(floor(a.x));
+  vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  if (mat == 0) { o = vec4(c, 1.0); return; }
+  float e = edgeAt(q);
+  float ds = length((px - uSpark.xy) / vec2(1.0, 0.8));
+  float dis = smoothstep(900.0, 120.0, ds);          // how far this point has dissolved
+  float ghost = mat == 11 ? 0.55 : 0.2;
+  vec3 g = c * ghost * (1.0 - 0.6 * dis);
+  g += c * e * (1.6 - dis) * 1.2;                    // silhouettes glow
+  o = vec4(g, 1.0);
+}`;
+const MOTE_VS = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uCol, uAux;
+uniform vec2 uRes, uGrid; uniform float uLayer, uSize; uniform vec3 uSpark;
+out vec3 vCol; out vec2 vUV; out float vA; out vec2 vStreak;
+float h1(float n) { return fract(sin(n * 12.9898 + uLayer * 78.233) * 43758.5453); }
+void main() {
+  int id = gl_InstanceID;
+  int gx = int(uGrid.x);
+  vec2 cs = uRes / uGrid;
+  float fid = float(id);
+  vec2 p = (vec2(float(id % gx), float(id / gx)) + vec2(h1(fid * 1.37), h1(fid * 2.71 + 5.0))) * cs;
+  vec4 a = texelFetch(uAux, ivec2(p), 0);
+  int mat = int(floor(a.x));
+  vec3 c = texelFetch(uCol, ivec2(p), 0).rgb;
+  float alive = mat == 0 ? 0.0 : 1.0;
+  // silhouettes: keep more motes where the material or depth changes nearby
+  float e = 0.0;
+  for (int k = 0; k < 6; k++) {
+    float an = float(k) * 1.0472 + h1(fid) * 3.0;
+    vec4 b = texelFetch(uAux, ivec2(p + vec2(cos(an), sin(an)) * 3.0), 0);
+    if (abs(floor(b.x) - floor(a.x)) > 0.5 || abs(b.y - a.y) > 0.08 * min(a.y, b.y)) e = 1.0;
+  }
+  float keep = mat == 11 ? 0.45 : (mat == 2 ? 0.22 : 0.55);
+  if (h1(fid * 3.9) > keep + e * 0.6) alive = 0.0;
+  if (mat == 10) alive = 0.0;
+  // screen y is up in GL; the spark is given in y-down pixels
+  vec2 sp = vec2(uSpark.x, uRes.y - uSpark.y);
+  vec2 away = p - sp; float ds = length(away / vec2(1.0, 0.8));
+  float dis = smoothstep(1000.0, 100.0, ds) * (0.4 + 0.6 * h1(fid * 6.1));
+  vec2 drift = normalize(away + vec2(0.0, 1e-3)) * 0.6 + vec2(0.0, 1.0);
+  float lift = dis * dis * (40.0 + 160.0 * h1(fid * 7.7));
+  vec2 pos0 = p + drift * lift;
+  float sz = uSize * (0.6 + 0.9 * h1(fid * 4.3)) * (1.0 + e * 0.5);
+  vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;
+  // motes that travel leave a short streak along their drift
+  vec2 sdir = normalize(drift);
+  float slen = 1.0 + lift * 0.06;
+  vec2 off = sdir * corner.y * sz * slen + vec2(-sdir.y, sdir.x) * corner.x * sz;
+  vec3 col = c * (1.8 + 1.6 * e) + vec3(0.25, 0.14, 0.06) * dis;
+  if (mat == 11) col = c * 1.3;
+  vCol = col; vUV = corner; vA = alive * (0.55 + 0.45 * h1(fid * 8.3)); vStreak = vec2(slen, 0.0);
+  gl_Position = vec4((pos0 + off) / uRes * 2.0 - 1.0, 0.0, 1.0);
+}`;
+const MOTE_FS = `#version 300 es
+precision highp float;
+in vec3 vCol; in vec2 vUV; in float vA; in vec2 vStreak;
+out vec4 o;
+void main() {
+  if (vA <= 0.0) discard;
+  float r = length(vec2(vUV.x, vUV.y));
+  float a = exp(-r * r * 3.2) * vA;
+  o = vec4(vCol * a, a);
+}`;
+const SPARK_FS = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uBase; uniform vec2 uRes; uniform vec3 uSpark; uniform float uU;
+out vec4 o;
+float sdRoundBox(vec2 p, vec2 c, vec2 hb, float r) { vec2 q = abs(p - c) - hb + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
+float smin(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
+float sdRay(vec2 p, vec2 a, vec2 b, float ra, float rb) {
+  p -= a; b -= a;
+  float h = dot(b, b);
+  vec2 q = vec2(dot(p, vec2(b.y, -b.x)), dot(p, b)) / h;
+  q.x = abs(q.x);
+  float bb = ra - rb; vec2 c = vec2(sqrt(max(h - bb * bb, 1e-6)), bb);
+  float k = c.x * q.y - c.y * q.x, m = dot(c, q), n = dot(q, q);
+  if (k < 0.0) return sqrt(h * n) - ra;
+  if (k > c.x) return sqrt(h * (n + 1.0 - 2.0 * q.y)) - rb;
+  return m - ra;
+}
+// the ladder's spark: 11 rays mapped onto Clawd's limbs, fully radiated (t = 1)
+const float RA[11] = float[11](0.0, 47.0, 63.0, 116.0, 133.0, 180.0, -151.0, -121.0, -92.0, -61.0, -31.0);
+const float RL[11] = float[11](8.3, 7.0, 7.9, 7.5, 6.6, 8.7, 6.2, 7.8, 8.9, 7.1, 6.6);
+const float RW[11] = float[11](0.8, 0.62, 0.66, 0.64, 0.6, 0.8, 0.66, 0.72, 0.76, 0.7, 0.66);
+float burst(vec2 p) {
+  vec2 cen = vec2(9.0, 4.6);
+  float d = 1e9;
+  for (int i = 0; i < 11; i++) {
+    float th = radians(RA[i]);
+    vec2 dir = vec2(cos(th), sin(th));
+    d = smin(d, sdRay(p, cen, cen + dir * RL[i], RW[i] * 1.17, 0.26), 0.35);
+  }
+  return d;
+}
+void main() {
+  vec3 base = texelFetch(uBase, ivec2(gl_FragCoord.xy), 0).rgb;
+  vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  float U = uU;
+  vec2 g = (px - vec2(uSpark.x, uSpark.y)) / U + vec2(9.0, 4.6);   // glyph units, centred on the burst
+  vec2 cen = vec2(9.0, 4.6);
+  float rays = burst(g);
+  float core = sdRoundBox(g, cen, vec2(1.9, 1.35), 1.2);
+  float eye = min(sdRoundBox(g, cen + vec2(-1.0, -0.1), vec2(0.21, 0.44), 0.2), sdRoundBox(g, cen + vec2(1.0, -0.1), vec2(0.21, 0.44), 0.2));
+  float d = max(smin(rays, core, 0.8), -eye);
+  float cov = clamp(0.5 - d * U, 0.0, 1.0);
+  float r = length((g - cen) * vec2(1.0, 1.1));
+  vec3 hot = vec3(1.0, 0.86, 0.72) * 2.4, orange = vec3(0.69, 0.184, 0.098) * 2.2, ember = vec3(0.55, 0.12, 0.06) * 1.6;
+  vec3 sc = mix(hot, orange, smoothstep(1.2, 4.2, r));
+  sc = mix(sc, ember, smoothstep(5.5, 9.0, r) * 0.6);
+  // light around it: a soft corona and faint long rays along the burst directions
+  float corona = exp(-r * r / 40.0) * 0.9 + exp(-r / 9.0) * 0.35;
+  float beams = 0.0;
+  for (int i = 0; i < 11; i++) {
+    float th = radians(RA[i]);
+    vec2 dir = vec2(cos(th), sin(th));
+    vec2 v = g - cen;
+    float along = dot(v, dir), across = abs(v.x * dir.y - v.y * dir.x);
+    if (along > 0.0) beams += exp(-across * across / (0.35 + along * 0.08)) * exp(-along / 26.0) * 0.5;
+  }
+  vec3 col = base + vec3(1.0, 0.62, 0.4) * (corona + beams) * 0.9;
+  col = mix(col, sc, cov);
+  // the eyes stay: two dark slits in the white-hot core
+  float eyeCov = clamp(0.5 - eye * U, 0.0, 1.0) * step(core, 0.3);
+  col = mix(col, vec3(0.45, 0.14, 0.08), eyeCov * 0.85);
+  o = vec4(col, 1.0);
+}`;
+const SKY5_FS = opt => COMMON(opt) + `
+uniform sampler2D uCol, uAux;
+out vec4 o;
+void main() {
+  ivec2 q = ivec2(gl_FragCoord.xy);
+  vec4 a = texelFetch(uAux, q, 0);
+  vec3 c = texelFetch(uCol, q, 0).rgb;
+  if (floor(a.x) > 0.5) { o = vec4(c, 1.0); return; }
+  vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  vec3 rd = normalize(vec3((px.x - 960.0) / F, (CY - px.y) / F, 1.0));
+  float el; float g = domeLines(rd, el);
+  // the grid becomes threads of light, brighter where it crosses itself
+  vec3 oc = CAM - DOME_C; float b = dot(oc, rd); float cc = dot(oc, oc) - DOME_R * DOME_R;
+  float t = -b + sqrt(max(b * b - cc, 0.0));
+  vec3 dq = (CAM + rd * t - DOME_C) / DOME_R;
+  float az = atan(dq.x, dq.z), stp = radians(10.0);
+  vec2 f = abs(fract(vec2(az / stp, el / stp) + 0.5) - 0.5) * stp;
+  float node = exp(-dot(f, f) / (2.0 * pow(PIXANG() * 3.0, 2.0)));
+  vec3 thread = vec3(1.0, 0.8, 0.62);
+  c += thread * (g * 0.22 + node * 0.9) * smoothstep(0.0, 0.05, el);
+  o = vec4(c, 1.0);
+}`;
+function rung5() {
+  const opt = { lowpoly: false, clawd3d: false, leafNoise: true, pal: 5, gridAlpha: 0.0, floorGrid: 0.8, fog: 0.02, auraK: 0.0 };
+  const col = tex(W, H, 'f16'), aux = tex(W, H, 'f32');
+  const fb = fbo([col, aux]);
+  const prog = compile(LIT_FS(opt), 'lit5');
+  timed('scene', () => runTiled(prog, fb, { uSS: 1 }, { uPl: plTex, uPm: pmTex }, 8));
+  const cp = project([CLAWD.x, CLAWD.y, CLAWD.z]);
+  const spark = [cp[0], cp[1] - 5 * 8 - 6, 0];
+  // sky with glowing grid
+  const sky = tex(W, H, 'f16'), fsk = fbo([sky]);
+  run(compile(SKY5_FS(opt), 'sky5'), fsk, {}, { uCol: col, uAux: aux });
+  // ghost of the world
+  const gh = tex(W, H, 'f16'), fg = fbo([gh]);
+  run(compile(GHOST_FS, 'ghost'), fg, { uSpark: spark }, { uCol: sky, uAux: aux });
+  // motes
+  const mprog = compile(MOTE_FS, 'mote', MOTE_VS);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fg);
+  gl.viewport(0, 0, W, H);
+  gl.useProgram(mprog);
+  gl.disableVertexAttribArray(0);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+  let n = 0;
+  for (const L of [{ cell: 3.2, size: 1.3, seed: 1 }, { cell: 7, size: 2.2, seed: 2 }, { cell: 16, size: 3.6, seed: 3 }]) {
+    const gx = Math.round(W / L.cell), gy = Math.round(H / L.cell);
+    bindUniforms(mprog, { uRes: [W, H], uGrid: [gx, gy], uLayer: L.seed, uSize: L.size, uSpark: spark }, { uCol: col, uAux: aux });
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, gx * gy);
+    n += gx * gy;
+  }
+  gl.disable(gl.BLEND);
+  gl.enableVertexAttribArray(0);
+  TIMES.motes = n;
+  // the spark
+  const sp = tex(W, H, 'f16'), fsp = fbo([sp]);
+  run(compile(SPARK_FS, 'spark'), fsp, { uSpark: spark, uU: 11 }, { uBase: gh });
+  const bl = timed('bloom', () => bloomChain(sp, 0.7, [[4, 5], [16, 10]]));
+  const fin = compile(FINISH_FS, 'finish5');
+  run(fin, null, { uBloom1: 0.5, uBloom2: 0.8, uVig: 0.3, uGrain: 0.02, uExposure: 1.0 }, { uCol: sp, uB1: bl[0], uB2: bl[1] });
+  gl.finish();
+  blitToCanvas();
+}

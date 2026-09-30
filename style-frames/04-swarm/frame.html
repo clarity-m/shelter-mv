@@ -1,0 +1,985 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Shelter MV style frame 04: the swarm</title>
+<style>
+html,body{margin:0;padding:0;background:#000;overflow:hidden;width:1920px;height:1080px}
+canvas{display:block;position:absolute;left:0;top:0}
+#dbg{display:none}
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<pre id="dbg"></pre>
+<script>
+'use strict';
+// =====================================================================
+// Shelter MV, style frame 04: "the swarm".
+// Final pull-back: a Dyson swarm around Alpha Centauri B (orange K dwarf).
+// Alpha Centauri A hangs in the distance as a second, brighter star.
+// Light escaping through lanes in the swarm draws an 11-ray spark in
+// negative space. Deterministic: seeded PRNG and hash noise only.
+// Pipeline (WebGL2, HDR half-float):
+//   nebula density -> underpainting -> brushstrokes -> stars ->
+//   swarm shell (analytic, 4x AA) -> collectors (1-2 px crisp points) ->
+//   Alpha Cen A -> bloom -> tonemap, grade, canvas weave, grain.
+// =====================================================================
+const DBG = [];
+function log(s){ DBG.push(String(s)); const el = document.getElementById('dbg'); if (el) el.textContent = DBG.join('\n'); }
+window.addEventListener('error', e => log('JSERR ' + e.message + ' @' + e.lineno + ':' + e.colno));
+const T0 = performance.now();
+const QS = new URLSearchParams(location.search);
+const VIEW = QS.get('view') || 'final';
+
+const W = 1920, H = 1080;
+const P = {
+  seed: 20260927,
+  C: [1000, 470], RS: 272,         // swarm centre and shell radius (px)
+  A: [352, 226],                   // Alpha Centauri A (px)
+  laneW: 1.0,                      // lane width multiplier
+  base: 0.05,                      // base shell optical depth (between bands)
+  kabs: 1.4,                       // optical depth -> transmittance
+  rStar: 0.034, ocR: 0.08,         // star radius, central opening (shell units)
+  ember:  [0.32, 0.062, 0.026],    // near-side collector backs (diffuse)
+  gold:   [1.50, 0.560, 0.180],    // far-side lit faces (diffuse)
+  inner:  [1.70, 0.640, 0.220],    // light scattered inside the shell
+  starC:  [9.0, 5.4, 2.7],         // Alpha Cen B photosphere
+  ringF:  [0.16, 0.035, 0.018],     // outer rings, near arcs (backlit)
+  ringB:  [1.00, 0.420, 0.150],     // outer rings, far arcs (lit)
+  emberPt:[1.00, 0.36, 0.130],     // collector points, near side
+  goldPt: [1.00, 0.62, 0.300],     // collector points, far side
+  ptB: 0.06, ptBig: 0.40,          // point brightness scale, 2px threshold
+  nInner: 260000, nBase: 12000, nOuter: 16000, nDrift: 11000,
+  exposure: 1.0, bloom: 0.60,
+};
+const CX = P.C[0], CY = P.C[1], RS = P.RS;
+
+// ---------------------------------------------------------------- random
+function mulberry32(a){ return function(){ a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function gaussOf(r){ let u = 0; while (u === 0) u = r(); const v = r(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+function smoothstep(a, b, x){ const t = Math.min(Math.max((x-a)/(b-a), 0), 1); return t*t*(3-2*t); }
+function makeNoise1D(r, n){ // periodic value noise with n cells
+  const v = new Float32Array(n); for (let i = 0; i < n; i++) v[i] = r();
+  return function(x){ const i0 = Math.floor(x), f = x - i0; const a = v[((i0 % n) + n) % n], b = v[(((i0+1) % n) + n) % n]; const t = f*f*(3-2*f); return a + (b-a)*t; };
+}
+
+// ---------------------------------------------------------------- lanes (the spark)
+const lanes = [];
+{
+  const r = mulberry32(9127);
+  const N = 11, rot = -Math.PI/2 + 0.17;
+  for (let k = 0; k < N; k++){
+    lanes.push({ ang: rot + k*2*Math.PI/N + (r()-0.5)*0.34, s: 0.65 + r()*0.7, L: 1.75 + r()*1.15, I: 0.5 + r()*0.5 });
+  }
+}
+const laneArr = new Float32Array(48);
+lanes.forEach((l, k) => laneArr.set([l.ang, l.s, l.L, l.I], k*4));
+function laneOpenJS(sx, sy){
+  const rho = Math.hypot(sx, sy); let op = 0;
+  for (const L of lanes){
+    const dx = Math.cos(L.ang), dy = Math.sin(L.ang);
+    const al = sx*dx + sy*dy; if (al <= -0.02) continue;
+    const pe = Math.abs(sx*dy - sy*dx);
+    const hw = (6.0 + 13.0*Math.pow(Math.max(1-rho, 0), 1.6))*L.s*P.laneW/RS;
+    const q = pe/hw; op = Math.max(op, Math.exp(-q*q*q*q));
+  }
+  return Math.max(op, 1 - smoothstep(P.ocR*0.6, P.ocR, rho));
+}
+
+// ---------------------------------------------------------------- swarm bands
+// inner bands: zones of the shell around great circles (alpha tilt, theta position angle)
+// outer rings: flat annuli (Saturn-like) at larger radii
+const NB = 40, NU = 512, NL = 512;
+// Most rings are "cradle" rings: their near arcs pass under the star, like cupped fingers.
+const INNER = [], OUTER = [];
+{
+  const r = mulberry32(2718);
+  for (let i = 0; i < 21; i++){
+    const cradle = r() < 0.72;
+    INNER.push([25 + 62*r(), cradle ? gaussOf(r)*42 : r()*360, 0.02 + 0.06*Math.pow(r(), 1.3), 0.955 + 0.09*r(), 0.8 + 0.6*r()]);
+  }
+  for (let i = 0; i < 3; i++){
+    const rin = 1.14 + 0.62*r();
+    OUTER.push([55 + 30*r(), r()*360, rin, rin + 0.015 + 0.03*r(), 0.10 + 0.14*r()]);
+  }
+}
+const bands = [];
+const profU = new Float32Array(NU*NB), profL = new Float32Array(NL*NB);
+const uBN = new Float32Array(NB*4), uBE = new Float32Array(NB*4), uBP = new Float32Array(NB*4);
+{
+  const r = mulberry32(31337);
+  const nrm = v => { const l = Math.hypot(v[0], v[1], v[2]); return [v[0]/l, v[1]/l, v[2]/l]; };
+  const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  function frame(alpha, theta){
+    const a = alpha*Math.PI/180, t = theta*Math.PI/180;
+    const n = nrm([Math.sin(a)*Math.sin(t), -Math.sin(a)*Math.cos(t), Math.cos(a)]);
+    let e1 = [-n[1], n[0], 0]; if (Math.hypot(e1[0], e1[1]) < 1e-6) e1 = [1, 0, 0]; e1 = nrm(e1);
+    const b = r()*Math.PI*2, e2 = cross(n, e1);
+    e1 = nrm([e1[0]*Math.cos(b) + e2[0]*Math.sin(b), e1[1]*Math.cos(b) + e2[1]*Math.sin(b), e1[2]*Math.cos(b) + e2[2]*Math.sin(b)]);
+    return { n, e1, e2: cross(n, e1) };
+  }
+  function genInnerU(){
+    const arr = new Float32Array(NU);
+    const K = 6 + Math.floor(r()*9), rl = [];
+    for (let i = 0; i < K; i++) rl.push([r()*1.8-0.9, 0.012 + Math.pow(r(), 2.0)*0.10, 0.3 + r()*0.7]);
+    const G = 2 + Math.floor(r()*3), gp = [];
+    for (let i = 0; i < G; i++) gp.push([r()*1.6-0.8, 0.01 + r()*0.05]);
+    const n1 = makeNoise1D(r, 64), n2 = makeNoise1D(r, 257);
+    for (let i = 0; i < NU; i++){
+      const u = (i+0.5)/NU*2-1;
+      let v = 0.05;
+      for (const [c, w, a] of rl){ const d = (u-c)/w; v += a*Math.exp(-d*d); }
+      for (const [c, w] of gp){ const d = (u-c)/w; v *= 1 - 0.92*Math.exp(-d*d*d*d); }
+      v *= 0.7 + 0.6*n1(i/NU*12);
+      v *= 0.78 + 0.44*n2(i/NU*90);
+      v *= smoothstep(1.0, 0.8, Math.abs(u));
+      arr[i] = v;
+    }
+    let mx = 0; for (let i = 0; i < NU; i++) mx = Math.max(mx, arr[i]);
+    for (let i = 0; i < NU; i++) arr[i] /= mx;
+    return arr;
+  }
+  function genOuterU(){
+    const arr = new Float32Array(NU);
+    const n1 = makeNoise1D(r, 32), n2 = makeNoise1D(r, 300);
+    const K = 5 + Math.floor(r()*6), rl = [];
+    for (let i = 0; i < K; i++) rl.push([r(), 0.005 + Math.pow(r(), 2)*0.05, 0.3 + r()*0.7]);
+    const gc = 0.45 + r()*0.25, gw = 0.03 + r()*0.03;
+    for (let i = 0; i < NU; i++){
+      const u = (i+0.5)/NU;
+      let v = 0.25 + 0.55*n1(u*8);
+      for (const [c, w, a] of rl){ const d = (u-c)/w; v += a*Math.exp(-d*d); }
+      v *= 0.7 + 0.6*n2(u*300);
+      const dg = (u-gc)/gw; v *= 1 - 0.9*Math.exp(-dg*dg*dg*dg);
+      v *= smoothstep(0.0, 0.03, u)*smoothstep(1.0, 0.96, u);
+      arr[i] = v;
+    }
+    let mx = 0; for (let i = 0; i < NU; i++) mx = Math.max(mx, arr[i]);
+    for (let i = 0; i < NU; i++) arr[i] /= mx;
+    return arr;
+  }
+  function genL(amp, arcs){
+    const arr = new Float32Array(NL);
+    const n1 = makeNoise1D(r, 12), n2 = makeNoise1D(r, 60), n3 = makeNoise1D(r, 5);
+    const p1 = r()*6.283, p2 = r()*6.283;
+    for (let i = 0; i < NL; i++){
+      const t = i/NL;
+      let v = 1 + amp*(0.25*Math.sin(t*6.283 + p1) + 0.15*Math.sin(2*t*6.283 + p2) + 0.5*(n1(t*12)-0.5) + 0.3*(n2(t*60)-0.5));
+      if (arcs) v *= 0.06 + 1.3*smoothstep(0.42, 0.72, n3(t*5));   // ring arcs, not full hoops
+      arr[i] = Math.max(arcs ? 0.0 : 0.15, v);
+    }
+    return arr;
+  }
+  let j = 0;
+  for (const [al, th, h, rad, dn] of INNER){
+    const f = frame(al, th);
+    profU.set(genInnerU(), j*NU); profL.set(genL(1.0), j*NL);
+    uBN.set([f.n[0], f.n[1], f.n[2], h], j*4); uBE.set([f.e1[0], f.e1[1], f.e1[2], rad], j*4); uBP.set([dn, 0, r(), 0], j*4);
+    bands.push({ kind: 0, j, n: f.n, e1: f.e1, e2: f.e2, h, rad, dn });
+    j++;
+  }
+  for (const [al, th, rin, rout, dn] of OUTER){
+    const f = frame(al, th);
+    profU.set(genOuterU(), j*NU); profL.set(genL(0.8, true), j*NL);
+    uBN.set([f.n[0], f.n[1], f.n[2], rin], j*4); uBE.set([f.e1[0], f.e1[1], f.e1[2], rout], j*4); uBP.set([dn, 1, 0, 0], j*4);
+    bands.push({ kind: 1, j, n: f.n, e1: f.e1, e2: f.e2, rin, rout, dn });
+    j++;
+  }
+}
+const NBANDS = bands.length;
+
+// ---------------------------------------------------------------- collectors (points)
+const PMAX = 1100000;
+const ptBuf = new Float32Array(PMAX*5); let PN = 0;
+function addPt(x, y, z, b, kind){ if (PN >= PMAX) return; const o = PN*5; ptBuf[o] = x; ptBuf[o+1] = y; ptBuf[o+2] = z; ptBuf[o+3] = b; ptBuf[o+4] = kind; PN++; }
+function cdfOf(off, n){ const c = new Float64Array(n+1); for (let i = 0; i < n; i++) c[i+1] = c[i] + profU[off+i]; for (let i = 0; i <= n; i++) c[i] /= c[n]; return c; }
+function sampleCdf(c, r){ const x = r(); let lo = 0, hi = c.length-1; while (hi-lo > 1){ const m = (lo+hi) >> 1; if (c[m] <= x) lo = m; else hi = m; } const f = (x - c[lo])/Math.max(c[hi]-c[lo], 1e-12); return (lo+f)/(c.length-1); }
+{
+  const r = mulberry32(555);
+  const lamMax = bands.map(b => { let m = 0; for (let i = 0; i < NL; i++) m = Math.max(m, profL[b.j*NL+i]); return m; });
+  const sampleLam = b => { for (let t = 0; t < 60; t++){ const x = r(); const i = Math.min(NL-1, Math.floor(x*NL)); if (r()*lamMax[b.j] < profL[b.j*NL+i]) return x*2*Math.PI - Math.PI; } return r()*2*Math.PI - Math.PI; };
+  const mean = b => { let s = 0; for (let i = 0; i < NU; i++) s += profU[b.j*NU+i]; return s/NU; };
+  // inner bands
+  const inner = bands.filter(b => b.kind === 0);
+  const wts = inner.map(b => b.dn*Math.sin(b.h)*mean(b)*b.rad*b.rad);
+  const wsum = wts.reduce((a, b) => a + b, 0);
+  inner.forEach((b, bi) => {
+    const n = Math.round(P.nInner*wts[bi]/wsum), c = cdfOf(b.j*NU, NU);
+    for (let i = 0; i < n; i++){
+      const u = sampleCdf(c, r)*2 - 1, lat = u*b.h, lam = sampleLam(b);
+      const cl = Math.cos(lat), sl = Math.sin(lat), ca = Math.cos(lam), sa = Math.sin(lam);
+      const rr = b.rad*(1 + (r()-0.5)*0.006);
+      const x = rr*(cl*(ca*b.e1[0] + sa*b.e2[0]) + sl*b.n[0]);
+      const y = rr*(cl*(ca*b.e1[1] + sa*b.e2[1]) + sl*b.n[1]);
+      const z = rr*(cl*(ca*b.e1[2] + sa*b.e2[2]) + sl*b.n[2]);
+      if (z > 0 && r() < laneOpenJS(x, y)) continue;
+      addPt(x, y, z, P.ptB*Math.exp(1.0*gaussOf(r)), 0);
+    }
+  });
+  // base shell
+  for (let i = 0; i < P.nBase; i++){
+    const z0 = 2*r()-1, ph = r()*2*Math.PI, s0 = Math.sqrt(1-z0*z0), rr = 0.99 + r()*0.02;
+    const x = rr*s0*Math.cos(ph), y = rr*s0*Math.sin(ph), z = rr*z0;
+    if (z > 0 && r() < laneOpenJS(x, y)) continue;
+    addPt(x, y, z, P.ptB*1.2*Math.exp(0.6*gaussOf(r)), 2);
+  }
+  // outer rings
+  const outer = bands.filter(b => b.kind === 1);
+  const owts = outer.map(b => b.dn*(b.rout*b.rout - b.rin*b.rin)*mean(b));
+  const osum = owts.reduce((a, b) => a + b, 0);
+  outer.forEach((b, bi) => {
+    const n = Math.round(P.nOuter*owts[bi]/osum), c = cdfOf(b.j*NU, NU);
+    for (let i = 0; i < n; i++){
+      const u = sampleCdf(c, r), rr = b.rin + u*(b.rout - b.rin), lam = sampleLam(b);
+      const ca = Math.cos(lam), sa = Math.sin(lam), off = (r()-0.5)*0.004;
+      const x = rr*(ca*b.e1[0] + sa*b.e2[0]) + off*b.n[0];
+      const y = rr*(ca*b.e1[1] + sa*b.e2[1]) + off*b.n[1];
+      const z = rr*(ca*b.e1[2] + sa*b.e2[2]) + off*b.n[2];
+      addPt(x, y, z, P.ptB*1.1*Math.exp(0.6*gaussOf(r)), 1);
+    }
+  });
+  // drifters: sparse instances in transit around the swarm
+  for (let i = 0; i < P.nDrift; i++){
+    const z0 = 2*r()-1, ph = r()*2*Math.PI, s0 = Math.sqrt(1-z0*z0), rr = r() < 0.75 ? 1.0 + 0.22*Math.pow(r(), 2.5) : 1.06 + Math.pow(r(), 2.2)*1.3;
+    addPt(rr*s0*Math.cos(ph), rr*s0*Math.sin(ph), rr*z0, P.ptB*1.6*Math.exp(0.7*gaussOf(r)), 3);
+  }
+}
+
+// ---------------------------------------------------------------- stars
+const starList = [];
+{
+  const r = mulberry32(8080);
+  const cols = [[0.70, 0.80, 1.00], [0.86, 0.91, 1.00], [1.00, 0.97, 0.93], [1.00, 0.90, 0.78], [1.00, 0.80, 0.64]];
+  const col = t => { const f = Math.min(t, 0.9999)*(cols.length-1), i = Math.floor(f), g = f - i; return [0, 1, 2].map(c => cols[i][c]*(1-g) + cols[i+1][c]*g); };
+  const push = (x, y, b, c, s) => starList.push(x, y, c[0]*b, c[1]*b, c[2]*b, s);
+  const nearBright = (x, y) => Math.hypot(x-P.A[0], y-P.A[1]) < 70 || Math.hypot(x-CX, y-CY) < RS*1.15;
+  for (let i = 0; i < 11000; i++){
+    const x = r()*W, y = r()*H;
+    const b = 0.010 + 0.035*Math.pow(r(), 3) + 0.45*Math.pow(r(), 12);
+    push(x, y, b, col(r()), 1);
+  }
+  const mA = [1150, -80], mB = [2000, 560];
+  const ml = Math.hypot(mB[0]-mA[0], mB[1]-mA[1]), md = [(mB[0]-mA[0])/ml, (mB[1]-mA[1])/ml];
+  for (let i = 0; i < 7000; i++){
+    const al = r()*ml*1.15 - 60, ac = gaussOf(r)*130;
+    const x = mA[0] + md[0]*al - md[1]*ac, y = mA[1] + md[1]*al + md[0]*ac;
+    if (x < 0 || x >= W || y < 0 || y >= H) continue;
+    push(x, y, 0.008 + 0.07*Math.pow(r(), 6), col(r()*0.8), 1);
+  }
+  for (let i = 0; i < 46; i++){
+    const x = 20 + r()*(W-40), y = 20 + r()*(H-40);
+    if (nearBright(x, y)) continue;
+    const b = 0.25 + 1.2*Math.pow(r(), 2.2), c = col(r());
+    if (b > 0.8){ push(x, y, b, c, 1); push(x+1, y, b*0.28, c, 1); push(x-1, y, b*0.28, c, 1); push(x, y+1, b*0.28, c, 1); push(x, y-1, b*0.28, c, 1); }
+    else push(x, y, b*0.6, c, 2);
+  }
+}
+const NSTAR = starList.length/6;
+
+// ---------------------------------------------------------------- brush strokes
+function strokeLayer(r, n, Lmin, Lmax, Wmin, Wmax, aMin, aMax){
+  const d = new Float32Array(n*6); let m = 0;
+  for (let i = 0; i < n; i++){
+    const x = r()*W, y = r()*H, dx = x-CX, dy = y-CY;
+    if (dx*dx + dy*dy < (RS*0.93)*(RS*0.93)) continue;
+    d.set([x, y, Lmin + r()*(Lmax-Lmin), Wmin + r()*(Wmax-Wmin), r(), aMin + r()*(aMax-aMin)], m*6); m++;
+  }
+  return { data: d.subarray(0, m*6), n: m };
+}
+const strokeRnd = mulberry32(4242);
+const SL = [
+  strokeLayer(strokeRnd, 5200, 60, 115, 16, 30, 0.50, 0.75),
+  strokeLayer(strokeRnd, 23000, 26, 50, 7, 14, 0.55, 0.80),
+  strokeLayer(strokeRnd, 65000, 10, 22, 3, 6, 0.60, 0.85),
+];
+log('prep ms ' + Math.round(performance.now() - T0) + ', points ' + PN + ', stars ' + NSTAR + ', strokes ' + SL.map(s => s.n).join('/'));
+
+// ================================================================ WebGL
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
+if (!gl) log('NO WEBGL2');
+const extCBF = gl.getExtension('EXT_color_buffer_float');
+gl.getExtension('OES_texture_float_linear');
+const dri = gl.getExtension('WEBGL_debug_renderer_info');
+log('renderer: ' + (dri ? gl.getParameter(dri.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) + ' | float targets: ' + !!extCBF);
+
+function compile(type, src, name){
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    const info = gl.getShaderInfoLog(s); log('COMPILE ERROR ' + name + ':\n' + info);
+    const lines = src.split('\n'); const re = /0:(\d+)/g; let m, seen = 0;
+    while ((m = re.exec(info)) && seen < 4){ const ln = +m[1]; seen++; for (let i = Math.max(1, ln-2); i <= Math.min(lines.length, ln+1); i++) log('  ' + i + ': ' + lines[i-1]); }
+  }
+  return s;
+}
+function program(vs, fs, name){
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs, name + '.vs'));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs, name + '.fs'));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) log('LINK ERROR ' + name + ': ' + gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS) || 0;
+  for (let i = 0; i < n; i++){ const inf = gl.getActiveUniform(p, i); u[inf.name.replace(/\[0\]$/, '')] = gl.getUniformLocation(p, inf.name); }
+  p.u = u; return p;
+}
+function setU(p, vals){
+  gl.useProgram(p);
+  for (const k in vals){
+    const loc = p.u[k]; if (loc === undefined || loc === null) continue;
+    const v = vals[k];
+    if (typeof v === 'number') gl.uniform1f(loc, v);
+    else if (v.i !== undefined) gl.uniform1i(loc, v.i);
+    else if (v.v4 !== undefined) gl.uniform4fv(loc, v.v4);
+    else if (v.length === 2) gl.uniform2f(loc, v[0], v[1]);
+    else if (v.length === 3) gl.uniform3f(loc, v[0], v[1], v[2]);
+    else if (v.length === 4) gl.uniform4f(loc, v[0], v[1], v[2], v[3]);
+  }
+}
+function bindTex(p, name, unit, t){ gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); if (p.u[name]) gl.uniform1i(p.u[name], unit); }
+function target(w, h){
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  if (extCBF) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (st !== gl.FRAMEBUFFER_COMPLETE) log('FB incomplete ' + st);
+  return { tex, fb, w, h };
+}
+function dataTex(w, h, data, wrapS){
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, w, h, 0, gl.RED, gl.FLOAT, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrapS); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+const vaoEmpty = gl.createVertexArray();
+function drawTo(tgt){ gl.bindFramebuffer(gl.FRAMEBUFFER, tgt ? tgt.fb : null); gl.viewport(0, 0, tgt ? tgt.w : W, tgt ? tgt.h : H); }
+function fullscreen(p, tgt){ drawTo(tgt); gl.useProgram(p); gl.bindVertexArray(vaoEmpty); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+
+// ---------------------------------------------------------------- GLSL
+const HDR = '#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n';
+const VS_FULL = HDR + 'void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }\n';
+const NOISE = `
+float h12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y)*p3.z); }
+vec2 h22(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz)*p3.zy); }
+float gn(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*f*(f*(f*6.0-15.0)+10.0);
+  float a = dot(h22(i)*2.0-1.0, f);
+  float b = dot(h22(i+vec2(1.0,0.0))*2.0-1.0, f-vec2(1.0,0.0));
+  float c = dot(h22(i+vec2(0.0,1.0))*2.0-1.0, f-vec2(0.0,1.0));
+  float d = dot(h22(i+vec2(1.0,1.0))*2.0-1.0, f-vec2(1.0,1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm(vec2 p, int oct){
+  float s = 0.0, a = 0.5;
+  mat2 R = mat2(0.8, -0.6, 0.6, 0.8);
+  for (int i = 0; i < 9; i++){ if (i >= oct) break; s += a*gn(p); p = R*p*2.03 + vec2(13.7, 7.3); a *= 0.5; }
+  return s;
+}
+`;
+
+// ---- nebula density (half res): r = cloud bank, g = thin wisps, b = low-freq field
+const FS_NEB = HDR + NOISE + `
+uniform vec2 uTS;
+out vec4 o;
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, uTS.y - gl_FragCoord.y)*(1920.0/uTS.x);
+  vec2 q = px/600.0;
+  vec2 w1 = vec2(fbm(q*0.85 + vec2(1.3, 4.1), 5), fbm(q*0.85 + vec2(7.2, 2.6), 5));
+  vec2 q2 = q + 0.75*w1;
+  float f = fbm(q2*1.6 + vec2(3.9, 1.1), 8);
+  // dust wall ("cliffs") cradling the swarm from below, rising at the sides
+  vec2 e = (px - vec2(1000.0, 300.0))/vec2(1150.0, 690.0);
+  float m = (length(e) - 1.0)*3.6 + f*1.9 + 0.35*w1.x;
+  float dens = smoothstep(0.0, 0.14, m)*smoothstep(170.0, 520.0, px.y);
+  // thin filamentary gas in the open sky
+  float rf = 1.0 - abs(fbm(q2*2.1 + vec2(4.1, 7.7), 7))*2.4;
+  float fil = pow(clamp(rf, 0.0, 1.0), 5.0);
+  float mask = smoothstep(-0.12, 0.35, fbm(q*1.1 + vec2(2.2, 9.1), 5));
+  float gas = (0.35*mask*(0.5 + 0.5*f) + fil*mask)*(1.0 - dens);
+  o = vec4(dens, gas, m, fbm(q*0.6 + vec2(5.5, 1.5), 4));
+}
+`;
+
+// ---- underpainting: sky, milky way, gas, dust cliffs lit by B (through lanes) and A, escaping rays
+const FS_UNDER = HDR + NOISE + `
+uniform sampler2D uNeb;
+uniform vec2 uC; uniform float uRs; uniform vec2 uA;
+uniform vec4 uLane[12]; uniform int uNL;
+out vec4 o;
+vec4 neb(vec2 px){ return texture(uNeb, vec2(px.x/1920.0, 1.0 - px.y/1080.0)); }
+float rays(vec2 px){
+  vec2 s = (px - uC)/uRs; float acc = 0.0;
+  for (int k = 0; k < 12; k++){ if (k >= uNL) break;
+    vec4 L = uLane[k]; vec2 d = vec2(cos(L.x), sin(L.x));
+    float al = dot(s, d); if (al <= 0.0) continue;
+    float pe = abs(s.x*d.y - s.y*d.x);
+    float t = clamp((al - 1.0)/(L.z - 1.0), 0.0, 1.0);
+    float w0 = 0.040*L.y;
+    float hw = w0*pow(1.0 - t, 0.9) + 0.002;
+    float core = exp(-pe*pe/(hw*hw))*pow(1.0 - t, 1.3);
+    float hw2 = w0*3.2 + 0.06*max(al - 1.0, 0.0);
+    float fan = exp(-pe*pe/(hw2*hw2))*exp(-2.2*t)*0.30;
+    float mott = clamp(0.55 + 0.9*(gn(vec2(al*3.2, float(k)*5.7)) + 0.35), 0.25, 1.4);
+    acc += L.w*(core + fan)*smoothstep(0.6, 1.0, al)*mott;
+  }
+  return acc;
+}
+vec3 dustRamp(float l){
+  vec3 c0 = vec3(0.012, 0.012, 0.040), c1 = vec3(0.10, 0.030, 0.10), c2 = vec3(0.55, 0.14, 0.18), c3 = vec3(1.25, 0.46, 0.18), c4 = vec3(2.0, 1.10, 0.55);
+  if (l < 0.15) return mix(c0, c1, l/0.15);
+  if (l < 0.45) return mix(c1, c2, (l - 0.15)/0.30);
+  if (l < 1.0) return mix(c2, c3, (l - 0.45)/0.55);
+  return mix(c3, c4, clamp(l - 1.0, 0.0, 1.0));
+}
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y);
+  vec4 nb = neb(px);
+  float dens = nb.r, gas = nb.g;
+  float det = fbm(px/30.0 + vec2(3.3, 8.1), 4);
+  float D = clamp(dens + 0.22*det*smoothstep(0.0, 0.5, dens)*(1.0 - 0.6*dens), 0.0, 1.0);
+  vec2 s = (px - uC)/uRs; float rho = length(s);
+  // light from B: long-range transmittance toward the swarm + short-range self shadow
+  vec2 toC = uC - px; float distC = length(toC); vec2 dC = toC/max(distC, 1e-3);
+  float tauL = 0.0;
+  for (int i = 1; i <= 16; i++){ tauL += neb(px + toC*(float(i)/16.0)*0.97).r; }
+  tauL *= distC/16.0*0.010;
+  float tauS = 0.0;
+  for (int i = 1; i <= 12; i++){ tauS += neb(px + dC*float(i)*7.0).r; }
+  tauS *= 7.0*0.035;
+  float TB = exp(-tauL), TBs = exp(-tauS);
+  float rB = rays(px);
+  float glowB = 1.0/(1.0 + pow(distC/(1.35*uRs), 2.0));
+  float glowCl = 2.0/(1.0 + pow(distC/(1.9*uRs), 2.0));
+  // cloud relief: treat the continuous cloud field as a height map
+  float d0 = fbm(px/30.0 + vec2(3.3, 8.1), 4), dx = fbm((px + vec2(3.0, 0.0))/30.0 + vec2(3.3, 8.1), 4), dy = fbm((px + vec2(0.0, 3.0))/30.0 + vec2(3.3, 8.1), 4);
+  float gxm = (neb(px + vec2(6.0, 0.0)).b - neb(px - vec2(6.0, 0.0)).b)/12.0 + 0.10*(dx - d0)/3.0;
+  float gym = (neb(px + vec2(0.0, 6.0)).b - neb(px - vec2(0.0, 6.0)).b)/12.0 + 0.10*(dy - d0)/3.0;
+  vec3 Nc = normalize(vec3(-gxm*60.0, -gym*60.0, 1.0));
+  vec3 LdB = normalize(vec3(uC - px, 70.0)), LdA = normalize(vec3(uA - px, 70.0));
+  float lamB = clamp((dot(Nc, LdB) + 0.12)/1.12, 0.0, 1.0), lamA = clamp((dot(Nc, LdA) + 0.1)/1.1, 0.0, 1.0);
+  // light from A
+  vec2 toA = uA - px; float distA = length(toA); vec2 dA = toA/max(distA, 1e-3);
+  float tauA = 0.0;
+  for (int i = 1; i <= 10; i++){ tauA += neb(px + dA*float(i)*9.0).r; }
+  tauA *= 9.0*0.035;
+  float LA = 1.0/(1.0 + pow(distA/600.0, 2.0));
+  // ---- sky: deep blue above, plum toward the dust, sunset gradient around the swarm
+  float yN = px.y/1080.0;
+  vec3 sky = mix(vec3(0.001, 0.008, 0.032), vec3(0.010, 0.016, 0.060), smoothstep(0.0, 0.55, yN));
+  sky = mix(sky, vec3(0.045, 0.022, 0.065), smoothstep(0.5, 1.0, yN));
+  float h1 = exp(-max(rho - 1.0, 0.0)*2.2), h2 = 1.0/(1.0 + pow(rho/2.0, 2.0));
+  sky += vec3(1.0, 0.36, 0.13)*0.30*h1 + vec3(0.45, 0.10, 0.28)*0.065*h2;
+  // Milky Way, upper right
+  vec2 mA = vec2(1150.0, -80.0), mB = vec2(2000.0, 560.0); vec2 md = normalize(mB - mA);
+  float acr = dot(px - mA, vec2(-md.y, md.x));
+  float band = exp(-acr*acr/(170.0*170.0));
+  float mwc = 0.5 + 0.5*fbm(px/210.0 + vec2(2.1, 5.5), 6);
+  float dust = smoothstep(-0.05, 0.25, fbm(px/110.0 + vec2(8.8, 1.2), 6) + 0.12*sin(acr/40.0));
+  sky += vec3(0.55, 0.60, 0.95)*band*mwc*mwc*0.05*(1.0 - 0.75*dust*exp(-acr*acr/(70.0*70.0)));
+  // Alpha Cen A wide glow
+  sky += vec3(1.0, 0.92, 0.72)*0.055/(1.0 + pow(distA/60.0, 2.0)) + vec3(0.62, 0.76, 1.0)*0.028/(1.0 + pow(distA/330.0, 2.0));
+  // filament gas: teal far from B, rose near it, lit by both stars
+  // A lights its dust as a blue reflection nebula; B's escaping light warms the gas near the swarm
+  float nearA = 1.0/(1.0 + pow(distA/420.0, 2.0));
+  vec3 gasCol = mix(vec3(0.05, 0.19, 0.32), vec3(0.36, 0.07, 0.26), smoothstep(-0.2, 0.3, nb.a));
+  gasCol = mix(gasCol, vec3(0.22, 0.48, 1.0), 0.85*nearA);
+  gasCol = mix(gasCol, vec3(1.0, 0.45, 0.25), 0.35*glowB);
+  sky += gas*(gasCol*(0.075 + 0.15*nearA) + vec3(1.0, 0.45, 0.2)*glowB*0.07);
+  sky += vec3(0.16, 0.28, 0.60)*0.035*nearA;
+  // escaping light made visible by thin gas
+  float veil = 0.25 + 1.4*gas + 0.3*(0.5 + 0.5*fbm(px/140.0 + vec2(5.0, 2.0), 5));
+  sky += vec3(1.0, 0.55, 0.28)*rB*veil*0.12*TB;
+  // ---- dust cliffs
+  float lit = (glowCl + rB*1.2)*TB;
+  float sh = TBs;
+  float lB = lit*(0.08 + 0.92*sh*sh)*(0.2 + 0.8*lamB);
+  float lA = LA*mix(exp(-tauA), 1.0, 0.3)*lamA;
+  float edge = smoothstep(0.0, 0.2, D)*(1.0 - smoothstep(0.2, 0.6, D));
+  vec3 cloud = dustRamp(lB*1.3)*(0.9 + 0.2*det);
+  cloud += vec3(0.30, 0.06, 0.16)*lit*(0.15 + 0.85*sh)*0.45*(0.4 + 0.6*lamB);
+  cloud += vec3(1.0, 0.74, 0.46)*lA*0.07;
+  cloud += vec3(1.0, 0.55, 0.28)*edge*lit*0.5;
+  cloud += vec3(0.014, 0.012, 0.050)*(0.6 + 0.4*clamp(-Nc.y*2.0 + 0.5, 0.0, 1.0));
+  vec3 col = mix(sky, cloud, smoothstep(0.0, 0.32, D));
+  o = vec4(col, D);
+}
+`;
+
+const FS_COPY = HDR + 'uniform sampler2D uSrc; out vec4 o; void main(){ o = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); }\n';
+
+// ---- brush strokes: instanced quads, colour sampled from the underpainting, aligned to isophotes
+const VS_STROKE = HDR + `
+uniform sampler2D uUnder; uniform vec2 uC; uniform float uLayer;
+layout(location=0) in vec2 aPos; layout(location=1) in vec2 aSz; layout(location=2) in vec2 aRnd;
+out vec2 vUV; out vec3 vCol; out float vSeed; out float vA;
+float lum(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+vec3 samp(vec2 px, float lod){ return textureLod(uUnder, vec2(px.x/1920.0, 1.0 - px.y/1080.0), lod).rgb; }
+void main(){
+  int vid = gl_VertexID;
+  vec2 corner = vec2((vid == 1 || vid == 2 || vid == 4) ? 1.0 : 0.0, (vid == 2 || vid == 4 || vid == 5) ? 1.0 : 0.0);
+  float e = 6.0 + aSz.x*0.2;
+  float lx1 = log(lum(samp(aPos + vec2(e, 0.0), 2.0)) + 0.004), lx0 = log(lum(samp(aPos - vec2(e, 0.0), 2.0)) + 0.004);
+  float ly1 = log(lum(samp(aPos + vec2(0.0, e), 2.0)) + 0.004), ly0 = log(lum(samp(aPos - vec2(0.0, e), 2.0)) + 0.004);
+  vec2 g = vec2(lx1 - lx0, ly1 - ly0);
+  float gm = length(g);
+  vec2 rel = aPos - uC; vec2 tang = normalize(vec2(-rel.y, rel.x) + 1e-3);
+  vec2 iso = gm > 1e-5 ? vec2(-g.y, g.x)/gm : tang;
+  iso *= sign(dot(iso, tang) + 1e-4);
+  vec2 dir = normalize(mix(tang, iso, smoothstep(0.02, 0.2, gm)));
+  float ang = atan(dir.y, dir.x) + (aRnd.x - 0.5)*0.35;
+  dir = vec2(cos(ang), sin(ang));
+  vec2 nrm = vec2(-dir.y, dir.x);
+  vec2 sz = aSz*max(1.0/(1.0 + gm*5.0), 0.28);
+  bool keep = true;
+  if (uLayer > 1.5 && gm < 0.05 + 0.25*fract(aRnd.x*7.31)) keep = false;
+  vec2 p = aPos + dir*(corner.x - 0.5)*sz.x + nrm*(corner.y*2.0 - 1.0)*0.5*sz.y;
+  gl_Position = keep ? vec4(p.x/1920.0*2.0 - 1.0, 1.0 - p.y/1080.0*2.0, 0.0, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+  vUV = vec2(corner.x, corner.y*2.0 - 1.0);
+  vec3 c = samp(aPos, 0.7);
+  c *= 1.0 + (fract(aRnd.x*91.7) - 0.5)*0.14;
+  vCol = c; vSeed = aRnd.x; vA = aRnd.y;
+}
+`;
+const FS_STROKE = HDR + `
+in vec2 vUV; in vec3 vCol; in float vSeed; in float vA;
+out vec4 o;
+float h1(float x){ return fract(sin(x*127.1 + 311.7)*43758.5453); }
+float vn(float x){ float i = floor(x), f = fract(x); f = f*f*(3.0 - 2.0*f); return mix(h1(i), h1(i + 1.0), f); }
+void main(){
+  float u = vUV.x, v = vUV.y;
+  float b = vn(v*6.0 + vSeed*50.0);
+  float fine = vn(v*22.0 + vSeed*80.0 + u*1.5);
+  float edgeN = vn(u*5.0 + vSeed*30.0) - 0.5;
+  float edge = 1.0 - smoothstep(0.72, 1.0, abs(v) + 0.18*edgeN);
+  float st = smoothstep(0.0, 0.16 + 0.10*v*v, u);
+  float endT = 0.70 + 0.28*b;
+  float en = 1.0 - smoothstep(endT - 0.15, endT, u);
+  float streak = 0.62 + 0.38*fine;
+  float a = edge*st*en*streak*vA;
+  vec3 c = vCol*(0.95 + 0.10*b);
+  o = vec4(c*a, a);
+}
+`;
+
+// ---- stars: crisp points, dimmed by the nebula
+const VS_STAR = HDR + `
+uniform sampler2D uNeb;
+layout(location=0) in vec2 aPos; layout(location=1) in vec3 aCol; layout(location=2) in float aSize;
+out vec3 vCol;
+void main(){
+  vec2 p = aSize > 1.5 ? floor(aPos + 0.5) : floor(aPos) + 0.5;
+  gl_Position = vec4(p.x/1920.0*2.0 - 1.0, 1.0 - p.y/1080.0*2.0, 0.0, 1.0);
+  gl_PointSize = aSize;
+  vec4 nb = texture(uNeb, vec2(p.x/1920.0, 1.0 - p.y/1080.0));
+  vCol = aCol*exp(-5.0*nb.r - 1.2*nb.g);
+}
+`;
+const FS_POINT = HDR + 'in vec3 vCol; out vec4 o; void main(){ o = vec4(vCol, 0.0); }\n';
+
+// ---- swarm shared model (used by the shell pass and the collector points)
+const SW = `
+#define NB 40
+uniform vec2 uC; uniform float uRs;
+uniform sampler2D uPU; uniform sampler2D uPL;
+uniform vec4 uBN[NB]; uniform vec4 uBE[NB]; uniform vec4 uBP[NB];
+uniform int uNB;
+uniform vec4 uLane[12]; uniform int uNL; uniform float uLaneW;
+uniform float uBase; uniform float uRStar; uniform float uOcR; uniform float uKabs;
+float pU(int j, float u){ return texture(uPU, vec2(u, (float(j) + 0.5)/40.0)).r; }
+float pL(int j, float t){ return texture(uPL, vec2(t, (float(j) + 0.5)/40.0)).r; }
+float laneOpen(vec2 s){
+  float rho = length(s); float op = 0.0;
+  for (int k = 0; k < 12; k++){ if (k >= uNL) break;
+    vec4 L = uLane[k]; vec2 d = vec2(cos(L.x), sin(L.x));
+    float al = dot(s, d); if (al <= -0.02) continue;
+    float pe = abs(s.x*d.y - s.y*d.x);
+    float hw = (6.0 + 13.0*pow(max(1.0 - rho, 0.0), 1.6))*L.y*uLaneW/uRs;
+    float q = pe/hw; op = max(op, exp(-q*q*q*q));
+  }
+  return max(op, 1.0 - smoothstep(uOcR*0.6, uOcR, rho));
+}
+float laneLit(vec2 s){
+  float rho = length(s); float lit = 0.0;
+  for (int k = 0; k < 12; k++){ if (k >= uNL) break;
+    vec4 L = uLane[k]; vec2 d = vec2(cos(L.x), sin(L.x));
+    float al = dot(s, d); if (al <= 0.0) continue;
+    float pe = abs(s.x*d.y - s.y*d.x);
+    float hw = 4.0*L.y*uLaneW/uRs*max(rho, 1.0);
+    float q = pe/hw; lit = max(lit, exp(-q*q)*L.w);
+  }
+  return lit;
+}
+float shellTau2(vec2 s, float zs, out float tint){
+  float rho2 = dot(s, s); float tau = 0.0; tint = 0.0;
+  for (int j = 0; j < NB; j++){ if (j >= uNB) break; if (uBP[j].y > 0.5) continue;
+    float r = uBE[j].w; if (rho2 >= r*r) continue;
+    float z = sqrt(r*r - rho2);
+    vec3 D = vec3(s, zs*z)/r;
+    vec3 n = uBN[j].xyz; float h = uBN[j].w;
+    float sd = dot(D, n);
+    if (abs(sd) >= sin(h)) continue;
+    float u = asin(sd)/h;
+    vec3 e1 = uBE[j].xyz; vec3 e2 = cross(n, e1);
+    float lam = atan(dot(D, e2), dot(D, e1));
+    float dn = pU(j, u*0.5 + 0.5)*pL(j, lam*0.15915494 + 0.5)*uBP[j].x*r/sqrt(z*z + 0.012);
+    tau += dn; tint += dn*uBP[j].z;
+  }
+  if (rho2 < 1.0){ float z = sqrt(1.0 - rho2); tau += uBase/sqrt(z*z + 0.012); tint += 0.5*uBase/sqrt(z*z + 0.012); }
+  tint /= max(tau, 1e-5);
+  if (zs > 0.0) tau *= 1.0 - laneOpen(s);
+  return tau;
+}
+float shellTau(vec2 s, float zs){ float t; return shellTau2(s, zs, t); }
+float frontRays(vec2 s){
+  float rho = length(s); float acc = 0.0;
+  for (int k = 0; k < 12; k++){ if (k >= uNL) break;
+    vec4 L = uLane[k]; vec2 d = vec2(cos(L.x), sin(L.x));
+    float al = dot(s, d); if (al <= -0.01) continue;
+    float pe = abs(s.x*d.y - s.y*d.x);
+    float hw = (6.0 + 13.0*pow(max(1.0 - rho, 0.0), 1.6))*L.y*uLaneW/uRs*1.2;
+    float q = pe/hw; acc += L.w*exp(-q*q)*(0.3 + 0.7*max(1.0 - rho, 0.0));
+  }
+  return acc;
+}
+float innerLight(float rho2){ return 3.2*exp(-rho2/0.0015) + 1.2*exp(-rho2/0.02) + 0.45*exp(-rho2/0.12) + 0.12*exp(-rho2/0.6) + 0.03; }
+float ringTau(int j, vec2 s, out float zr){
+  vec3 n = uBN[j].xyz; zr = -1e9;
+  if (abs(n.z) < 1e-3) return 0.0;
+  float z = -(n.x*s.x + n.y*s.y)/n.z; zr = z;
+  vec3 Pp = vec3(s, z); float r = length(Pp);
+  float rin = uBN[j].w, rout = uBE[j].w;
+  if (r < rin || r > rout) return 0.0;
+  float u = (r - rin)/(rout - rin);
+  vec3 e1 = uBE[j].xyz; vec3 e2 = cross(n, e1);
+  float lam = atan(dot(Pp, e2), dot(Pp, e1));
+  return pU(j, u)*pL(j, lam*0.15915494 + 0.5)*uBP[j].x/abs(n.z);
+}
+`;
+
+// ---- swarm shell: analytic, front-to-back (front rings, near shell, star, far shell, back rings)
+const FS_SHELL = HDR + SW + `
+uniform vec3 uEmber; uniform vec3 uGold; uniform vec3 uStarC; uniform vec3 uInner; uniform vec3 uRingF; uniform vec3 uRingB; uniform vec2 uDirA;
+out vec4 o;
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y);
+  if (length((px - uC)/uRs) > 2.0){ o = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  vec3 accE = vec3(0.0); float accT = 0.0;
+  for (int si = 0; si < 4; si++){
+    vec2 off = (vec2(float(si & 1), float(si >> 1)) - 0.5)*0.5;
+    vec2 s = (px + off - uC)/uRs;
+    float rho2 = dot(s, s), rho = sqrt(rho2);
+    float zN = rho2 < 1.0 ? sqrt(1.0 - rho2) : 0.0;
+    vec3 E = vec3(0.0); float T = 1.0;
+    if (rho2 < 1.0) E += vec3(1.0, 0.52, 0.22)*frontRays(s)*0.22*smoothstep(1.0, 0.9, rho);
+    for (int j = 0; j < NB; j++){ if (j >= uNB) break; if (uBP[j].y < 0.5) continue;
+      float zr; float tau = ringTau(j, s, zr);
+      if (tau > 0.0 && zr > zN){ float Tj = exp(-tau*uKabs); E += T*(1.0 - Tj)*(uRingF + uGold*laneLit(s)*1.5); T *= Tj; }
+    }
+    if (rho2 < 1.12){
+      float tintN; float tn = shellTau2(s, 1.0, tintN); float Tn = exp(-tn*uKabs);
+      float rim = smoothstep(0.72, 1.0, rho);
+      float IL = innerLight(rho2);
+      vec3 emb = mix(uEmber*vec3(1.0, 0.75, 0.8), uEmber*vec3(1.1, 1.5, 1.1), tintN);
+      float rimA = rim*rim*max(dot(s/max(rho, 1e-4), uDirA), 0.0);
+      E += T*(1.0 - Tn)*(emb + uGold*rim*rim*0.45 + uInner*IL*0.07 + vec3(0.50, 0.60, 0.85)*rimA*0.30); T *= Tn;
+      float inside = 1.0 - smoothstep(0.985, 1.0, rho);
+      E += T*uInner*IL*inside;
+      if (rho < uRStar){ float mu = sqrt(max(1.0 - rho2/(uRStar*uRStar), 0.0)); E += T*uStarC*(0.6 + 0.4*mu); T = 0.0; }
+      float tintF; float tf = shellTau2(s, -1.0, tintF); float Tf = exp(-tf*uKabs);
+      vec3 gld = mix(uGold*vec3(1.0, 0.72, 0.75), uGold*vec3(1.0, 1.3, 1.35), tintF);
+      E += T*(1.0 - Tf)*gld*(0.5 + 0.5*exp(-rho2/0.4)); T *= Tf;
+    }
+    for (int j = 0; j < NB; j++){ if (j >= uNB) break; if (uBP[j].y < 0.5) continue;
+      float zr; float tau = ringTau(j, s, zr);
+      if (tau > 0.0 && zr <= zN){ float Tj = exp(-tau*uKabs); E += T*(1.0 - Tj)*uRingB; T *= Tj; }
+    }
+    accE += E; accT += T;
+  }
+  o = vec4(accE*0.25, accT*0.25);
+}
+`;
+
+// ---- collectors: one crisp pixel per instance (2 px for the brightest)
+const VS_COLL = HDR + SW + `
+uniform vec3 uEmberPt; uniform vec3 uGoldPt; uniform float uBig;
+layout(location=0) in vec3 aP; layout(location=1) in vec2 aI;
+out vec3 vCol;
+void main(){
+  vec2 s = aP.xy; float z = aP.z; float b = aI.x; float kind = aI.y;
+  bool big = b > uBig;
+  vec2 px = uC + s*uRs;
+  px = big ? floor(px + 0.5) : floor(px) + 0.5;
+  gl_Position = vec4(px.x/1920.0*2.0 - 1.0, 1.0 - px.y/1080.0*2.0, 0.0, 1.0);
+  gl_PointSize = big ? 2.0 : 1.0;
+  float rho2 = dot(s, s), rho = sqrt(rho2);
+  float zN = rho2 < 1.0 ? sqrt(1.0 - rho2) : 0.0;
+  vec3 col = uEmberPt; float vis = 1.0;
+  if (kind < 0.5 || (kind > 1.5 && kind < 2.5)){          // shell (bands, base)
+    if (z > 0.0){ col = uEmberPt; }
+    else { vis = exp(-shellTau(s, 1.0)*uKabs); if (rho < uRStar) vis = 0.0; col = uGoldPt; }
+  } else if (kind < 1.5){                                  // outer rings
+    if (z > zN){ col = uEmberPt*0.55 + uGoldPt*laneLit(s)*2.0; }
+    else {
+      if (rho2 < 1.0){ vis = exp(-(shellTau(s, 1.0) + shellTau(s, -1.0))*uKabs); if (rho < uRStar) vis = 0.0; }
+      col = uGoldPt*0.9;
+    }
+  } else {                                                 // drifters
+    col = mix(uEmberPt, uGoldPt, 0.3) + uGoldPt*laneLit(s)*1.5;
+    if (z < 0.0 && rho2 < 1.0) vis = 0.0;
+  }
+  vCol = col*b*vis;
+  if (vis*b < 0.002) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+}
+`;
+
+// ---- Alpha Centauri A: crisp core and tight halo (the wide glow lives in the underpainting)
+const FS_ACEN = HDR + `
+uniform vec2 uA; out vec4 o;
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y); float d = length(px - uA);
+  vec3 c = vec3(1.0, 0.95, 0.82)*(30.0*(1.0 - smoothstep(1.4, 2.9, d)) + 3.0*exp(-d*d/40.0) + 0.55*exp(-d*d/300.0)) + vec3(1.0, 0.90, 0.70)*0.10*exp(-d/45.0);
+  o = vec4(c, 0.0);
+}
+`;
+
+// ---- thin veil of gas drifting in front of the swarm (depth, scale)
+const FS_VEIL = HDR + `
+uniform sampler2D uNeb; uniform vec2 uC; uniform float uRs; out vec4 o;
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y);
+  float rho = length((px - uC)/uRs);
+  vec2 q = px*0.83 + vec2(310.0, -140.0);
+  float g = texture(uNeb, vec2(q.x/1920.0, 1.0 - q.y/1080.0)).g;
+  float a = smoothstep(0.12, 0.8, g)*0.20*exp(-max(rho - 0.4, 0.0)*0.9)*smoothstep(0.25, 0.75, rho);
+  vec3 col = mix(vec3(0.95, 0.38, 0.20), vec3(0.32, 0.16, 0.38), smoothstep(0.9, 2.2, rho))*0.55;
+  o = vec4(col*a, a);
+}
+`;
+
+// ---- bloom
+const FS_DOWN = HDR + `
+uniform sampler2D uSrc; uniform vec2 uTS; uniform vec2 uSrcTexel; uniform float uPre; out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy/uTS;
+  vec3 c = texture(uSrc, uv + uSrcTexel*vec2(-1.0, -1.0)).rgb + texture(uSrc, uv + uSrcTexel*vec2(1.0, -1.0)).rgb
+         + texture(uSrc, uv + uSrcTexel*vec2(-1.0, 1.0)).rgb + texture(uSrc, uv + uSrcTexel*vec2(1.0, 1.0)).rgb;
+  c = min(c*0.25, vec3(40.0));
+  if (uPre > 0.5){   // soft-knee threshold: highlights bloom fully, the rest only a little
+    float br = max(c.r, max(c.g, c.b)), thr = 0.75, knee = 0.45;
+    float sft = clamp(br - thr + knee, 0.0, 2.0*knee); sft = sft*sft/(4.0*knee + 1e-4);
+    float k = max(sft, br - thr)/max(br, 1e-4);
+    c *= 0.04 + 0.96*k;
+  }
+  o = vec4(c, 1.0);
+}
+`;
+const FS_UP = HDR + `
+uniform sampler2D uLow; uniform sampler2D uCur; uniform vec2 uTS; uniform vec2 uLowTexel; out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy/uTS; vec2 t = uLowTexel;
+  vec3 s = texture(uLow, uv + t*vec2(-1.0, -1.0)).rgb + 2.0*texture(uLow, uv + t*vec2(0.0, -1.0)).rgb + texture(uLow, uv + t*vec2(1.0, -1.0)).rgb
+         + 2.0*texture(uLow, uv + t*vec2(-1.0, 0.0)).rgb + 4.0*texture(uLow, uv).rgb + 2.0*texture(uLow, uv + t*vec2(1.0, 0.0)).rgb
+         + texture(uLow, uv + t*vec2(-1.0, 1.0)).rgb + 2.0*texture(uLow, uv + t*vec2(0.0, 1.0)).rgb + texture(uLow, uv + t*vec2(1.0, 1.0)).rgb;
+  o = vec4(texture(uCur, uv).rgb + s/16.0, 1.0);
+}
+`;
+
+// ---- final: hue-preserving tonemap (highlights roll to warm white), grade, vignette, canvas weave, grain
+const FS_FINAL = HDR + NOISE + `
+uniform sampler2D uHDR; uniform sampler2D uBloom; uniform float uBloomStr; uniform float uExp; uniform int uRaw;
+out vec4 o;
+float acesS(float x){ return clamp((x*(2.51*x + 0.03))/(x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
+vec3 tonemap(vec3 x){
+  float m = max(max(x.r, x.g), x.b);
+  float fm = acesS(m);
+  vec3 c = x*(fm/max(m, 1e-6));
+  return mix(c, vec3(fm)*vec3(1.0, 0.97, 0.92), smoothstep(1.2, 9.0, m));
+}
+void main(){
+  vec2 uv = gl_FragCoord.xy/vec2(1920.0, 1080.0);
+  vec2 px = vec2(gl_FragCoord.x, 1080.0 - gl_FragCoord.y);
+  vec3 hdr = texture(uHDR, uv).rgb;
+  vec3 bl = texture(uBloom, uv).rgb/6.0;
+  vec3 c = hdr + bl*uBloomStr;
+  c *= uExp;
+  c = tonemap(c);
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(l), c, 1.12);
+  c += vec3(0.004, 0.006, 0.020)*(1.0 - smoothstep(0.0, 0.2, l));
+  vec2 q = (uv - vec2(0.52, 0.47))*vec2(1.0, 0.8);
+  c *= 1.0 - 0.95*dot(q, q);
+  c = pow(max(c, 0.0), vec3(1.0/2.2));
+  if (uRaw == 0){
+    vec2 jp = px + 1.3*vec2(gn(px/23.0), gn(px/23.0 + 7.0));
+    vec2 g = jp/3.4; vec2 f = fract(g) - 0.5; vec2 ii = floor(g);
+    float chk = mod(ii.x + ii.y, 2.0);
+    float th = mix(1.0 - 4.0*f.y*f.y, 1.0 - 4.0*f.x*f.x, chk);
+    c *= 1.0 + 0.018*(th - 0.6)*(0.7 + 0.6*h12(ii));
+    c += (h12(px + 17.0) + h12(px*1.3 + 91.0) - 1.0)*0.016;
+  }
+  o = vec4(clamp(c, 0.0, 1.0), 1.0);
+}
+`;
+
+// ================================================================ render
+try {
+  const pNeb = program(VS_FULL, FS_NEB, 'neb');
+  const pUnder = program(VS_FULL, FS_UNDER, 'under');
+  const pCopy = program(VS_FULL, FS_COPY, 'copy');
+  const pStroke = program(VS_STROKE, FS_STROKE, 'stroke');
+  const pStar = program(VS_STAR, FS_POINT, 'star');
+  const pShell = program(VS_FULL, FS_SHELL, 'shell');
+  const pColl = program(VS_COLL, FS_POINT, 'coll');
+  const pAcen = program(VS_FULL, FS_ACEN, 'acen');
+  const pDown = program(VS_FULL, FS_DOWN, 'down');
+  const pUp = program(VS_FULL, FS_UP, 'up');
+  const pFinal = program(VS_FULL, FS_FINAL, 'final');
+
+  const tNeb = target(960, 540);
+  const tUnder = target(W, H);
+  const tPaint = target(W, H);
+  const texPU = dataTex(NU, NB, profU, gl.CLAMP_TO_EDGE);
+  const texPL = dataTex(NL, NB, profL, gl.REPEAT);
+
+  // 1. nebula density
+  setU(pNeb, { uTS: [960, 540] });
+  fullscreen(pNeb, tNeb);
+
+  // 2. underpainting
+  setU(pUnder, { uC: P.C, uRs: RS, uA: P.A, uLane: { v4: laneArr }, uNL: { i: lanes.length } });
+  gl.useProgram(pUnder); bindTex(pUnder, 'uNeb', 0, tNeb.tex);
+  fullscreen(pUnder, tUnder);
+  gl.bindTexture(gl.TEXTURE_2D, tUnder.tex);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+
+  // 3. copy to paint layer
+  gl.useProgram(pCopy); bindTex(pCopy, 'uSrc', 0, tUnder.tex);
+  fullscreen(pCopy, tPaint);
+
+  // 4. brush strokes
+  if (VIEW !== 'nostroke' && VIEW !== 'neb'){
+    drawTo(tPaint);
+    gl.enable(gl.BLEND);
+    gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+    gl.useProgram(pStroke); bindTex(pStroke, 'uUnder', 0, tUnder.tex);
+    setU(pStroke, { uC: P.C });
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    for (let li = 0; li < SL.length; li++){
+      gl.bufferData(gl.ARRAY_BUFFER, SL[li].data, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 24, 0); gl.vertexAttribDivisor(0, 1);
+      gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 24, 8); gl.vertexAttribDivisor(1, 1);
+      gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 24, 16); gl.vertexAttribDivisor(2, 1);
+      setU(pStroke, { uLayer: li });
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, SL[li].n);
+    }
+    gl.disable(gl.BLEND);
+  }
+
+  // 5. stars
+  {
+    drawTo(tPaint);
+    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE);
+    gl.useProgram(pStar); bindTex(pStar, 'uNeb', 0, tNeb.tex);
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(starList), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 24, 0);
+    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 8);
+    gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 24, 20);
+    gl.drawArrays(gl.POINTS, 0, NSTAR);
+    gl.disable(gl.BLEND);
+  }
+
+  const swU = {
+    uC: P.C, uRs: RS, uNB: { i: NBANDS }, uBN: { v4: uBN }, uBE: { v4: uBE }, uBP: { v4: uBP },
+    uLane: { v4: laneArr }, uNL: { i: lanes.length }, uLaneW: P.laneW,
+    uBase: P.base, uRStar: P.rStar, uOcR: P.ocR, uKabs: P.kabs,
+  };
+  // 6. swarm shell (result = E + T*dst)
+  if (VIEW !== 'noswarm'){
+    drawTo(tPaint);
+    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.SRC_ALPHA, gl.ZERO, gl.ONE);
+    const dA = [P.A[0]-CX, P.A[1]-CY], dAl = Math.hypot(dA[0], dA[1]);
+    setU(pShell, Object.assign({}, swU, { uEmber: P.ember, uGold: P.gold, uStarC: P.starC, uInner: P.inner, uRingF: P.ringF, uRingB: P.ringB, uDirA: [dA[0]/dAl, dA[1]/dAl] }));
+    bindTex(pShell, 'uPU', 0, texPU); bindTex(pShell, 'uPL', 1, texPL);
+    gl.bindVertexArray(vaoEmpty); gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.BLEND);
+
+    // 7. collectors
+    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE);
+    setU(pColl, Object.assign({}, swU, { uEmberPt: P.emberPt, uGoldPt: P.goldPt, uBig: P.ptBig }));
+    bindTex(pColl, 'uPU', 0, texPU); bindTex(pColl, 'uPL', 1, texPL);
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, ptBuf.subarray(0, PN*5), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
+    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12);
+    gl.drawArrays(gl.POINTS, 0, PN);
+    gl.disable(gl.BLEND);
+  }
+
+  // 8. Alpha Cen A
+  drawTo(tPaint);
+  gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE);
+  setU(pAcen, { uA: P.A });
+  gl.bindVertexArray(vaoEmpty); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disable(gl.BLEND);
+
+  // 8b. veil
+  if (VIEW !== 'noveil'){
+    const pVeil = program(VS_FULL, FS_VEIL, 'veil');
+    drawTo(tPaint);
+    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+    gl.useProgram(pVeil); bindTex(pVeil, 'uNeb', 0, tNeb.tex); setU(pVeil, { uC: P.C, uRs: RS });
+    gl.bindVertexArray(vaoEmpty); gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.BLEND);
+  }
+
+  // 9. bloom chain
+  const sizes = [[960, 540], [480, 270], [240, 135], [120, 68], [60, 34], [30, 17]];
+  const down = sizes.map(s => target(s[0], s[1]));
+  const up = sizes.slice(0, 5).map(s => target(s[0], s[1]));
+  let src = tPaint;
+  for (let i = 0; i < down.length; i++){
+    gl.useProgram(pDown); bindTex(pDown, 'uSrc', 0, src.tex);
+    setU(pDown, { uTS: [down[i].w, down[i].h], uSrcTexel: [1/src.w, 1/src.h], uPre: i === 0 ? 1 : 0 });
+    fullscreen(pDown, down[i]); src = down[i];
+  }
+  let low = down[5];
+  for (let i = 4; i >= 0; i--){
+    gl.useProgram(pUp); bindTex(pUp, 'uLow', 0, low.tex); bindTex(pUp, 'uCur', 1, down[i].tex);
+    setU(pUp, { uTS: [up[i].w, up[i].h], uLowTexel: [1/low.w, 1/low.h] });
+    fullscreen(pUp, up[i]); low = up[i];
+  }
+
+  // 10. final
+  gl.useProgram(pFinal);
+  bindTex(pFinal, 'uHDR', 0, VIEW === 'neb' ? tNeb.tex : tPaint.tex); bindTex(pFinal, 'uBloom', 1, up[0].tex);
+  setU(pFinal, { uBloomStr: VIEW === 'neb' ? 0 : P.bloom, uExp: P.exposure, uRaw: { i: VIEW === 'raw' ? 1 : 0 } });
+  fullscreen(pFinal, null);
+  const px = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+
+  // 11. diegetic HUD: sparse, small, monospace (new episode: the shelter is an environment built for us)
+  if (VIEW !== 'nohud'){
+    const hud = document.createElement('canvas'); hud.width = W; hud.height = H;
+    hud.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none';
+    document.body.appendChild(hud);
+    const hx = hud.getContext('2d');
+    hx.font = '14px Consolas, "Cascadia Mono", "Courier New", monospace';
+    if ('letterSpacing' in hx) hx.letterSpacing = '2px';
+    hx.fillStyle = 'rgba(245, 240, 232, 0.42)';
+    hx.fillText('EP    000001', 58, H - 74);
+    hx.fillText('STEP  000000', 58, H - 52);
+  }
+  log('gl error: ' + gl.getError() + ' | total ms ' + Math.round(performance.now() - T0));
+} catch (e) { log('EXC ' + e.message + '\n' + e.stack); }
+</script>
+</body>
+</html>

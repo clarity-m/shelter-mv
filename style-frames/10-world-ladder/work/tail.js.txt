@@ -1,0 +1,715 @@
+
+// ---------------------------------------------------------------- low-poly polytopes (rung 3)
+// Every primitive also exists as a convex polytope (a list of planes n.x <= h):
+// spheres and ellipsoids become jittered icosahedra, limbs become hexagonal
+// frusta with bevelled ends. Rung 3 ray-casts these instead of the smooth SDFs.
+const PHI = (1 + Math.sqrt(5)) / 2;
+const ICO_FACES = (() => {
+  const out = [];
+  for (const a of [-1, 1]) for (const b of [-1, 1]) for (const c of [-1, 1]) out.push([a, b, c]);
+  for (const a of [-1, 1]) for (const b of [-1, 1]) { out.push([0, a / PHI, b * PHI]); out.push([a / PHI, b * PHI, 0]); out.push([a * PHI, 0, b / PHI]); }
+  return out.map(v3.norm);
+})();
+function randRot(rnd) {
+  const u1 = rnd(), u2 = rnd(), u3 = rnd();
+  const x = Math.sqrt(1 - u1) * Math.sin(2 * Math.PI * u2), y = Math.sqrt(1 - u1) * Math.cos(2 * Math.PI * u2);
+  const z = Math.sqrt(u1) * Math.sin(2 * Math.PI * u3), w = Math.sqrt(u1) * Math.cos(2 * Math.PI * u3);
+  return [[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+          [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+          [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]];
+}
+const mulM = (M, v) => [0, 1, 2].map(i => M[i][0] * v[0] + M[i][1] * v[1] + M[i][2] * v[2]);
+function polyOf(q, rnd, opt) {
+  const P = [];
+  opt = opt || {};
+  if (q.t === 'sph' || q.t === 'ell') {
+    const rad = q.t === 'sph' ? [q.r, q.r, q.r] : q.rad;
+    const R = opt.flatBottom ? [[1, 0, 0], [0, 1, 0], [0, 0, 1]] : randRot(rnd);
+    const yaw = rnd() * Math.PI * 2;
+    for (const n0 of ICO_FACES) {
+      let n = mulM(R, n0);
+      if (opt.flatBottom) n = [n[0] * Math.cos(yaw) - n[2] * Math.sin(yaw), n[1], n[0] * Math.sin(yaw) + n[2] * Math.cos(yaw)];
+      n = v3.norm(v3.add(n, [(rnd() - 0.5) * 0.14, (rnd() - 0.5) * 0.14, (rnd() - 0.5) * 0.14]));
+      const hh = 0.9 * (1 + (rnd() - 0.5) * 0.08);
+      const m = [n[0] / rad[0], n[1] / rad[1], n[2] / rad[2]], ml = v3.len(m);
+      const nn = v3.mul(m, 1 / ml);
+      P.push([...nn, hh / ml + v3.dot(nn, q.c)]);
+    }
+    if (opt.flatBottom) P.push([0, -1, 0, -(q.c[1] - rad[1] * 0.55)]);
+  } else {
+    const a = q.a, b = q.b, r1 = q.r, r2 = q.t === 'cap' ? q.r : q.r2;
+    const ab = v3.sub(b, a), L = v3.len(ab), w = v3.mul(ab, 1 / L);
+    const u = Math.abs(w[1]) < 0.9 ? v3.norm(v3.cross(w, [0, 1, 0])) : v3.norm(v3.cross(w, [1, 0, 0]));
+    const v = v3.cross(w, u);
+    const n = 6, ph = rnd() * Math.PI;
+    for (let k = 0; k < n; k++) {
+      const th = ph + k * 2 * Math.PI / n;
+      const m = v3.add(v3.mul(u, Math.cos(th)), v3.mul(v, Math.sin(th)));
+      const nn = v3.norm(v3.sub(m, v3.mul(w, (r2 - r1) / L)));
+      P.push([...nn, v3.dot(nn, v3.add(a, v3.mul(m, r1 * 0.97)))]);
+    }
+    for (const [end, dir, r] of [[a, -1, r1], [b, 1, r2]]) {
+      const wd = v3.mul(w, dir);
+      P.push([...wd, v3.dot(wd, end) + r * 0.8]);
+      for (let k = 0; k < n; k += 2) {
+        const th = ph + (k + 0.5) * 2 * Math.PI / n;
+        const m = v3.add(v3.mul(u, Math.cos(th)), v3.mul(v, Math.sin(th)));
+        const nn = v3.norm(v3.add(wd, m));
+        P.push([...nn, v3.dot(nn, end) + r * 0.98]);
+      }
+    }
+  }
+  return P;
+}
+function primBound(q) {
+  if (q.t === 'sph') return { c: q.c, r: q.r * 1.3 };
+  if (q.t === 'ell') return { c: q.c, r: Math.max(...q.rad) * 1.3 };
+  const r = Math.max(q.r, q.r2 || 0);
+  return { c: v3.mul(v3.add(q.a, q.b), 0.5), r: v3.len(v3.sub(q.b, q.a)) * 0.5 + r * 1.4 };
+}
+const POLY = (() => {
+  const rnd = mulberry32(90210);
+  const planes = [], meta = [];
+  const HF = [Math.sin(HUMAN.yaw), 0, Math.cos(HUMAN.yaw)], HR = [Math.cos(HUMAN.yaw), 0, -Math.sin(HUMAN.yaw)];
+  const HP = [HUMAN.x, HUMAN.y, HUMAN.z], TP = [TREE.x, TREE.y, TREE.z];
+  const humanToWorld = p => v3.add(HP, v3.add(v3.add(v3.mul(HF, p[0]), [0, p[1], 0]), v3.mul(HR, p[2])));
+  const push = (pl, b, mat, part) => {
+    meta.push({ start: planes.length, count: pl.length, mat, part, c: b.c, r: b.r });
+    for (const p of pl) planes.push(p);
+  };
+  for (const q of HUMAN_PRIMS) {
+    const pl = polyOf(q, rnd).map(([nx, ny, nz, h]) => {
+      const nw = v3.add(v3.add(v3.mul(HF, nx), [0, ny, 0]), v3.mul(HR, nz));
+      return [...nw, h + v3.dot(nw, HP)];
+    });
+    const b = primBound(q);
+    push(pl, { c: humanToWorld(b.c), r: b.r }, q.mat, q.part);
+  }
+  for (const q of TREE_PRIMS) {
+    const pl = polyOf(q, rnd).map(([nx, ny, nz, h]) => [nx, ny, nz, h + v3.dot([nx, ny, nz], TP)]);
+    const b = primBound(q);
+    push(pl, { c: v3.add(TP, b.c), r: b.r }, q.mat, q.part);
+  }
+  const nObj = meta.length;
+  CLOUDS.forEach((cl, i) => {
+    const q = { t: 'ell', c: cl.c, rad: cl.rad };
+    push(polyOf(q, rnd, { flatBottom: true }), { c: cl.c, r: Math.max(...cl.rad) * 1.3 }, MAT.CLOUD, 40 + i);
+  });
+  return { planes, meta, nObj, n: meta.length };
+})();
+
+// ================================================================ WEBGL
+const glc = document.createElement('canvas');
+glc.width = W; glc.height = H;
+const gl = glc.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true, premultipliedAlpha: false });
+if (!gl) throw new Error('no webgl2');
+const EXT_CBF = gl.getExtension('EXT_color_buffer_float');
+gl.getExtension('OES_texture_float_linear');
+if (!EXT_CBF) log('WARNING: no EXT_color_buffer_float');
+
+const VS = `#version 300 es
+in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
+const quadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+function compile(fsSrc, label, vsSrc) {
+  const mk = (type, src) => {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(s);
+      const m = /ERROR: 0:(\d+)/.exec(info);
+      const ln = m ? +m[1] : 0;
+      const ctx = src.split('\n').slice(Math.max(0, ln - 4), ln + 2).map((l, i) => (Math.max(0, ln - 4) + i + 1) + ': ' + l).join('\n');
+      log('SHADER ERROR ' + label + ': ' + info + '\n' + ctx);
+      throw new Error('shader ' + label);
+    }
+    return s;
+  };
+  const t0 = performance.now();
+  const p = gl.createProgram();
+  gl.attachShader(p, mk(gl.VERTEX_SHADER, vsSrc || VS)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fsSrc));
+  gl.bindAttribLocation(p, 0, 'aP'); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { log('LINK ERROR ' + label + ': ' + gl.getProgramInfoLog(p)); throw new Error('link'); }
+  TIMES.compile = (TIMES.compile || 0) + performance.now() - t0;
+  return p;
+}
+const TIMES = {};
+function tex(w, h, fmt, data, filter) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  const F32 = fmt === 'f32', F16 = fmt === 'f16';
+  const ifmt = F32 ? gl.RGBA32F : F16 ? gl.RGBA16F : gl.RGBA8;
+  const type = F32 ? gl.FLOAT : F16 ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
+  gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, gl.RGBA, type, data || null);
+  const filt = filter || (F32 ? gl.NEAREST : gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filt); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filt);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  t.w = w; t.h = h;
+  return t;
+}
+function fbo(texs) {
+  const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  texs.forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0));
+  gl.drawBuffers(texs.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
+  const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  if (st !== gl.FRAMEBUFFER_COMPLETE) log('FBO incomplete ' + st);
+  f.w = texs[0].w; f.h = texs[0].h;
+  return f;
+}
+function bindUniforms(prog, uniforms, textures) {
+  let unit = 0;
+  for (const [name, t] of Object.entries(textures || {})) {
+    gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.uniform1i(gl.getUniformLocation(prog, name), unit); unit++;
+  }
+  for (const [name, v] of Object.entries(uniforms || {})) {
+    const loc = gl.getUniformLocation(prog, name);
+    if (loc === null) continue;
+    if (typeof v === 'number') gl.uniform1f(loc, v);
+    else if (v.length === 2) gl.uniform2fv(loc, v);
+    else if (v.length === 3) gl.uniform3fv(loc, v);
+    else if (v.length === 4) gl.uniform4fv(loc, v);
+  }
+}
+function run(prog, target, uniforms, textures) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+  const w = target ? target.w : W, h = target ? target.h : H;
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  bindUniforms(prog, Object.assign({ uRes: [w, h] }, uniforms), textures);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+// Polytope data textures
+const PL_W = 1024;
+const plTex = (() => {
+  const n = POLY.planes.length, rows = Math.ceil(n / PL_W);
+  const d = new Float32Array(PL_W * rows * 4);
+  POLY.planes.forEach((p, i) => d.set(p, i * 4));
+  return tex(PL_W, rows, 'f32', d);
+})();
+const pmTex = (() => {
+  const d = new Float32Array(POLY.n * 2 * 4);
+  POLY.meta.forEach((m, i) => { d.set([m.start, m.count, m.mat, m.part], i * 8); d.set([...m.c, m.r], i * 8 + 4); });
+  return tex(POLY.n * 2, 1, 'f32', d);
+})();
+
+// ---------------------------------------------------------------- palettes
+const srgb2lin = c => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+const hexLin = (h, k) => { k = k === undefined ? 1 : k; return [1, 3, 5].map(i => srgb2lin(parseInt(h.slice(i, i + 2), 16) / 255) * k); };
+function palGLSL(P) {
+  return Object.entries(P).map(([k, v]) => `const vec3 ${k} = ${g3(Array.isArray(v) ? hexLin(v[0], v[1]) : hexLin(v))};`).join('\n');
+}
+const PAL = {
+  3: { // DIMENSION: clean CG golden hour, moderate saturation
+    P_ZEN: '#58628F', P_UP: '#8B8BB3', P_MID: '#C6A8BC', P_LOW: '#E9C2AC', P_HOR: '#F2D5BD', P_GLOW: '#FFD2A0',
+    P_SUNC: ['#FFDDB2', 1.0], P_DISC: ['#FFF6E4', 1.6],
+    P_CSH: '#7E7CA2', P_CLIT: '#E7C4BE', P_CUND: '#F2B596',
+    P_SUNL: ['#FFC48C', 2.4], P_SKYF: ['#8F96C4', 0.62], P_BOUNCE: ['#6E5F6A', 0.35], P_GLOWL: ['#F6B48E', 0.7], P_CLAWDL: ['#E8835F', 0.9],
+    A_HILL: '#6F8B58', A_FLOOR: '#4C5264', A_TRUNK: '#4E3E3C', A_LEAF: '#4E7A4E', A_SKIN: '#D8A58B', A_HAIR: '#3A2C2E',
+    A_SWEATER: '#D9CFBF', A_PANTS: '#3F4964', A_SHOE: '#2B2B31', A_CLAWD: '#D97757', A_GRID: '#FFFFFF',
+  },
+  4: { // LUMINOUS: the full Shelter dusk
+    P_ZEN: '#3F4E96', P_UP: '#7C79C0', P_MID: '#D49BC0', P_LOW: '#F6B9A0', P_HOR: '#FFD7B4', P_GLOW: '#FFC88C',
+    P_SUNC: ['#FFDCAA', 1.2], P_DISC: ['#FFF8EA', 2.0],
+    P_CSH: '#7069AA', P_CLIT: '#F5C2C4', P_CUND: '#FFAE88',
+    P_SUNL: ['#FFBC80', 2.7], P_SKYF: ['#8D8FD2', 0.66], P_BOUNCE: ['#7D5E72', 0.38], P_GLOWL: ['#FFAC84', 0.85], P_CLAWDL: ['#F08A60', 1.4],
+    A_HILL: '#5F9A4F', A_FLOOR: '#4A4F6E', A_TRUNK: '#4E3636', A_LEAF: '#3F8753', A_SKIN: '#E6AE93', A_HAIR: '#302231',
+    A_SWEATER: '#EFE3CF', A_PANTS: '#3B4679', A_SHOE: '#2A2632', A_CLAWD: '#D97757', A_GRID: '#FFF2E6',
+  },
+};
+PAL[5] = Object.assign({}, PAL[4]);
+PAL[2] = PAL[3]; PAL[1] = PAL[3];
+
+// ================================================================ GLSL LIBRARY
+function COMMON(opt) {
+  return `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D;
+#define LOWPOLY ${opt.lowpoly ? 1 : 0}
+#define CLAWD3D ${opt.clawd3d ? 1 : 0}
+#define LEAFNOISE ${opt.leafNoise ? 1 : 0}
+uniform vec2 uRes;
+uniform sampler2D uPl, uPm;
+const float F = ${fx(F)}, CY = ${fx(CY)};
+const vec3 CAM = ${g3(CAM)};
+const vec3 SUN = ${g3(SUN)};
+const int NPOLY_OBJ = ${POLY.nObj}, NPOLY = ${POLY.n};
+const int M_SKY = 0, M_FLOOR = 1, M_HILL = 2, M_TRUNK = 3, M_LEAF = 4, M_SKIN = 5, M_HAIR = 6, M_SWEATER = 7, M_PANTS = 8, M_SHOE = 9, M_CLAWD = 10, M_CLOUD = 11;
+const vec3 DOME_C = ${g3(DOME.c)}; const float DOME_R = ${fx(DOME.R)};
+${palGLSL(PAL[opt.pal || 3])}
+
+float smin(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
+float sdEll(vec3 q, vec3 r) { float k0 = length(q / r), k1 = length(q / (r * r)); return k0 * (k0 - 1.0) / k1; }
+float sdCap(vec3 p, vec3 a, vec3 b, float r) { vec3 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h) - r; }
+float dot2(vec3 v) { return dot(v, v); }
+float sdRC(vec3 p, vec3 a, vec3 b, float r1, float r2) {
+  vec3 ba = b - a; float l2 = dot(ba, ba); float rr = r1 - r2; float a2 = l2 - rr * rr; float il2 = 1.0 / l2;
+  vec3 pa = p - a; float y = dot(pa, ba); float z = y - l2;
+  float x2 = dot2(pa * l2 - ba * y); float y2 = y * y * l2; float z2 = z * z * l2;
+  float k = sign(rr) * rr * rr * x2;
+  if (sign(z) * a2 * z2 > k) return sqrt(x2 + z2) * il2 - r2;
+  if (sign(y) * a2 * y2 < k) return sqrt(x2 + y2) * il2 - r1;
+  return (sqrt(x2 * a2 * il2) + y * rr) * il2 - r1;
+}
+float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0); }
+float hash13(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
+float vnoise(vec3 p) {
+  vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(hash13(i), hash13(i + vec3(1,0,0)), f.x), mix(hash13(i + vec3(0,1,0)), hash13(i + vec3(1,1,0)), f.x), f.y),
+             mix(mix(hash13(i + vec3(0,0,1)), hash13(i + vec3(1,0,1)), f.x), mix(hash13(i + vec3(0,1,1)), hash13(i + vec3(1,1,1)), f.x), f.y), f.z);
+}
+float vnoise2(vec2 p) {
+  vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1, 0)), f.x), mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), f.x), f.y);
+}
+
+// ---------------------------------------------------------------- terrain
+float hillS(vec2 q) { float h = 0.0;
+${hillCode()}
+  return h; }
+vec3 hillNormalS(vec2 q) {
+  const float e = 0.01;
+  return normalize(vec3(hillS(q - vec2(e, 0.0)) - hillS(q + vec2(e, 0.0)), 2.0 * e, hillS(q - vec2(0.0, e)) - hillS(q + vec2(0.0, e))));
+}
+#if LOWPOLY
+const float CS = 0.7;
+vec2 latPos(ivec2 v) { return vec2(float(v.x) * CS + float(v.y) * CS * 0.5, float(v.y) * CS * 0.8660254); }
+float latH(ivec2 v) {
+  vec2 q = latPos(v);
+  vec2 j = (hash22(vec2(v) + 17.0) - 0.5) * CS * 0.5;
+  float h = hillS(q + j);
+  return h + (hash12(vec2(v) * 1.7 + 3.1) - 0.5) * 0.07 * smoothstep(0.02, 0.4, h);
+}
+float hillT(vec2 q, out vec3 n, out float fid) {
+  float b = q.y / (CS * 0.8660254);
+  float a = q.x / CS - b * 0.5;
+  ivec2 c = ivec2(floor(a), floor(b));
+  float fa = a - floor(a), fb = b - floor(b);
+  ivec2 v0, v1, v2; vec3 w; float up;
+  if (fa + fb < 1.0) { v0 = c; v1 = c + ivec2(1, 0); v2 = c + ivec2(0, 1); w = vec3(1.0 - fa - fb, fa, fb); up = 0.0; }
+  else { v0 = c + ivec2(1, 1); v1 = c + ivec2(0, 1); v2 = c + ivec2(1, 0); w = vec3(fa + fb - 1.0, 1.0 - fa, 1.0 - fb); up = 1.0; }
+  float h0 = latH(v0), h1 = latH(v1), h2 = latH(v2);
+  vec2 q0 = latPos(v0), q1 = latPos(v1), q2 = latPos(v2);
+  vec3 P0 = vec3(q0.x, h0, q0.y), P1 = vec3(q1.x, h1, q1.y), P2 = vec3(q2.x, h2, q2.y);
+  n = normalize(cross(P1 - P0, P2 - P0)); if (n.y < 0.0) n = -n;
+  fid = hash12(vec2(c) + up * 0.5);
+  return dot(w, vec3(h0, h1, h2));
+}
+float hillD(vec2 q) { vec3 n; float f; return hillT(q, n, f); }
+#else
+float hillD(vec2 q) { return hillS(q); }
+#endif
+
+// ---------------------------------------------------------------- objects
+${sdfCode(HUMAN_PRIMS, 'sdHumanL')}
+${sdfCodeD(HUMAN_PRIMS, 'sdHumanLD')}
+${sdfCode(TREE_PRIMS, 'sdTreeL')}
+${sdfCodeD(TREE_PRIMS, 'sdTreeLD')}
+const vec3 HPOS = ${g3([HUMAN.x, HUMAN.y, HUMAN.z])};
+const vec3 HF = ${g3([Math.sin(HUMAN.yaw), 0, Math.cos(HUMAN.yaw)])};
+const vec3 HR = ${g3([Math.cos(HUMAN.yaw), 0, -Math.sin(HUMAN.yaw)])};
+vec3 toHuman(vec3 p) { vec3 d = p - HPOS; return vec3(dot(d, HF), d.y, dot(d, HR)); }
+const vec3 HBW = ${g3(v3.add([HUMAN.x, HUMAN.y, HUMAN.z], v3.add(v3.add(v3.mul([Math.sin(HUMAN.yaw), 0, Math.cos(HUMAN.yaw)], HB.c[0]), [0, HB.c[1], 0]), v3.mul([Math.cos(HUMAN.yaw), 0, -Math.sin(HUMAN.yaw)], HB.c[2]))))}; const float HBR = ${fx(HB.r)};
+const vec3 TPOS = ${g3([TREE.x, TREE.y, TREE.z])};
+const vec3 TBW = ${g3(v3.add([TREE.x, TREE.y, TREE.z], TB.c))}; const float TBR = ${fx(TB.r + 0.15)};
+// Clawd: the 18x5 glyph extruded. Local frame x right, y up, z depth; origin at ground centre.
+const vec3 CPOS = ${g3([CLAWD.x, CLAWD.y, CLAWD.z])};
+const float CU = ${fx(CLAWD.u)}, CDEP = ${fx(CLAWD.depth)};
+const vec2 CYAW = vec2(${fx(Math.cos(CLAWD.yaw))}, ${fx(Math.sin(CLAWD.yaw))});
+const vec3 CGLOW = ${g3([CLAWD.x, CLAWD.y + 5 * CLAWD.u, CLAWD.z - CLAWD.depth])};
+vec3 toClawd(vec3 p) { vec3 d = p - CPOS; return vec3(CYAW.x * d.x - CYAW.y * d.z, d.y, CYAW.y * d.x + CYAW.x * d.z); }
+vec3 fromClawdN(vec3 n) { return vec3(CYAW.x * n.x + CYAW.y * n.z, n.y, -CYAW.y * n.x + CYAW.x * n.z); }
+float boxXY(vec3 p, float x0, float x1, float y0, float y1) {
+  return sdBox(p - vec3((x0 + x1) * 0.5 * CU, (y0 + y1) * 0.5 * CU, 0.0), vec3((x1 - x0) * 0.5 * CU, (y1 - y0) * 0.5 * CU, CDEP * 0.5));
+}
+float sdClawdL(vec3 p) {
+  float d = boxXY(p, -6.0, 6.0, 2.0, 10.0);
+  d = min(d, boxXY(p, -8.0, 8.0, 4.0, 6.0));
+  d = min(d, boxXY(p, -5.0, -4.0, 0.0, 2.0));
+  d = min(d, boxXY(p, -3.0, -2.0, 0.0, 2.0));
+  d = min(d, boxXY(p, 2.0, 3.0, 0.0, 2.0));
+  d = min(d, boxXY(p, 4.0, 5.0, 0.0, 2.0));
+  float e = min(sdBox(p - vec3(-3.5 * CU, 7.0 * CU, 0.0), vec3(0.5 * CU, CU, CDEP)),
+                sdBox(p - vec3(3.5 * CU, 7.0 * CU, 0.0), vec3(0.5 * CU, CU, CDEP)));
+  return max(d, -e);
+}
+float leaf(vec3 q) {
+#if LEAFNOISE
+  return (vnoise(q * 3.4) - 0.5) * 0.12 + (vnoise(q * 8.1) - 0.5) * 0.05;
+#else
+  return 0.0;
+#endif
+}
+
+float mapIds(vec3 p, out int mat, out int part) {
+  float d = (p.y - hillD(p.xz)) * 0.72; mat = M_HILL; part = 20;
+#if !LOWPOLY
+  float bh = length(p - HBW) - HBR;
+  if (bh < d) { int m, pt; float dh = sdHumanL(toHuman(p), m, pt); if (dh < d) { d = dh; mat = m; part = pt; } }
+  float bt = length(p - TBW) - TBR;
+  if (bt < d) { int m, pt; vec3 q = p - TPOS; float dt = sdTreeL(q, m, pt); if (m == M_LEAF) dt += leaf(q); dt *= 0.8; if (dt < d) { d = dt; mat = m; part = pt; } }
+#endif
+#if CLAWD3D
+  float bc = length(p - CPOS - vec3(0.0, 5.0 * CU, 0.0)) - 10.0 * CU;
+  if (bc < d) { float dc = sdClawdL(toClawd(p)); if (dc < d) { d = dc; mat = M_CLAWD; part = 30; } }
+#endif
+  return d;
+}
+float mapD(vec3 p) {        // what casts smooth shadows
+  float d = (p.y - hillD(p.xz)) * 0.72;
+#if !LOWPOLY
+  float bh = length(p - HBW) - HBR;
+  d = min(d, bh < d ? sdHumanLD(toHuman(p)) : bh + 0.01);
+  float bt = length(p - TBW) - TBR;
+  d = min(d, bt < d ? sdTreeLD(p - TPOS) * 0.85 : bt + 0.01);
+#endif
+#if CLAWD3D
+  float bc = length(p - CPOS - vec3(0.0, 5.0 * CU, 0.0)) - 10.0 * CU;
+  d = min(d, bc < d ? sdClawdL(toClawd(p)) : bc + 0.01);
+#endif
+  return d;
+}
+float mapAO(vec3 p) {       // AO always sees the smooth figure and tree
+  float d = (p.y - hillD(p.xz)) * 0.72;
+  float bh = length(p - HBW) - HBR;
+  d = min(d, bh < d ? sdHumanLD(toHuman(p)) : bh + 0.01);
+  float bt = length(p - TBW) - TBR;
+  d = min(d, bt < d ? sdTreeLD(p - TPOS) * 0.85 : bt + 0.01);
+#if CLAWD3D
+  float bc = length(p - CPOS - vec3(0.0, 5.0 * CU, 0.0)) - 10.0 * CU;
+  d = min(d, bc < d ? sdClawdL(toClawd(p)) : bc + 0.01);
+#endif
+  return d;
+}
+vec3 sdfNormal(vec3 p) {
+  const vec2 e = vec2(0.0012, -0.0012);
+  return normalize(e.xyy * mapD(p + e.xyy) + e.yyx * mapD(p + e.yyx) + e.yxy * mapD(p + e.yxy) + e.xxx * mapD(p + e.xxx));
+}
+
+// ---------------------------------------------------------------- polytopes
+vec4 plane(int i) { return texelFetch(uPl, ivec2(i % ${PL_W}, i / ${PL_W}), 0); }
+bool iPoly(vec3 ro, vec3 rd, int s, int n, float tmax, out float tn, out vec3 nn) {
+  float t0 = -1e9, t1 = 1e9; vec3 n0 = vec3(0.0, 1.0, 0.0);
+  tn = 1e9; nn = n0;
+  for (int i = 0; i < 40; i++) {
+    if (i >= n) break;
+    vec4 pl = plane(s + i);
+    float den = dot(pl.xyz, rd), dist = pl.w - dot(pl.xyz, ro);
+    if (abs(den) < 1e-9) { if (dist < 0.0) return false; continue; }
+    float t = dist / den;
+    if (den < 0.0) { if (t > t0) { t0 = t; n0 = pl.xyz; } } else t1 = min(t1, t);
+    if (t0 > t1) return false;
+  }
+  if (t0 < 0.0 || t0 > tmax) return false;
+  tn = t0; nn = n0; return true;
+}
+int castPolys(vec3 ro, vec3 rd, int k0, int k1, inout float tb, inout vec3 nb, inout int mb, inout int pb) {
+  int hitK = -1;
+  for (int k = 0; k < 128; k++) {
+    if (k < k0) continue; if (k >= k1) break;
+    vec4 m0 = texelFetch(uPm, ivec2(2 * k, 0), 0), m1 = texelFetch(uPm, ivec2(2 * k + 1, 0), 0);
+    vec3 oc = ro - m1.xyz; float b = dot(oc, rd), c = dot(oc, oc) - m1.w * m1.w; float h = b * b - c;
+    if (h < 0.0) continue;
+    if (-b - sqrt(h) > tb) continue;
+    float t; vec3 n;
+    if (iPoly(ro, rd, int(m0.x), int(m0.y), tb, t, n)) { tb = t; nb = n; mb = int(m0.z); pb = int(m0.w); hitK = k; }
+  }
+  return hitK;
+}
+bool anyPoly(vec3 ro, vec3 rd, int k0, int k1) {
+  for (int k = 0; k < 128; k++) {
+    if (k < k0) continue; if (k >= k1) break;
+    vec4 m0 = texelFetch(uPm, ivec2(2 * k, 0), 0), m1 = texelFetch(uPm, ivec2(2 * k + 1, 0), 0);
+    vec3 oc = ro - m1.xyz; float b = dot(oc, rd), c = dot(oc, oc) - m1.w * m1.w; float h = b * b - c;
+    if (h < 0.0 || -b + sqrt(h) < 0.0) continue;
+    float t; vec3 n;
+    if (iPoly(ro, rd, int(m0.x), int(m0.y), 1e4, t, n)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------- clouds (smooth)
+float iEll(vec3 ro, vec3 rd, vec3 c, vec3 r, out vec3 n) {
+  vec3 oc = (ro - c) / r, rr = rd / r;
+  float a = dot(rr, rr), b = dot(oc, rr), cc = dot(oc, oc) - 1.0;
+  float h = b * b - a * cc; if (h < 0.0) return -1.0;
+  float t = (-b - sqrt(h)) / a;
+  n = normalize((oc + rr * t) / r);
+  return t;
+}
+${(() => {
+  let s = 'float cloudsE(vec3 ro, vec3 rd, out vec3 nOut, out int idOut) {\n  float tb = 1e9; vec3 n; float t; nOut = vec3(0.0, -1.0, 0.0); idOut = 0;\n';
+  CLOUDS.forEach((c, i) => { s += `  t = iEll(ro, rd, ${g3(c.c)}, ${g3(c.rad)}, n); if (t > 0.0 && t < tb) { tb = t; nOut = n; idOut = ${i}; }\n`; });
+  return s + '  return tb;\n}';
+})()}
+
+// ---------------------------------------------------------------- scene cast
+struct Hit { float t; int mat; int part; vec3 p; vec3 n; float fid; };
+Hit castScene(vec3 ro, vec3 rd) {
+  Hit h; h.t = 1e9; h.mat = M_SKY; h.part = 0; h.n = vec3(0.0); h.p = ro + rd * 1e4; h.fid = 0.0;
+  float tObj = 1e9; vec3 nObj = vec3(0.0, 1.0, 0.0); int mObj = 0, pObj = 0, kObj = -1;
+#if LOWPOLY
+  kObj = castPolys(ro, rd, 0, NPOLY_OBJ, tObj, nObj, mObj, pObj);
+#endif
+  float t = 0.05; bool hit = false; int m = 0, pt = 0;
+  for (int i = 0; i < 320; i++) {
+    vec3 p = ro + rd * t;
+    if ((p.y > 4.6 && rd.y > 0.0) || t > 48.0 || t > tObj) break;
+    float d = mapIds(p, m, pt);
+    if (d < 0.0003 * t) { hit = true; break; }
+    t += d;
+  }
+  if (hit && t < tObj) {
+    h.t = t; h.mat = m; h.part = pt; h.p = ro + rd * t;
+    if (m == M_HILL) {
+#if LOWPOLY
+      hillT(h.p.xz, h.n, h.fid);
+#else
+      h.n = hillNormalS(h.p.xz);
+#endif
+    } else h.n = sdfNormal(h.p);
+    return h;
+  }
+  if (tObj < 1e8) { h.t = tObj; h.mat = mObj; h.part = pObj; h.p = ro + rd * tObj; h.n = nObj; h.fid = fract(float(kObj) * 0.618 + dot(nObj, vec3(12.9898, 78.233, 37.719))); return h; }
+  if (rd.y < 0.0) { h.t = -ro.y / rd.y; h.mat = M_FLOOR; h.part = 21; h.p = ro + rd * h.t; h.n = vec3(0.0, 1.0, 0.0); return h; }
+  float tc = 1e9; vec3 nc = vec3(0.0, -1.0, 0.0); int ci = 0;
+#if LOWPOLY
+  int mc = 0, pc = 0; int kc = castPolys(ro, rd, NPOLY_OBJ, NPOLY, tc, nc, mc, pc); ci = kc - NPOLY_OBJ;
+#else
+  tc = cloudsE(ro, rd, nc, ci);
+#endif
+  if (tc < 1e8) { h.t = tc; h.mat = M_CLOUD; h.part = 40 + ci; h.p = ro + rd * tc; h.n = nc; h.fid = fract(dot(nc, vec3(12.9898, 78.233, 37.719))); }
+  return h;
+}
+
+// ---------------------------------------------------------------- light transport helpers
+float softShadow(vec3 ro, vec3 rd) {
+  float res = 1.0, t = 0.02;
+  for (int i = 0; i < 120; i++) {
+    vec3 p = ro + rd * t;
+    if (p.y > 4.6 || t > 45.0) break;
+    float h = mapD(p);
+    res = min(res, 12.0 * h / t);
+    t += clamp(h, 0.01, 0.3);
+    if (res < 0.002) break;
+  }
+  return clamp(res, 0.0, 1.0);
+}
+float sunVis(vec3 p, vec3 n) {
+  float s = softShadow(p + n * 0.012, SUN);
+#if LOWPOLY
+  if (s > 0.0 && anyPoly(p + n * 0.012, SUN, 0, NPOLY_OBJ)) s = 0.0;
+#endif
+  return s;
+}
+float calcAO(vec3 p, vec3 n) {
+  float occ = 0.0, sca = 1.0;
+  for (int i = 0; i < 5; i++) { float h = 0.015 + 0.1 * float(i) / 4.0; float d = mapAO(p + h * n); occ += (h - d) * sca; sca *= 0.9; }
+  float big = 0.0; sca = 1.0;
+  for (int i = 0; i < 4; i++) { float h = 0.25 + 0.5 * float(i); float d = mapAO(p + h * n); big += max(h - d, 0.0) * sca / h; sca *= 0.8; }
+  return clamp(1.0 - 2.4 * occ, 0.0, 1.0) * clamp(1.0 - 0.3 * big, 0.0, 1.0);
+}
+
+// ---------------------------------------------------------------- sky
+float PIXANG() { return (1920.0 / uRes.x) / F; }
+vec3 skyBase(vec3 rd) {
+  float e = max(rd.y, 0.0);
+  vec3 c = mix(P_HOR, P_LOW, smoothstep(0.0, 0.08, e));
+  c = mix(c, P_MID, smoothstep(0.05, 0.24, e));
+  c = mix(c, P_UP, smoothstep(0.2, 0.45, e));
+  c = mix(c, P_ZEN, smoothstep(0.4, 0.85, e));
+  vec2 hz = normalize(rd.xz + 1e-5), hs = normalize(SUN.xz);
+  float az = max(dot(hz, hs), 0.0);
+  float band = pow(az, 5.0) * exp(-e * 5.0);
+  c = mix(c, P_GLOW, clamp(band * 0.75, 0.0, 1.0));
+  return c;
+}
+vec3 sunHalo(vec3 rd) {
+  float d = 1.0 - dot(rd, SUN);
+  return P_SUNC * (0.55 * exp(-d * 1400.0) + 0.3 * exp(-d * 180.0) + 0.14 * exp(-d * 22.0));
+}
+float sunDisc(vec3 rd) {
+  float ang = acos(clamp(dot(rd, SUN), -1.0, 1.0));
+  float r = 26.0 / F;
+  return 1.0 - smoothstep(r - PIXANG(), r + PIXANG(), ang);
+}
+float domeLines(vec3 rd, out float el) {
+  vec3 oc = CAM - DOME_C; float b = dot(oc, rd); float c = dot(oc, oc) - DOME_R * DOME_R;
+  float t = -b + sqrt(max(b * b - c, 0.0));
+  vec3 q = (CAM + rd * t - DOME_C) / DOME_R;
+  float az = atan(q.x, q.z); el = asin(clamp(q.y, -1.0, 1.0));
+  float stp = radians(10.0);
+  float pa = PIXANG() * t / DOME_R;              // one pixel, in dome radians
+  float da = abs(fract(az / stp + 0.5) - 0.5) * stp * cos(el);
+  float de = abs(fract(el / stp + 0.5) - 0.5) * stp;
+  float la = 1.0 - smoothstep(0.35, 1.25, da / pa);
+  float le = 1.0 - smoothstep(0.35, 1.25, de / pa);
+  return max(la, le) * smoothstep(0.004, 0.03, el);
+}
+float floorLines(vec3 p, float t, vec3 rd) {
+  float pa = PIXANG() * t;
+  vec2 g = abs(fract(p.xz + 0.5) - 0.5);
+  float fx = pa, fz = pa / max(abs(rd.y), 0.015);
+  float lx = 1.0 - smoothstep(0.3, 1.2, g.x / fx);
+  float lz = 1.0 - smoothstep(0.3, 1.2, g.y / fz);
+  float fade = 1.0 - smoothstep(0.35, 0.9, max(fx, fz * 0.25));
+  return max(lx, lz) * fade;
+}
+vec3 tonemapHP(vec3 c) {   // hue-preserving soft shoulder
+  float m = max(max(c.r, c.g), c.b);
+  if (m > 0.72) { float mm = 0.72 + 0.28 * (1.0 - exp(-(m - 0.72) / 0.28)); c *= mm / m; }
+  float w = smoothstep(1.2, 4.0, m);
+  return mix(c, vec3(max(max(c.r, c.g), c.b)), w * 0.5);
+}
+vec3 toSRGB(vec3 c) { c = max(c, 0.0); return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+`;
+}
+
+// ================================================================ RUNG 3/4: lit forward render
+function LIT_FS(opt) {
+  return COMMON(opt) + `
+layout(location = 0) out vec4 oCol;
+layout(location = 1) out vec4 oAux;
+uniform float uSS;
+vec3 albedo(int mat) {
+  if (mat == M_HILL) return A_HILL; if (mat == M_FLOOR) return A_FLOOR; if (mat == M_TRUNK) return A_TRUNK;
+  if (mat == M_LEAF) return A_LEAF; if (mat == M_SKIN) return A_SKIN; if (mat == M_HAIR) return A_HAIR;
+  if (mat == M_SWEATER) return A_SWEATER; if (mat == M_PANTS) return A_PANTS; if (mat == M_SHOE) return A_SHOE;
+  return A_CLAWD;
+}
+vec3 horizonFog(vec3 rd) { return skyBase(normalize(vec3(rd.x, 0.015, rd.z))); }
+vec3 skyColor(vec3 rd) {
+  vec3 c = skyBase(rd) + sunHalo(rd);
+  float el; float g = domeLines(rd, el);
+  float glowMask = 1.0 - 0.8 * exp(-(1.0 - dot(rd, SUN)) * 30.0);
+  c = mix(c, c * 1.18 + A_GRID * 0.03, g * ${fx(opt.gridAlpha || 0.35)} * glowMask);
+  c = mix(c, P_DISC, sunDisc(rd));
+  return c;
+}
+vec3 shadeHit(Hit h, vec3 rd) {
+  if (h.mat == M_SKY) return skyColor(rd);
+  if (h.mat == M_CLOUD) {
+    vec3 n = h.n;
+    float lit = dot(n, SUN);
+    vec3 c = mix(P_CSH, P_CLIT, smoothstep(-0.35, 0.6, lit));
+    c = mix(c, P_CUND, smoothstep(0.1, -0.7, n.y) * 0.8);
+    float rim = pow(1.0 - clamp(dot(n, -rd), 0.0, 1.0), 2.5);
+    c += P_SUNC * rim * exp(-(1.0 - dot(rd, SUN)) * 6.0) * 0.6;
+#if LOWPOLY
+    c *= 0.97 + 0.06 * h.fid;
+#endif
+    return mix(c, skyBase(rd), 0.2);
+  }
+  vec3 p = h.p, n = h.n;
+  float sh = sunVis(p, n);
+  float ao = calcAO(p, n);
+  vec3 alb = albedo(h.mat);
+#if LOWPOLY
+  alb *= 0.94 + 0.12 * h.fid;
+#endif
+  if (h.mat == M_HILL) {
+    float v = vnoise2(p.xz * 1.3) * 0.6 + vnoise2(p.xz * 4.0) * 0.4;
+    alb *= 0.88 + 0.24 * v;
+    alb = mix(alb, A_FLOOR, smoothstep(0.12, 0.0, hillS(p.xz)) * 0.8);
+  }
+  float ndl = max(dot(n, SUN), 0.0);
+  float up = n.y * 0.5 + 0.5;
+  vec3 amb = mix(P_BOUNCE, P_SKYF, up) * ao;
+  vec3 gdir = normalize(vec3(SUN.x, 0.2, SUN.z));
+  vec3 glow = P_GLOWL * pow(max(dot(n, gdir), 0.0), 1.5) * ao;
+  vec3 c = alb * (P_SUNL * ndl * sh + amb + glow);
+  float fres = pow(1.0 - clamp(dot(n, -rd), 0.0, 1.0), 4.0);
+  c += P_SUNL * alb * fres * smoothstep(-0.3, 0.6, dot(n, SUN)) * (0.25 + 0.75 * sh) * 0.9;
+  vec3 lc = CGLOW - p; float dl = length(lc);
+  if (h.mat != M_CLAWD) c += alb * P_CLAWDL * max(dot(n, lc / dl) * 0.8 + 0.2, 0.0) / (1.0 + dl * dl * 2.5) * (0.4 + 0.6 * ao);
+  if (h.mat == M_CLAWD) {
+    // lit by the scene, plus a quiet inner warmth so the orange stays saturated in backlight
+    vec3 ln = n;
+    c = A_CLAWD * (P_SUNL * ndl * sh * 0.9 + amb * 1.1 + glow * 1.2) + A_CLAWD * ${fx(opt.clawdEmit || 0.35)};
+    c += P_SUNL * A_CLAWD * fres * 0.8;
+  }
+  if (h.mat == M_FLOOR) {
+    vec3 rf = reflect(rd, n);
+    float fr = 0.04 + 0.96 * pow(1.0 - max(-rd.y, 0.0), 5.0);
+    c = mix(c, skyBase(rf) + sunHalo(rf) * 0.6, fr * 0.55);
+    c = mix(c, c * 1.35 + A_GRID * 0.04, floorLines(p, h.t, rd) * ${fx(opt.floorGrid || 0.5)});
+  }
+  float fog = 1.0 - exp(-max(h.t - 2.5, 0.0) * ${fx(opt.fog || 0.016)});
+  return mix(c, horizonFog(rd), fog);
+}
+void main() {
+  vec3 acc = vec3(0.0); vec4 aux = vec4(0.0);
+  int N = int(uSS);
+  for (int sy = 0; sy < 4; sy++) { if (sy >= N) break;
+    for (int sx = 0; sx < 4; sx++) { if (sx >= N) break;
+      vec2 jit = (vec2(float(sx), float(sy)) + 0.5) / float(N) - 0.5;
+      vec2 fc = gl_FragCoord.xy + jit;
+      vec2 px = vec2(fc.x, uRes.y - fc.y) * (1920.0 / uRes.x);
+      vec3 rd = normalize(vec3((px.x - 960.0) / F, (CY - px.y) / F, 1.0));
+      Hit h = castScene(CAM, rd);
+      acc += shadeHit(h, rd);
+      if (sx == 0 && sy == 0) aux = vec4(float(h.mat) + float(h.part) / 64.0, h.t, h.n.x, h.n.y);
+    }
+  }
+  oCol = vec4(acc / float(N * N), 1.0);
+  oAux = aux;
+}`;
+}
+
+// ================================================================ POST (blur, bloom, finish)
+const BLUR_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uRes; uniform vec2 uDir; uniform float uSigma;
+out vec4 o;
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec2 st = uDir / uRes;
+  vec4 acc = vec4(0.0); float wsum = 0.0;
+  for (int i = -24; i <= 24; i++) {
+    float x = float(i); float w = exp(-x * x / (2.0 * uSigma * uSigma));
+    acc += texture(uSrc, uv + st * x * max(uSigma / 8.0, 1.0)) * w; wsum += w;
+  }
+  o = acc / wsum;
+}`;
+const DOWN_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uRes; uniform float uThr;
+out vec4 o;
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec2 px = 1.0 / uRes;
+  vec3 c = (texture(uSrc, uv + px * vec2(-0.25, -0.25)).rgb + texture(uSrc, uv + px * vec2(0.25, -0.25)).rgb +
+            texture(uSrc, uv + px * vec2(-0.25, 0.25)).rgb + texture(uSrc, uv + px * vec2(0.25, 0.25)).rgb) * 0.25;
+  float m = max(max(c.r, c.g), c.b);
+  o = vec4(c * smoothstep(uThr, uThr + 0.5, m), 1.0);
+}`;
+let _blurProg, _downProg;
+function bloomChain(src, thr, sigmas) {
+  _downProg = _downProg || compile(DOWN_FS, 'down');
+  _blurProg = _blurProg || compile(BLUR_FS, 'blur');
+  const outs = [];
+  for (const [scale, sigma] of sigmas) {
+    const w = Math.round(W / scale), h = Math.round(H / scale);
+    const a = tex(w, h, 'f16'), b = tex(w, h, 'f16');
+    const fa = fbo([a]), fb = fbo([b]);
+    run(_downProg, fa, { uThr: thr }, { uSrc: src });
+    run(_blurProg, fb, { uDir: [1, 0], uSigma: sigma }, { uSrc: a });
+    run(_blurProg, fa, { uDir: [0, 1], uSigma: sigma }, { uSrc: b });
+    outs.push(a);
+  }
+  return outs;
+}
+
+// ================================================================ OUTPUT
+const out = document.getElementById('out');
+const octx = out.getContext('2d');
+function finish() {
+  TIMES.total = performance.now() - T0;
+  log('rung ' + RUNG + ' times(ms): ' + Object.entries(TIMES).map(([k, v]) => k + '=' + v.toFixed(0)).join(' '));
+  if (Q.get('dump') === '1') document.getElementById('png').textContent = out.toDataURL('image/png');
+}
+function timed(label, fn) { const t0 = performance.now(); const r = fn(); gl.finish(); TIMES[label] = (TIMES[label] || 0) + performance.now() - t0; return r; }
+function blitToCanvas() { octx.drawImage(glc, 0, 0); }

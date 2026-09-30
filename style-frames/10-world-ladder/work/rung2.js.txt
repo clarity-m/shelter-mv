@@ -1,0 +1,154 @@
+
+// ================================================================ RUNG 2: VECTOR
+// The same scene cel-shaded at 2x: every surface gets one of two flat tones (lit or
+// shade, split by a crisp terminator), the sky is posterised into flat bands with
+// flat rings around the sun. An ink pass then draws a uniform line wherever one
+// object group meets another, on the nearer side only (ligne claire), lighter ink
+// for the landscape and the clouds. Clawd is the ladder's vector silhouette.
+const VEC_PAL = {
+  SK0: '#6f7096', SK1: '#8a87aa', SK2: '#a69cb8', SK3: '#c2b0bf', SK4: '#d9c3c1', SK5: '#e8d4c7',
+  SR1: '#f0dfcd', SR2: '#f5e8d7', SUNV: '#fbf3e6',
+  CLS: '#9d98b8', CLL: '#e4cfcb', CLU: '#ecd6c9',
+  HSH: '#4a5a5c', HLT: '#8f9270', HFAR: '#6a7474', FLR: '#565a70', FLG: '#6d7188',
+  TSH: '#3b4a4d', TLT: '#708062', TRK: '#3d3437',
+  HAIR: '#2b2733', SKIN: '#b99586', SWS: '#9895a8', SWL: '#d6cfcd', PNT: '#3a3e56', PNL: '#555a74', SHOE: '#25232b',
+  INK: '#2a2540', INK2: '#433d5a', INKC: '#8d86ad',
+};
+const vecGLSL = () => Object.entries(VEC_PAL).map(([k, v]) => `const vec3 V_${k} = vec3(${[1, 3, 5].map(i => fx(parseInt(v.slice(i, i + 2), 16) / 255)).join(',')});`).join('\n');
+const CEL_FS = opt => COMMON(opt) + `
+layout(location = 0) out vec4 oCol; layout(location = 1) out vec4 oAux;
+${vecGLSL()}
+vec3 celSky(vec3 rd) {
+  float el = max(rd.y, 0.0), cs = dot(rd, SUN);
+  float wide = exp(-(1.0 - cs) * 9.0);
+  float v = 1.0 - pow(el / 0.5, 0.8) + 0.25 * wide;      // 1 at the horizon, ~0 at the top
+  vec3 c = V_SK0;
+  if (v > 0.18) c = V_SK1; if (v > 0.36) c = V_SK2; if (v > 0.55) c = V_SK3; if (v > 0.74) c = V_SK4; if (v > 0.9) c = V_SK5;
+  float ang = acos(clamp(cs, -1.0, 1.0)) * F;             // pixels from the sun centre
+  if (ang < 150.0) c = V_SR1; if (ang < 88.0) c = V_SR2; if (ang < 27.0) c = V_SUNV;
+  float el2; float g = domeLines(rd, el2);
+  if (ang > 120.0) c = mix(c, c * 1.08 + 0.02, step(0.5, g));
+  return c;
+}
+void main() {
+  vec2 fc = gl_FragCoord.xy;
+  vec2 px = vec2(fc.x, uRes.y - fc.y) * (1920.0 / uRes.x);
+  vec3 rd = normalize(vec3((px.x - 960.0) / F, (CY - px.y) / F, 1.0));
+  Hit h = castScene(CAM, rd);
+  vec3 c; float grp = 0.0, wcls = 0.0;
+  if (h.mat == M_SKY) { c = celSky(rd); grp = 0.0; }
+  else if (h.mat == M_CLOUD) {
+    float lit = dot(h.n, SUN) * 0.6 - h.n.y * 0.7;
+    c = lit > 0.12 ? V_CLL : V_CLS;
+    if (h.n.y < -0.55) c = V_CLU;
+    grp = 30.0 + float(h.part); wcls = 2.0;
+  } else {
+    vec3 n = h.n, p = h.p;
+    float sh = sunVis(p, n);
+    float ndl = max(dot(n, SUN), 0.0) * sh;
+    vec3 gdir = normalize(vec3(SUN.x, 0.12, SUN.z));
+    float gf = max(dot(n, gdir), 0.0);
+    float fres = pow(1.0 - clamp(dot(n, -rd), 0.0, 1.0), 3.0);
+    float lit = ndl * 1.6 + gf * gf * 0.5 + fres * smoothstep(-0.2, 0.7, dot(n, gdir)) * 0.6;
+    int m = h.mat;
+    if (m == M_HILL || m == M_FLOOR) {
+      float fm = m == M_FLOOR ? 1.0 : floorMix(p.xz);
+      c = lit > 0.42 ? V_HLT : V_HSH;
+      if (h.t > 13.0 && lit <= 0.42) c = V_HFAR;
+      if (fm > 0.5) {
+        c = V_FLR;
+        vec2 g = abs(fract(p.xz * 2.0 + 0.5) - 0.5) / 2.0;
+        float pw = PIXANG() * h.t;
+        if (g.x < pw * 0.9 || g.y < pw * 0.9 / max(abs(rd.y), 0.05)) c = V_FLG;
+      }
+      grp = 1.0; wcls = 1.0;
+    } else if (m == M_LEAF) { c = lit > 0.35 ? V_TLT : V_TSH; grp = 3.0; wcls = 0.0; }
+    else if (m == M_TRUNK) { c = V_TRK; grp = 2.0; }
+    else if (m == M_HAIR) { c = V_HAIR; grp = 4.0; }
+    else if (m == M_SKIN) { c = V_SKIN; grp = float(h.part == 10 ? 11 : 5); }
+    else if (m == M_SWEATER) { c = lit > 0.3 ? V_SWL : V_SWS; grp = float(h.part == 2 ? 6 : h.part); }
+    else if (m == M_PANTS) { c = lit > 0.3 ? V_PNL : V_PNT; grp = float(h.part == 1 ? 6 : h.part); }
+    else if (m == M_SHOE) { c = V_SHOE; grp = 12.0; }
+  }
+  oCol = vec4(c, 1.0);
+  oAux = vec4(grp, h.t, wcls, 0.0);
+}`;
+const INK_FS = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uCel, uAux; uniform vec2 uRes;
+uniform vec3 uClawd;      // screen x centre, ground y, px per glyph unit
+out vec4 o;
+${vecGLSL()}
+float sdRoundBox(vec2 p, vec2 c, vec2 hb, float r) { vec2 q = abs(p - c) - hb + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
+float smin(float a, float b, float k) { if (k <= 0.0) return min(a, b); float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
+// the ladder's vector Clawd (glyph units, 18 x 10 box, y down)
+float clawdV(vec2 p, out float eye) {
+  float d = sdRoundBox(p, vec2(9.0, 4.0), vec2(6.0, 4.0), 0.7);
+  d = smin(d, sdRoundBox(p, vec2(9.0, 5.0), vec2(8.0, 1.0), 0.98), 0.32);
+  d = smin(d, sdRoundBox(p, vec2(4.5, 8.75), vec2(0.5, 1.25), 0.48), 0.18);
+  d = smin(d, sdRoundBox(p, vec2(6.5, 8.75), vec2(0.5, 1.25), 0.48), 0.18);
+  d = smin(d, sdRoundBox(p, vec2(11.5, 8.75), vec2(0.5, 1.25), 0.48), 0.18);
+  d = smin(d, sdRoundBox(p, vec2(13.5, 8.75), vec2(0.5, 1.25), 0.48), 0.18);
+  eye = min(sdRoundBox(p, vec2(5.5, 3.0), vec2(0.5, 1.0), 0.46), sdRoundBox(p, vec2(12.5, 3.0), vec2(0.5, 1.0), 0.46));
+  return max(d, -eye);
+}
+vec3 inkOf(float w) { return w > 1.5 ? V_INKC : (w > 0.5 ? V_INK2 : V_INK); }
+float radiusOf(float w) { return w > 1.5 ? 2.2 : (w > 0.5 ? 3.0 : 4.2); }
+void main() {
+  ivec2 o1 = ivec2(gl_FragCoord.xy);
+  vec3 acc = vec3(0.0);
+  for (int sy = 0; sy < 2; sy++) for (int sx = 0; sx < 2; sx++) {
+    ivec2 q = o1 * 2 + ivec2(sx, sy);
+    vec3 c = texelFetch(uCel, q, 0).rgb;
+    vec4 a = texelFetch(uAux, q, 0);
+    float R = radiusOf(a.z);
+    float ink = 0.0;
+    if (a.x > 0.5) {
+      for (int dy = -5; dy <= 5; dy++) for (int dx = -5; dx <= 5; dx++) {
+        float rr = float(dx * dx + dy * dy);
+        if (rr > R * R || rr == 0.0) continue;
+        vec4 b = texelFetch(uAux, q + ivec2(dx, dy), 0);
+        bool diff = abs(b.x - a.x) > 0.5;
+        if ((diff && a.y < b.y * 0.985) || (!diff && a.y < b.y * 0.82)) ink = 1.0;
+      }
+    }
+    acc += mix(c, inkOf(a.z), ink);
+  }
+  vec3 col = acc * 0.25;
+  // Clawd: flat orange, a whisper of top light, the same ink as the figure; eyes open to the sky
+  vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  float U = uClawd.z;
+  vec2 g = (px - vec2(uClawd.x - 9.0 * U, uClawd.y - 10.0 * U)) / U;
+  // his light: two flat rings behind him, a warm pool on the grass
+  vec4 a0 = texelFetch(uAux, o1 * 2, 0);
+  vec2 lc = (px - vec2(uClawd.x, uClawd.y - 5.0 * U)) / vec2(1.3, 1.0);
+  float lr = length(lc);
+  if (a0.x < 0.5) {
+    if (lr < 13.5 * U) col = mix(col, col * 1.05 + vec3(0.035, 0.012, 0.0), 0.9);
+    if (lr < 9.0 * U) col = mix(col, V_SR2, 0.55);
+  } else if (a0.x < 1.5 && lr < 11.0 * U && px.y > uClawd.y - 2.0) col = mix(col, vec3(0.45, 0.36, 0.34), 0.35);
+  float eye; float d = clawdV(g, eye);
+  float inkW = 2.3 / U;
+  float cov = clamp(0.5 - d * U, 0.0, 1.0);
+  float covInk = clamp(0.5 - (d - inkW) * U, 0.0, 1.0);
+  vec3 body = mix(vec3(0.878, 0.498, 0.373), vec3(0.831, 0.439, 0.31), clamp(g.y / 10.0, 0.0, 1.0));
+  // eye rims: a thin ink lining inside each socket
+  float eyeRim = clamp(0.5 - (abs(eye) - inkW * 0.5) * U, 0.0, 1.0) * step(eye, inkW);
+  col = mix(col, V_INK, covInk);
+  col = mix(col, body, cov);
+  col = mix(col, V_INK, eyeRim * step(-0.6, -eye) * covInk);
+  o = vec4(col, 1.0);
+}`;
+function rung2() {
+  const opt = { lowpoly: false, clawd3d: false, leafNoise: false, pal: 3 };
+  const W2 = W * 2, H2 = H * 2;
+  const cel = tex(W2, H2, 'f16', null, gl.NEAREST), aux = tex(W2, H2, 'f32');
+  const fb = fbo([cel, aux]);
+  const prog = compile(CEL_FS(opt), 'cel2');
+  timed('scene', () => runTiled(prog, fb, {}, { uPl: plTex, uPm: pmTex }, 16));
+  const cp = project([CLAWD.x, CLAWD.y, CLAWD.z]);
+  const ink = compile(INK_FS, 'ink2');
+  timed('ink', () => runTiled(ink, null, { uClawd: [cp[0], cp[1], 8] }, { uCel: cel, uAux: aux }, 8));
+  gl.finish();
+  blitToCanvas();
+}

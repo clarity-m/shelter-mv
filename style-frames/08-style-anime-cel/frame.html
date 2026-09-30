@@ -1,0 +1,801 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>08 anime cel - the harness</title>
+<style>html,body{margin:0;padding:0;background:#000;overflow:hidden}canvas{display:block}</style>
+</head><body><canvas id="out"></canvas>
+<script>
+'use strict';
+/* Shelter MV style frame 08: 2D anime cel. Scene: "The harness".
+   Pipeline (all Canvas2D, deterministic):
+   1. painted background: gradients, puff-built cumulus, skyline, window, bench, monitor;
+      brush-dab texture sampled from the underpainting; slight depth-of-field blur.
+   2. cel layers (researchers, harness): Catmull-Rom spline shapes, flat base colour,
+      one hard shadow tone, highlight shapes, ink lines (tapered brush polygons for detail).
+   3. compositing ("satsuei"): light gradients masked to each cel (para), hard rim lights
+      from silhouette offsets, light shaft, dust, bloom/diffusion, grade, grain.
+   4. Clawd stamped last on integer cells, exact #D97757. */
+const T0 = performance.now();
+const Q = new URLSearchParams(location.search);
+const VW = +(Q.get('w') || 1920), VH = +(Q.get('h') || 1080);
+const VIEW = { x: +(Q.get('vx') || 0), y: +(Q.get('vy') || 0), s: +(Q.get('vs') || 1) };
+const PX = VIEW.s;
+const NOPOST = Q.has('nopost');
+const out = document.getElementById('out'); out.width = VW; out.height = VH;
+const TIM = [];
+function tick(n) { TIM.push(n + ' ' + (performance.now() - T0).toFixed(0)); }
+
+// ------------------------------------------------------------------ utilities
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
+const D2R = Math.PI / 180;
+function mk(w = VW, h = VH) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+function VT(g) { g.setTransform(PX, 0, 0, PX, -VIEW.x * PX, -VIEW.y * PX); }
+function ID(g) { g.setTransform(1, 0, 0, 1, 0, 0); }
+function ctxOf(c) { const g = c.getContext('2d'); VT(g); g.lineJoin = 'round'; g.lineCap = 'round'; return g; }
+function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+function rgba(h, a) { const c = hexRgb(h); return `rgba(${c[0]},${c[1]},${c[2]},${a})`; }
+function big(g, style) { g.fillStyle = style; g.fillRect(-5000, -5000, 12000, 12000); }
+
+// Catmull-Rom through points; a point [x,y,1] is a sharp corner.
+function tangents(pts, closed, k) {
+  const n = pts.length, T = [];
+  for (let i = 0; i < n; i++) {
+    if (pts[i][2]) { T.push([0, 0]); continue; }
+    let a, b;
+    if (closed) { a = pts[(i - 1 + n) % n]; b = pts[(i + 1) % n]; }
+    else { a = pts[Math.max(0, i - 1)]; b = pts[Math.min(n - 1, i + 1)]; }
+    T.push([(b[0] - a[0]) * k / 6, (b[1] - a[1]) * k / 6]);
+  }
+  return T;
+}
+function spl(pts, closed = true, k = 1, path = new Path2D()) {
+  const n = pts.length, T = tangents(pts, closed, k);
+  path.moveTo(pts[0][0], pts[0][1]);
+  const segs = closed ? n : n - 1;
+  for (let i = 0; i < segs; i++) {
+    const j = (i + 1) % n, p = pts[i], q = pts[j];
+    path.bezierCurveTo(p[0] + T[i][0], p[1] + T[i][1], q[0] - T[j][0], q[1] - T[j][1], q[0], q[1]);
+  }
+  if (closed) path.closePath();
+  return path;
+}
+function splPts(pts, closed = false, k = 1, per = 14) {
+  const n = pts.length, T = tangents(pts, closed, k), o = [];
+  const segs = closed ? n : n - 1;
+  for (let i = 0; i < segs; i++) {
+    const j = (i + 1) % n, p = pts[i], q = pts[j];
+    const c1 = [p[0] + T[i][0], p[1] + T[i][1]], c2 = [q[0] - T[j][0], q[1] - T[j][1]];
+    for (let s = 0; s < per; s++) {
+      const t = s / per, u = 1 - t;
+      o.push([u * u * u * p[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t * t * t * q[0],
+              u * u * u * p[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t * t * t * q[1]]);
+    }
+  }
+  if (!closed) o.push([pts[n - 1][0], pts[n - 1][1]]); else o.push([pts[0][0], pts[0][1]]);
+  return o;
+}
+// polygon around a polyline with width profile wf(u)
+function strokePoly(P, wf) {
+  const n = P.length, L = [0];
+  for (let i = 1; i < n; i++) L.push(L[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+  const tot = L[n - 1] || 1, lf = [], rt = [];
+  for (let i = 0; i < n; i++) {
+    const a = P[Math.max(0, i - 1)], b = P[Math.min(n - 1, i + 1)];
+    let dx = b[0] - a[0], dy = b[1] - a[1]; const d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;
+    const w = wf(L[i] / tot) / 2;
+    lf.push([P[i][0] - dy * w, P[i][1] + dx * w]); rt.push([P[i][0] + dy * w, P[i][1] - dx * w]);
+  }
+  const path = new Path2D(); path.moveTo(lf[0][0], lf[0][1]);
+  for (let i = 1; i < n; i++) path.lineTo(lf[i][0], lf[i][1]);
+  for (let i = n - 1; i >= 0; i--) path.lineTo(rt[i][0], rt[i][1]);
+  path.closePath(); return path;
+}
+const taperF = (w, a = 0.3, b = 0.3, m = 0.12) => u => w * (u < a ? m + (1 - m) * Math.sin(u / a * Math.PI / 2) : u > 1 - b ? m + (1 - m) * Math.sin((1 - u) / b * Math.PI / 2) : 1);
+function brush(g, pts, w, col, a = 0.3, b = 0.3, m = 0.12) { g.fillStyle = col; g.fill(strokePoly(splPts(pts, false, 1, 12), taperF(w, a, b, m))); }
+function brushF(g, pts, wf, col) { g.fillStyle = col; g.fill(strokePoly(splPts(pts, false, 1, 12), wf)); }
+
+// cel helpers
+function fillP(g, p, c) { g.fillStyle = c; g.fill(p); }
+function inkP(g, p, w, c) { g.lineWidth = w; g.strokeStyle = c; g.stroke(p); }
+function clipFill(g, clip, shape, c) { g.save(); g.clip(clip); g.fillStyle = c; g.fill(shape); g.restore(); }
+// the part of `path` NOT covered by itself shifted by (dx,dy): a form-following crescent
+function crescent(g, path, dx, dy, c) {
+  g.save(); g.clip(path);
+  const p = new Path2D(); p.rect(-6000, -6000, 14000, 14000);
+  p.addPath(path, new DOMMatrix([1, 0, 0, 1, dx, dy]));
+  g.clip(p, 'evenodd');
+  g.fillStyle = c; g.fill(path);
+  g.restore();
+}
+// same, for shapes made of overlapping subpaths (unions): done with compositing on a scratch canvas
+let TMP = null;
+function crescentL(g, shape, dx, dy, c) {
+  if (!TMP) TMP = mk();
+  const tg = TMP.getContext('2d');
+  tg.setTransform(1, 0, 0, 1, 0, 0); tg.globalCompositeOperation = 'source-over'; tg.clearRect(0, 0, VW, VH);
+  tg.setTransform(g.getTransform());
+  tg.fillStyle = c; tg.fill(shape);
+  tg.globalCompositeOperation = 'destination-out'; tg.translate(dx, dy); tg.fill(shape);
+  tg.globalCompositeOperation = 'source-over';
+  g.save(); ID(g); g.drawImage(TMP, 0, 0); g.restore();
+}
+function ell(x, y, rx, ry, rot = 0) { const p = new Path2D(); p.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2); return p; }
+
+// compositing helpers (layer-level)
+function paraOnto(layer, paint, op = 'screen', alpha = 1) {
+  const t = mk(), tg = t.getContext('2d'); VT(tg); paint(tg);
+  ID(tg); tg.globalCompositeOperation = 'destination-in'; tg.drawImage(layer, 0, 0);
+  const lg = layer.getContext('2d'); lg.save(); ID(lg); lg.globalCompositeOperation = op; lg.globalAlpha = alpha; lg.drawImage(t, 0, 0); lg.restore();
+}
+function rimOnto(layer, dx, dy, paint, alpha = 1, clipFn = null) {
+  const t = mk(), tg = t.getContext('2d');
+  tg.drawImage(layer, 0, 0);
+  tg.globalCompositeOperation = 'destination-out'; tg.drawImage(layer, dx * PX, dy * PX);
+  tg.globalCompositeOperation = 'source-in'; VT(tg); paint(tg);
+  if (clipFn) { tg.globalCompositeOperation = 'destination-in'; clipFn(tg); }
+  const lg = layer.getContext('2d'); lg.save(); ID(lg); lg.globalCompositeOperation = 'source-atop'; lg.globalAlpha = alpha; lg.drawImage(t, 0, 0); lg.restore();
+}
+function radial(g, x, y, r0, r1, stops) { const gr = g.createRadialGradient(x, y, r0, x, y, r1); for (const [o, c] of stops) gr.addColorStop(o, c); return gr; }
+
+// ------------------------------------------------------------------ palette
+// early phase: lavender-slate greys; Clawd's orange is the only chroma
+const COL = {
+  ink: '#1e1b27',
+  wall: '#2a2836', wallDk: '#1b1a24',
+  skyTop: '#3b3c57', skyMid: '#6a6784', skyLow: '#aa9fab', skyHor: '#e4d4c9',
+  cloudHi: '#eee2dc', cloudMid: '#a8a1b6', cloudSh: '#827c96',
+  frame: '#191820', frameHi: '#5d5a6d',
+  skin: '#e2cfca', skinSh: '#ae97a6', skinLine: '#6d4c59', blush: '#e9a09a',
+  hairA: '#393c50', hairASh: '#27293a', hairAHi: '#5e6584', hairLine: '#17161f',
+  coat: '#9d9ab1', coatSh: '#6c6886', coatLine: '#322f3e',
+  shirt: '#47465a', shirtSh: '#333244',
+  sweater: '#4b4d62', sweaterSh: '#343549', hairB: '#2d2c38', hairBSh: '#1e1d27', hairBHi: '#4e4d63',
+  rib: '#cfcfdc', ribSh: '#8e8da6', joint: '#72718b', jointSh: '#55546a',
+  mug: '#dad8e0', mugSh: '#a3a1b4',
+  warm: '#ffb690', clawd: '#D97757', sun: '#fff0dc', cool: '#aacddc', rimW: '#fff7ec',
+};
+
+// ------------------------------------------------------------------ scene constants
+const GLYPH = ['...############...', '...##.######.##...', '.################.', '...############...', '....#.#....#.#....'];
+const CU = 8, CLW = 18 * CU, CLH = 10 * CU;       // Clawd pixel: CU wide, 2*CU tall
+const CX = 960, CFEET = 726;
+const CL0 = [CX - CLW / 2, CFEET - CLH];
+const CG = [CX, CFEET - CLH * 0.5];               // glow centre
+const SILL = 590, BENCH = 700;
+const HARN = { cx: 960, cy: 731, HR: 246, k: 0.17 };
+const RIB_PROF = [[0, 102], [0.3, 150], [0.62, 146], [0.88, 100], [1.0, 64]];
+function ribCtrl(th) { const c = Math.cos(th), s = Math.sin(th); return RIB_PROF.map(([h, r]) => [HARN.cx + r * c, HARN.cy + r * HARN.k * s - h * HARN.HR]); }
+const RIBS_BACK = [235, 305, 185, 355].map(d => d * D2R);
+const RIBS_FRONT = [145, 35].map(d => d * D2R);
+// the stylus touches the lower joint of the front-left rib
+const TARGET = (() => { const p = ribCtrl(145 * D2R)[1]; return [p[0] - 15, p[1] + 1]; })();
+const STY = { back: [22, -60], tip: [178, -14] };
+const HAND = (() => { const a = -34 * D2R, lx = STY.tip[0], ly = STY.tip[1]; return { a, x: TARGET[0] - (lx * Math.cos(a) - ly * Math.sin(a)), y: TARGET[1] - (lx * Math.sin(a) + ly * Math.cos(a)) }; })();
+const HEAD_A = { x: 585, y: 468, a: 16 * D2R };
+const HEAD_B = { x: 1702, y: 338, a: -10 * D2R, s: 0.62 };
+const MON = { x: 1300, y: 468, w: 236, h: 152 };
+
+// ================================================================== BACKGROUND
+function cumulus(g, seed, x, base, w, h) {
+  const r = mulberry32(seed), puffs = [];
+  const n = Math.round(9 + w / 24);
+  for (let i = 0; i < n; i++) {
+    const t = clamp(i / (n - 1) + (r() - 0.5) * 0.05, 0, 1);
+    const dome = Math.pow(Math.sin(t * Math.PI), 0.7);
+    const rad = h * (0.13 + 0.25 * dome) * (0.75 + 0.5 * r());
+    puffs.push([x + (t - 0.5) * w, base - rad * 0.65 - dome * h * (0.42 + 0.22 * r()), rad]);
+  }
+  for (let i = 0; i < n * 0.7; i++) {
+    const t = r(), dome = Math.sin(t * Math.PI), rad = h * (0.09 + 0.12 * r());
+    puffs.push([x + (t - 0.5) * w * 0.95, base - rad * 0.45 - dome * h * 0.14, rad]);
+  }
+  const shape = new Path2D();
+  for (const [px, py, pr] of puffs) { shape.moveTo(px + pr, py); shape.arc(px, py, pr, 0, Math.PI * 2); }
+  g.save(); g.beginPath(); g.rect(x - w, base - h * 3, w * 2, h * 3); g.clip();
+  // whole-cloud shading: gradient body, lit band on the sun-facing (left) edges, shade band right
+  const gr = g.createLinearGradient(0, base - h * 1.15, 0, base);
+  gr.addColorStop(0, COL.cloudHi); gr.addColorStop(0.5, COL.cloudMid); gr.addColorStop(1, COL.cloudSh);
+  g.fillStyle = gr; g.fill(shape);
+  crescentL(g, shape, h * 0.09, -h * 0.03, rgba(COL.cloudHi, 0.85));
+  crescentL(g, shape, -h * 0.16, h * 0.04, rgba(COL.cloudSh, 0.75));
+  g.restore();
+}
+function paintSky(g) {
+  const gr = g.createLinearGradient(0, 20, 0, SILL);
+  gr.addColorStop(0, COL.skyTop); gr.addColorStop(0.5, COL.skyMid); gr.addColorStop(0.84, COL.skyLow); gr.addColorStop(1, COL.skyHor);
+  g.fillStyle = gr; g.fillRect(140, 10, 1660, SILL);
+  g.fillStyle = radial(g, -60, 540, 10, 1300, [[0, 'rgba(255,238,218,0.7)'], [0.35, 'rgba(246,224,212,0.28)'], [1, 'rgba(240,220,215,0)']]);
+  g.fillRect(140, 10, 1660, SILL);
+  // high thin stratus
+  const r = mulberry32(77);
+  for (let i = 0; i < 26; i++) {
+    const y = 90 + r() * 170, x = 200 + r() * 1500, w = 120 + r() * 380;
+    g.fillStyle = `rgba(214,206,220,${0.03 + r() * 0.05})`;
+    g.beginPath(); g.ellipse(x, y, w, 3 + r() * 7, -0.02, 0, 7); g.fill();
+  }
+  cumulus(g, 11, 330, 572, 460, 250);
+  cumulus(g, 29, 1650, 548, 420, 190);
+  cumulus(g, 5, 1110, 574, 260, 70);
+  // skyline, two atmospheric layers
+  for (const [seed, top, col] of [[3, 545, '#8f8a9e'], [8, 562, '#76718a']]) {
+    const rr = mulberry32(seed); let x = 150;
+    g.fillStyle = col;
+    while (x < 1800) {
+      const w = 20 + rr() * 70, h = (top === 545 ? 8 + rr() * 40 : 4 + rr() * 22) * (rr() < 0.12 ? 2.2 : 1);
+      g.fillRect(x, SILL - (SILL - top) - h + 30, w, h + 40); x += w + rr() * 6;
+    }
+  }
+}
+function paintWindowFrame(g) {
+  g.fillStyle = COL.frame;
+  const X0 = 150, X1 = 1790, Y0 = 20, T = 22;
+  g.fillRect(X0 - 4, Y0 - 4, X1 - X0 + 8, T);          // top
+  g.fillRect(X0 - 4, Y0, T, SILL - Y0);                  // left
+  g.fillRect(X1 - T + 4, Y0, T, SILL - Y0);              // right
+  g.fillRect(540, Y0, 20, SILL - Y0);                    // mullions
+  g.fillRect(1360, Y0, 20, SILL - Y0);
+  // inner bevel catching sky light
+  g.fillStyle = COL.frameHi;
+  g.fillRect(X0 + T - 4, Y0 + 18, 2, SILL - Y0 - 18); g.fillRect(560, Y0 + 18, 2, SILL - Y0 - 18); g.fillRect(1380, Y0 + 18, 2, SILL - Y0 - 18);
+  g.fillRect(X0, Y0 + 17, X1 - X0, 2);
+  // sill
+  g.fillStyle = '#4d4a5d'; g.fillRect(X0 - 20, SILL - 4, X1 - X0 + 40, 10);
+  g.fillStyle = '#8a869b'; g.fillRect(X0 - 20, SILL - 4, X1 - X0 + 40, 2);
+}
+function paintWall(g) {
+  big(g, COL.wall);
+  let gr = g.createLinearGradient(0, 0, 0, BENCH);
+  gr.addColorStop(0, 'rgba(14,13,20,0.55)'); gr.addColorStop(0.5, 'rgba(0,0,0,0)'); gr.addColorStop(0.86, 'rgba(0,0,0,0.25)'); gr.addColorStop(1, 'rgba(8,8,12,0.55)');
+  g.fillStyle = gr; g.fillRect(-10, -10, 1940, BENCH + 10);
+}
+function paintMarkerOnGlass(g) {
+  // generic math on the glass of the upper-left light: attention mask, loss curve, symbols
+  g.save();
+  g.strokeStyle = 'rgba(240,236,246,0.22)'; g.fillStyle = 'rgba(240,236,246,0.22)'; g.lineWidth = 2.2;
+  const r = mulberry32(41);
+  // causal attention mask
+  const ox = 200, oy = 58, cs = 13;
+  for (let i = 0; i < 8; i++) for (let j = 0; j <= i; j++) {
+    const v = r();
+    g.strokeRect(ox + j * cs, oy + i * cs, cs - 2, cs - 2);
+    if (v > 0.55 || i === j) { g.globalAlpha = 0.5 + v * 0.5; g.fillRect(ox + j * cs + 2, oy + i * cs + 2, cs - 6, cs - 6); g.globalAlpha = 1; }
+  }
+  // loss curve
+  g.beginPath(); g.moveTo(330, 60); g.lineTo(330, 170); g.lineTo(480, 170); g.stroke();
+  g.beginPath(); for (let i = 0; i <= 40; i++) { const t = i / 40; const x = 334 + t * 140, y = 72 + 90 * Math.exp(-t * 4.2) + 4 * Math.sin(i * 1.7) * (1 - t) + 6; i ? g.lineTo(x, y + 90 - 90) : g.moveTo(x, y); } g.stroke();
+  g.font = 'italic 22px "Cambria Math", Cambria, serif';
+  g.fillText('∇θ ℒ', 386, 80);
+  g.fillText('QKᵀ/√d', 230, 186);
+  g.restore();
+}
+function paintBench(g) {
+  const gr = g.createLinearGradient(0, BENCH, 0, 1080);
+  gr.addColorStop(0, '#59566b'); gr.addColorStop(0.12, '#454256'); gr.addColorStop(0.55, '#2d2b39'); gr.addColorStop(1, '#17161e');
+  g.fillStyle = gr; g.fillRect(-10, BENCH, 1940, 1090 - BENCH);
+  g.fillStyle = 'rgba(200,194,214,0.6)'; g.fillRect(-10, BENCH - 1, 1940, 2);
+  g.fillStyle = 'rgba(10,10,14,0.5)'; g.fillRect(-10, BENCH + 1, 1940, 2);
+}
+function paintMonitor(g) {
+  const { x, y, w, h } = MON;
+  // stand
+  g.fillStyle = '#23222c'; g.fillRect(x + w / 2 - 9, y + h, 18, BENCH + 12 - (y + h));
+  g.fillStyle = '#2b2a35'; g.beginPath(); g.ellipse(x + w / 2, BENCH + 14, 58, 9, 0, 0, 7); g.fill();
+  g.fillStyle = 'rgba(160,156,176,0.35)'; g.fillRect(x + w / 2 - 9, y + h, 2, BENCH + 12 - (y + h));
+  // bezel
+  g.fillStyle = '#15141b'; g.beginPath(); g.roundRect(x - 9, y - 9, w + 18, h + 18, 5); g.fill();
+  g.fillStyle = 'rgba(170,166,188,0.5)'; g.fillRect(x - 7, y - 9, w + 14, 1.6);
+}
+function paintScreen(g) {
+  const { x, y, w, h } = MON;
+  g.save(); g.translate(x, y);
+  g.fillStyle = '#1b1e26'; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(170,205,220,0.07)'; g.fillRect(0, 0, w, h);
+  // gridworld: 9 x 7, grey, waiting (empty spawn cell outlined)
+  const gx = 12, gy = 16, cs = 13.5;
+  const walls = new Set(['3,1', '3,2', '3,3', '6,3', '6,4', '6,5', '1,5', '2,5', '4,5']);
+  for (let j = 0; j < 7; j++) for (let i = 0; i < 9; i++) {
+    const k = i + ',' + j;
+    g.fillStyle = walls.has(k) ? '#3b3e49' : ((i + j) % 2 ? '#686b76' : '#6f727d');
+    g.fillRect(gx + i * cs, gy + j * cs, cs - 1.5, cs - 1.5);
+  }
+  g.fillStyle = '#b9bcc4'; g.fillRect(gx + 8 * cs, gy + 0 * cs, cs - 1.5, cs - 1.5);        // goal
+  g.strokeStyle = 'rgba(230,235,240,0.9)'; g.lineWidth = 1.2; g.setLineDash([2, 2]);
+  g.strokeRect(gx + 0 * cs + 1, gy + 6 * cs + 1, cs - 3.5, cs - 3.5); g.setLineDash([]);   // empty spawn
+  // eval curve ticking upward
+  const px = 142, py = 18, pw = 84, ph = 74;
+  g.strokeStyle = '#4a4f5d'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(px, py); g.lineTo(px, py + ph); g.lineTo(px + pw, py + ph); g.stroke();
+  g.setLineDash([2, 3]); g.beginPath(); g.moveTo(px, py + 10); g.lineTo(px + pw, py + 10); g.stroke(); g.setLineDash([]);
+  const r = mulberry32(5); const pts = [];
+  for (let i = 0; i <= 22; i++) { const t = i / 22; pts.push([px + 2 + t * (pw - 6), py + ph - 4 - (ph - 22) * Math.pow(t, 1.6) - (r() - 0.5) * 7]); }
+  g.strokeStyle = '#d4e6ee'; g.lineWidth = 1.4; g.beginPath(); pts.forEach((p, i) => i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])); g.stroke();
+  const e = pts[pts.length - 1]; g.fillStyle = '#ffffff'; g.beginPath(); g.arc(e[0], e[1], 2.2, 0, 7); g.fill();
+  g.font = '9px Consolas, monospace'; g.fillStyle = '#c5d6de';
+  g.fillText('0.312', px + 44, py + ph + 12); g.fillText('000128', gx, gy + 7 * cs + 12);
+  g.fillStyle = 'rgba(200,225,235,0.55)'; g.fillText('▲', px + 76, py + ph + 12);
+  g.restore();
+}
+
+// ================================================================== HARNESS (cel)
+function ribPath(th) {
+  const P = splPts(ribCtrl(th), false, 1, 48);
+  const p = strokePoly(P, u => lerp(21, 11, Math.pow(u, 0.85)) * (u > 0.978 ? Math.sqrt(Math.max(0, 1 - ((u - 0.978) / 0.022) ** 2)) : 1));
+  return { p, P };
+}
+function drawPlate(g) {
+  const { cx, cy } = HARN, rx = 128, ry = rx * HARN.k;
+  const side = new Path2D(); side.ellipse(cx, cy + 10, rx, ry, 0, 0, Math.PI); side.lineTo(cx - rx, cy); side.ellipse(cx, cy, rx, ry, 0, Math.PI, 0, true); side.closePath();
+  fillP(g, side, '#6f6d84'); crescent(g, side, 10, 0, '#4f4d63'); inkP(g, side, 1.8, COL.ink);
+  const top = ell(cx, cy, rx, ry);
+  fillP(g, top, '#bdbccb'); crescent(g, top, 6, -3, '#9998ae');
+  clipFill(g, top, ell(cx, cy, rx - 14, ry - 3.5), 'rgba(80,78,98,0.35)');
+  inkP(g, ell(cx, cy, rx - 14, ry - 3.5), 1.1, 'rgba(30,27,39,0.6)');
+  inkP(g, top, 1.8, COL.ink);
+}
+function drawRib(g, th) {
+  const { p, P } = ribPath(th);
+  fillP(g, p, COL.rib);
+  crescent(g, p, -5, -1.5, COL.ribSh);
+  crescent(g, p, 2.4, 1.2, COL.rimW);
+  inkP(g, p, 1.7, COL.ink);
+  // knuckle joints at the control knots
+  const C = ribCtrl(th);
+  for (const k of [1, 2]) {
+    const q = C[k];
+    let bi = 0, bd = 1e9; P.forEach((pp, i) => { const d = (pp[0] - q[0]) ** 2 + (pp[1] - q[1]) ** 2; if (d < bd) { bd = d; bi = i; } });
+    const a = P[Math.max(0, bi - 1)], b = P[Math.min(P.length - 1, bi + 1)];
+    const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+    const jw = k === 1 ? 11.5 : 10;
+    const j = new Path2D(); j.roundRect(-6, -jw, 12, jw * 2, 4);
+    g.save(); g.translate(q[0], q[1]); g.rotate(ang);
+    fillP(g, j, COL.joint); crescent(g, j, 0, -3, COL.jointSh);
+    g.fillStyle = 'rgba(230,230,240,0.8)'; g.fillRect(-4, -jw + 2, 1.6, jw * 2 - 4);
+    inkP(g, j, 1.5, COL.ink);
+    g.restore();
+  }
+}
+
+// ================================================================== RESEARCHER A (cel)
+function drawA_body(g) {
+  // lab coat torso, leaning in from the left
+  const coat = spl([[492, 546], [446, 566], [398, 596], [334, 652], [266, 740], [206, 850], [160, 975], [138, 1100, 1],
+                    [720, 1100, 1], [684, 980], [640, 872], [612, 780], [596, 700], [584, 640], [568, 598]]);
+  fillP(g, coat, COL.coat);
+  // one hard shadow tone: the front and belly turned away from the window, plus fold shadows
+  clipFill(g, coat, spl([[560, 600], [600, 640], [640, 760], [700, 900], [740, 1100, 1], [470, 1100, 1], [440, 900], [480, 760], [520, 660]]), COL.coatSh);
+  clipFill(g, coat, spl([[300, 760], [352, 700], [330, 820], [262, 980], [236, 1100, 1], [190, 1100, 1], [250, 900]]), COL.coatSh);
+  inkP(g, coat, 2.6, COL.coatLine);
+  brush(g, [[360, 690], [322, 780], [290, 870]], 2.2, COL.coatLine);
+  brush(g, [[250, 900], [236, 980], [226, 1060]], 2, COL.coatLine);
+  // inner shirt at the collar
+  const shirt = spl([[492, 548], [530, 556], [566, 590], [584, 640, 1], [540, 628], [500, 590]]);
+  fillP(g, shirt, COL.shirt); inkP(g, shirt, 2, COL.ink);
+  // collar and lapel
+  const collar = spl([[464, 568], [480, 538, 1], [512, 546], [548, 570], [576, 598, 1], [550, 608], [514, 594], [482, 584]]);
+  fillP(g, collar, COL.coat); crescent(g, collar, 4, -5, COL.coatSh); inkP(g, collar, 2.2, COL.coatLine);
+  brush(g, [[574, 604], [588, 650], [598, 720]], 2, COL.coatLine);
+}
+function drawA_sleeve(g) {
+  const sl = spl([[470, 604], [512, 586], [556, 604], [570, 660], [568, 740], [574, 812],
+                  [630, 776], [689, 737, 1], [723, 786, 1], [664, 828], [602, 870], [550, 904], [512, 904], [486, 880], [474, 800], [466, 700], [464, 640]]);
+  fillP(g, sl, COL.coat);
+  clipFill(g, sl, spl([[574, 640], [578, 760], [590, 820], [660, 800], [740, 780, 1], [760, 900, 1], [520, 930], [540, 860], [556, 760], [556, 660]]), COL.coatSh);
+  clipFill(g, sl, spl([[464, 700], [496, 720], [500, 830], [520, 900], [470, 900]]), COL.coatSh);
+  // cuff band
+  const cuff = spl([[676, 745], [689, 737, 1], [723, 786, 1], [708, 796], [694, 770]]);
+  clipFill(g, sl, cuff, '#8b88a1');
+  inkP(g, sl, 2.6, COL.coatLine);
+  brush(g, [[672, 750], [690, 776], [704, 797]], 1.8, COL.coatLine);
+  // elbow and forearm folds
+  brush(g, [[560, 818], [548, 846], [540, 878]], 2, COL.coatLine);
+  brush(g, [[600, 800], [612, 820]], 1.6, COL.coatLine);
+  brush(g, [[520, 700], [516, 760]], 1.8, COL.coatLine);
+}
+function drawA_hand(g) {
+  // local frame: origin = wrist, +x toward fingertips, +y toward the little-finger side.
+  // Read order from the thumb side: thumb tip | stylus | index finger, the rest curled under.
+  const L = COL.skinLine, sh = (p, dx, dy) => crescent(g, p, dx, dy, COL.skinSh);
+  const thumb = spl([[18, -28], [44, -42], [70, -49], [88, -48], [95, -42], [88, -37], [62, -37], [36, -31]]);
+  fillP(g, thumb, COL.skin); sh(thumb, 2, 3); inkP(g, thumb, 1.7, L);
+  brush(g, [[80, -47], [88, -44]], 1, L);
+  // stylus: slender probe, metal ferrule, needle tip
+  const [bx, by] = STY.back, [tx, ty] = STY.tip, len = Math.hypot(tx - bx, ty - by);
+  const ux = (tx - bx) / len, uy = (ty - by) / len, P = u => [bx + ux * len * u, by + uy * len * u];
+  const sty = strokePoly([P(0), P(0.5), P(0.74)], u => u < 0.03 ? 4 + 90 * u : 6.6);
+  fillP(g, sty, '#3d3b4c'); inkP(g, sty, 1.2, COL.ink);
+  const fer = strokePoly([P(0.74), P(0.88)], u => lerp(6.6, 4.2, u)); fillP(g, fer, '#a2a0b4'); inkP(g, fer, 1.1, COL.ink);
+  const ndl = strokePoly([P(0.88), P(1)], u => lerp(3, 0.7, u)); fillP(g, ndl, '#d2d0de'); inkP(g, ndl, 0.9, COL.ink);
+  g.fillStyle = 'rgba(236,233,246,0.8)'; g.fill(strokePoly([[P(0.04)[0] + uy * 1.8, P(0.04)[1] - ux * 1.8], [P(0.72)[0] + uy * 1.8, P(0.72)[1] - ux * 1.8]], () => 1.3));
+  // back of the hand, knuckle corner at the index
+  const back = spl([[-4, -24], [30, -31], [60, -34, 1], [70, -25], [75, -8], [75, 8], [69, 22], [54, 30], [24, 29], [-4, 25]]);
+  fillP(g, back, COL.skin); sh(back, 2, 4); inkP(g, back, 1.9, L);
+  brush(g, [[20, -8], [46, -12]], 1, rgba(COL.skinLine, 0.55)); brush(g, [[22, 10], [48, 8]], 1, rgba(COL.skinLine, 0.45));
+  // index finger along the stylus: two joints, slender
+  const idx = spl([[58, -36], [80, -38], [98, -38, 1], [116, -36], [128, -32], [133, -27], [127, -22], [114, -22], [98, -21, 1], [82, -19], [68, -18]]);
+  fillP(g, idx, COL.skin); sh(idx, 0, 3); inkP(g, idx, 1.7, L);
+  brush(g, [[98, -37], [99, -24]], 1, L); brush(g, [[118, -34], [118, -25]], 0.8, rgba(COL.skinLine, 0.7));
+  fillP(g, spl([[119, -35], [129, -31], [128, -27], [120, -29]]), 'rgba(255,238,232,0.75)');
+  // middle, ring, little finger curled under
+  const mid = spl([[70, -18], [94, -17], [106, -9], [108, 3], [102, 11], [92, 11], [88, 3], [72, 1]]);
+  fillP(g, mid, COL.skin); sh(mid, -2, 2.5); inkP(g, mid, 1.7, L); brush(g, [[92, -15], [96, -2]], 0.9, L);
+  const ring = spl([[70, 2], [90, 5], [98, 14], [94, 23], [83, 23], [72, 16]]);
+  fillP(g, ring, COL.skin); sh(ring, -2, 2.5); inkP(g, ring, 1.7, L);
+  const pinky = spl([[62, 18], [80, 22], [85, 30], [78, 36], [67, 34], [60, 27]]);
+  fillP(g, pinky, COL.skin); sh(pinky, -2, 2.5); inkP(g, pinky, 1.7, L);
+  brush(g, [[58, -22], [64, -16]], 1.1, L); brush(g, [[62, 0], [67, 3]], 1.1, L);
+}
+function drawA_head(g) {
+  // canonical head frame: facing right (3/4), eyes looking down
+  const L = COL.skinLine, HL = COL.hairLine;
+  const back = spl([[-6, -140], [52, -126], [86, -88], [94, -40], [90, 10], [88, 60], [82, 98, 1], [68, 76], [58, 106, 1], [40, 88],
+                    [-30, 98], [-62, 114, 1], [-76, 94], [-98, 118, 1], [-106, 88], [-126, 104, 1], [-128, 60], [-134, 0], [-122, -70], [-82, -122], [-42, -140]]);
+  fillP(g, back, COL.hairA); crescent(g, back, 8, 6, COL.hairASh); inkP(g, back, 2.4, HL);
+  for (const t of [[[-126, 40], [-140, 92], [-124, 70]], [[-112, 76], [-116, 122], [-102, 96]]]) {
+    const tp = spl([[t[0][0] + 8, t[0][1] - 10], t[1].concat(1), t[2], [t[2][0] + 10, t[2][1] - 16]]); fillP(g, tp, COL.hairA); crescent(g, tp, 4, 3, COL.hairASh); inkP(g, tp, 2, HL);
+  }
+  brush(g, [[-30, -126], [-84, -76], [-108, 16], [-104, 80]], 1.4, HL); brush(g, [[-58, -112], [-110, -40], [-120, 50]], 1.2, HL);
+  brush(g, [[-4, -136], [-50, -96], [-76, 10], [-70, 96]], 1.2, rgba(COL.hairLine, 0.8));
+  brushF(g, [[-6, -138], [2, -158], [18, -168], [30, -164]], u => 5 * Math.sin(Math.PI * Math.min(1, u * 1.1)) + 0.6, COL.hairA);
+  brush(g, [[-6, -138], [2, -158], [18, -168], [30, -164]], 1.4, HL, 0.1, 0.2, 0.5);
+  const neck = spl([[-38, 26], [4, 52], [10, 124, 1], [-44, 128, 1], [-42, 74]]);
+  fillP(g, neck, COL.skinSh);
+  clipFill(g, neck, spl([[2, 70], [14, 70], [14, 130], [-6, 130]]), COL.skin);
+  inkP(g, neck, 2, L);
+  const face = spl([[-34, -78], [22, -86], [54, -62], [62, -28], [60, -6], [64, 16], [58, 40], [44, 62], [28, 80, 1], [14, 80], [-16, 64], [-40, 40], [-50, 10], [-54, -34]]);
+  fillP(g, face, COL.skin);
+  // hard shadow: under the bangs and down the far-from-Clawd side
+  clipFill(g, face, spl([[-70, -90], [80, -90], [80, -20], [62, -10], [52, -20], [40, -6], [28, -22], [12, -8], [-4, -24], [-20, -10], [-36, -22], [-48, 0], [-40, 30], [-30, 56], [-10, 76], [-70, 80]]), COL.skinSh);
+  inkP(g, face, 2.2, L);
+  // blush
+  g.fillStyle = rgba(COL.blush, 0.3); g.fill(ell(-8, 28, 15, 6)); g.fill(ell(47, 24, 8, 5));
+  for (let i = 0; i < 3; i++) brush(g, [[-16 + i * 6, 31], [-12 + i * 6, 25]], 1, rgba(COL.blush, 0.8));
+  // near eye (looking down)
+  const sclN = spl([[15, 4], [6, -2], [-8, -4], [-22, -1], [-29, 6, 1], [-20, 13], [-6, 16], [8, 13], [14, 8]]);
+  fillP(g, sclN, '#e6dfe8');
+  clipFill(g, sclN, ell(-1, 10, 11, 13.5), '#4d5470');
+  clipFill(g, sclN, ell(-1, 14, 8, 7), '#7c86a6');
+  clipFill(g, sclN, ell(-1, 11, 5, 7), '#1d1f2c');
+  clipFill(g, sclN, spl([[18, -6], [-32, -6], [-30, 4], [-8, 2], [14, 4]]), 'rgba(40,36,60,0.55)');
+  fillP(g, ell(-7, 5, 3.2, 4), '#ffffff'); fillP(g, ell(5, 14, 1.6, 1.6), '#ffffff');
+  fillP(g, ell(3, 12, 2.4, 1.7), '#ffb28c');
+  brushF(g, [[16, 3], [8, -3], [-6, -5], [-20, -2], [-30, 5], [-36, 9]], u => 1 + 4.2 * Math.sin(Math.min(1, u * 1.15) * Math.PI * 0.62), COL.ink);
+  brush(g, [[-24, 13], [-16, 16], [-8, 17]], 1.3, L);
+  brush(g, [[12, -8], [0, -12], [-16, -10], [-24, -6]], 1.1, L);
+  // far eye
+  const sclF = spl([[31, 3], [38, -1], [48, -2], [55, 3, 1], [50, 10], [40, 12], [33, 8]]);
+  fillP(g, sclF, '#e6dfe8');
+  clipFill(g, sclF, ell(46, 8, 7, 12), '#4d5470'); clipFill(g, sclF, ell(46, 11, 5, 6), '#7c86a6'); clipFill(g, sclF, ell(46, 9, 3.2, 6), '#1d1f2c');
+  clipFill(g, sclF, spl([[30, -6], [60, -6], [56, 3], [40, 1]]), 'rgba(40,36,60,0.55)');
+  fillP(g, ell(43, 4, 2, 2.6), '#ffffff');
+  brushF(g, [[31, 2], [38, -3], [48, -4], [56, 0], [59, 4]], u => 0.8 + 3 * Math.sin(u * Math.PI * 0.7), COL.ink);
+  brush(g, [[46, 12], [52, 9]], 1, L);
+  // brows (drawn over bangs later), nose, mouth
+  brush(g, [[52, 24], [55, 31], [50, 33]], 1.4, L);
+  brush(g, [[25, 50], [32, 51.5], [39, 49]], 1.6, L);
+  // front hair
+  const lockN = spl([[-62, -50], [-44, -40], [-38, 10], [-30, 60], [-20, 110, 1], [-40, 70], [-56, 20], [-68, -20]]);
+  fillP(g, lockN, COL.hairA); crescent(g, lockN, 5, 4, COL.hairASh); inkP(g, lockN, 2, HL);
+  const lockF = spl([[70, -40], [86, -10], [90, 40], [94, 92, 1], [80, 50], [70, 10], [64, -20]]);
+  fillP(g, lockF, COL.hairA); crescent(g, lockF, 4, 4, COL.hairASh); inkP(g, lockF, 2, HL);
+  const bangs = spl([[-80, -70], [-40, -114], [20, -118], [66, -94], [88, -56], [80, -20, 1], [70, -44], [56, -10, 1], [44, -42], [30, -14, 1], [18, -46],
+                     [2, -16, 1], [-10, -50], [-26, -18, 1], [-38, -48], [-54, -12, 1], [-62, -40]]);
+  fillP(g, bangs, COL.hairA);
+  crescent(g, bangs, 6, 6, COL.hairASh);
+  // angel-ring highlight
+  clipFill(g, bangs, spl([[-50, -86], [-20, -100], [20, -102], [50, -90], [48, -80], [34, -86], [22, -76], [8, -88], [-8, -78], [-22, -90], [-38, -76]]), COL.hairAHi);
+  inkP(g, bangs, 2.4, HL);
+  brush(g, [[20, -100], [10, -60], [2, -22]], 1.3, HL); brush(g, [[-20, -100], [-26, -60], [-26, -24]], 1.3, HL); brush(g, [[50, -92], [56, -50], [56, -14]], 1.3, HL);
+  // brows over the hair (anime convention)
+  brush(g, [[18, -26], [2, -30], [-14, -29], [-26, -23]], 2.2, '#2a2433');
+  brush(g, [[34, -27], [46, -30], [57, -25]], 1.8, '#2a2433');
+}
+function drawA(g) {
+  drawA_body(g);
+  g.save(); g.translate(HEAD_A.x, HEAD_A.y); g.rotate(HEAD_A.a); drawA_head(g); g.restore();
+  g.save(); g.translate(HAND.x, HAND.y); g.rotate(HAND.a); drawA_hand(g); g.restore();
+  drawA_sleeve(g);
+}
+
+// ================================================================== RESEARCHER B (cel)
+function drawB_neck(g) {
+  const neck = spl([[-40, 20], [6, 52], [12, 132, 1], [-50, 132, 1], [-48, 70]]);
+  fillP(g, neck, COL.skin); clipFill(g, neck, spl([[-60, 20], [30, 40], [30, 100], [-60, 104]]), COL.skinSh); inkP(g, neck, 2.6, COL.skinLine);
+}
+function drawB_head(g) {
+  const L = COL.skinLine, HL = COL.hairLine;
+  const hairBack = spl([[-10, -134], [50, -122], [80, -84], [82, -40], [60, -40], [-40, -30], [-60, 20], [-54, 64, 1], [-72, 44], [-84, 60, 1], [-96, 24], [-110, -40], [-90, -104], [-56, -128]]);
+  fillP(g, hairBack, COL.hairB); crescent(g, hairBack, 8, 6, COL.hairBSh); inkP(g, hairBack, 2.8, HL);
+  const face = spl([[-38, -76], [22, -84], [54, -60], [62, -26], [60, -4], [64, 18], [60, 44], [48, 68], [30, 86, 1], [12, 86], [-20, 68], [-42, 44], [-50, 10], [-54, -34]]);
+  fillP(g, face, COL.skin);
+  clipFill(g, face, spl([[-70, -90], [80, -90], [80, -26], [60, -18], [44, -30], [24, -14], [4, -30], [-18, -16], [-38, -26], [-46, 10], [-36, 50], [-16, 80], [-70, 84]]), COL.skinSh);
+  inkP(g, face, 2.6, L);
+  // ear
+  const ear = spl([[-44, -6], [-58, -16], [-68, -2], [-64, 20], [-52, 30], [-44, 24]]);
+  fillP(g, ear, COL.skin); crescent(g, ear, 3, 0, COL.skinSh); inkP(g, ear, 2.4, L); brush(g, [[-52, -6], [-60, 4], [-54, 16]], 1.6, L);
+  // eyes: open, looking down toward the screen
+  const sclN = spl([[14, 2], [4, -6], [-10, -7], [-22, -3], [-27, 4, 1], [-18, 10], [-4, 11], [8, 9]]);
+  fillP(g, sclN, '#e6dfe8'); clipFill(g, sclN, ell(0, 4, 9, 11), '#4b4f63'); clipFill(g, sclN, ell(0, 5, 4.2, 6), '#1d1f2c');
+  clipFill(g, sclN, spl([[18, -10], [-30, -10], [-28, 0], [14, -2]]), 'rgba(40,36,60,0.5)');
+  fillP(g, ell(-3, -1, 2.6, 3), '#ffffff');
+  brushF(g, [[15, 1], [4, -7], [-10, -8], [-24, -4], [-30, 2]], u => 1.4 + 3.4 * Math.sin(u * Math.PI * 0.62), COL.ink);
+  brush(g, [[-20, 11], [-6, 12.5]], 1.4, L);
+  const sclF = spl([[31, 1], [40, -5], [50, -5], [56, 1, 1], [50, 8], [38, 9]]);
+  fillP(g, sclF, '#e6dfe8'); clipFill(g, sclF, ell(44, 3, 6, 10), '#4b4f63'); clipFill(g, sclF, ell(44, 4, 3, 5.5), '#1d1f2c');
+  fillP(g, ell(42, -1, 1.8, 2.2), '#ffffff');
+  brushF(g, [[31, 0], [40, -6], [50, -6], [58, 0]], u => 1 + 2.6 * Math.sin(u * Math.PI * 0.7), COL.ink);
+  brush(g, [[18, -22], [2, -26], [-18, -25], [-28, -19]], 3, '#26222e'); brush(g, [[34, -24], [46, -27], [58, -22]], 2.6, '#26222e');
+  brush(g, [[52, 24], [56, 34], [50, 36]], 1.8, L);
+  brush(g, [[26, 56], [33, 57], [40, 54]], 2, L);
+  // glasses
+  g.lineWidth = 2.6; g.strokeStyle = '#2b2833';
+  const lensN = new Path2D(); lensN.roundRect(-30, -14, 48, 32, 8);
+  const lensF = new Path2D(); lensF.roundRect(30, -13, 30, 30, 7);
+  g.fillStyle = 'rgba(200,230,240,0.1)'; g.fill(lensN); g.fill(lensF);
+  g.stroke(lensN); g.stroke(lensF);
+  g.beginPath(); g.moveTo(18, -2); g.quadraticCurveTo(24, -6, 30, -2); g.stroke();
+  g.beginPath(); g.moveTo(-30, -4); g.lineTo(-52, -8); g.stroke();
+  // front hair (short, messy)
+  const bangs = spl([[-76, -60], [-40, -112], [20, -118], [70, -90], [86, -52], [76, -28, 1], [66, -46], [52, -22, 1], [40, -48], [24, -24, 1], [12, -52],
+                     [-6, -30, 1], [-16, -56], [-34, -36, 1], [-44, -60], [-58, -30, 1], [-64, -56]]);
+  fillP(g, bangs, COL.hairB); crescent(g, bangs, 6, 6, COL.hairBSh);
+  clipFill(g, bangs, spl([[-50, -88], [-10, -104], [40, -98], [60, -84], [40, -82], [20, -76], [0, -88], [-20, -78], [-40, -84]]), COL.hairBHi);
+  inkP(g, bangs, 2.8, HL);
+  const burn = spl([[-44, -40], [-34, -30], [-36, 0], [-42, 14, 1], [-48, -10]]);
+  fillP(g, burn, COL.hairB); inkP(g, burn, 2.2, HL);
+}
+function drawB(g) {
+  const HB = f => { g.save(); g.translate(HEAD_B.x, HEAD_B.y); g.rotate(HEAD_B.a); g.scale(-HEAD_B.s, HEAD_B.s); f(g); g.restore(); };
+  HB(drawB_neck);
+  // sweater torso (3/4 front, facing left), cut by the bench edge
+  const sw = spl([[1702, 410], [1668, 420], [1642, 442], [1628, 490], [1620, 590], [1616, 720, 1], [1842, 720, 1], [1838, 600], [1832, 500], [1818, 456], [1784, 426], [1750, 412]]);
+  fillP(g, sw, COL.sweater);
+  clipFill(g, sw, spl([[1756, 424], [1796, 444], [1822, 500], [1832, 720, 1], [1742, 720, 1], [1758, 600], [1766, 500]]), COL.sweaterSh);
+  inkP(g, sw, 2, COL.ink);
+  brush(g, [[1650, 470], [1646, 540], [1650, 600]], 1.6, COL.ink);
+  // crew collar
+  const col = spl([[1694, 410], [1724, 422], [1756, 410], [1760, 420], [1724, 436], [1690, 420]]);
+  fillP(g, col, COL.sweaterSh); inkP(g, col, 1.6, COL.ink);
+  HB(drawB_head);
+  // mug in the near hand
+  const mug = new Path2D(); mug.moveTo(1672, 494); mug.lineTo(1674, 540); mug.quadraticCurveTo(1694, 549, 1714, 540); mug.lineTo(1716, 494); mug.closePath();
+  fillP(g, mug, COL.mug); crescent(g, mug, -8, 0, COL.mugSh); inkP(g, mug, 1.8, COL.ink);
+  const rim = ell(1694, 494, 22, 5.5); fillP(g, rim, '#4f4858'); crescent(g, rim, 0, 3, '#6d6477'); inkP(g, rim, 1.6, COL.ink);
+  // sleeve of the near arm crossing to the mug
+  const sl = spl([[1790, 440], [1830, 454], [1846, 520], [1846, 600], [1826, 624], [1790, 610], [1752, 584], [1726, 560], [1728, 530], [1764, 540], [1798, 560], [1806, 512], [1796, 470]]);
+  fillP(g, sl, COL.sweater); clipFill(g, sl, spl([[1800, 560], [1860, 560], [1860, 640], [1780, 640], [1740, 592]]), COL.sweaterSh); inkP(g, sl, 2, COL.ink);
+  brush(g, [[1810, 562], [1822, 592]], 1.6, COL.ink);
+  // hand wrapping the mug from the right, thumb hooked over the rim
+  const hb = spl([[1712, 505], [1728, 500], [1741, 512], [1743, 538], [1732, 555], [1714, 556], [1705, 542], [1706, 518]]);
+  fillP(g, hb, COL.skin); crescent(g, hb, -2.5, -2, COL.skinSh); inkP(g, hb, 1.5, COL.skinLine);
+  for (const y of [521, 533, 545]) brush(g, [[1706, y], [1716, y - 1], [1726, y + 1]], 1.1, COL.skinLine);
+  const th = spl([[1714, 502], [1724, 491], [1735, 494], [1733, 503]]); fillP(g, th, COL.skin); inkP(g, th, 1.4, COL.skinLine);
+  // steam
+  g.save(); g.globalAlpha = 0.18; g.lineWidth = 3; g.strokeStyle = '#f2eef6';
+  g.beginPath(); g.moveTo(1690, 484); g.bezierCurveTo(1680, 466, 1700, 452, 1690, 432); g.stroke();
+  g.beginPath(); g.moveTo(1702, 486); g.bezierCurveTo(1712, 470, 1696, 458, 1706, 440); g.stroke();
+  g.restore();
+}
+
+// ================================================================== CLAWD
+function clawdCells() { const c = []; for (let r = 0; r < 5; r++) for (let q = 0; q < 18; q++) if (GLYPH[r][q] === '#') c.push([CL0[0] + q * CU, CL0[1] + r * 2 * CU]); return c; }
+function drawClawdFlat(g, col) { g.fillStyle = col; for (const [x, y] of clawdCells()) g.fillRect(x, y, CU, 2 * CU); }
+function stampClawd(g) {
+  // pixel-exact, on integer device pixels
+  g.save(); ID(g); g.fillStyle = COL.clawd;
+  for (const [x, y] of clawdCells()) {
+    const x0 = Math.round((x - VIEW.x) * PX), y0 = Math.round((y - VIEW.y) * PX);
+    const x1 = Math.round((x + CU - VIEW.x) * PX), y1 = Math.round((y + 2 * CU - VIEW.y) * PX);
+    g.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }
+  g.restore();
+}
+
+// ================================================================== RENDER
+const main = out.getContext('2d');
+VT(main);
+
+// ---- background layer: wall, sky, frame
+const bgFar = mk(); const gF = ctxOf(bgFar);
+paintWall(gF);
+gF.save(); gF.beginPath(); gF.rect(150, 20, 1640, SILL - 20); gF.clip(); paintSky(gF); paintMarkerOnGlass(gF); gF.restore();
+paintWindowFrame(gF);
+tick('sky');
+
+// brush-dab texture sampled from the underpainting (painted look), then slight softening
+function dabTexture(canvas, n, seed, lenR, widR, alpha, angFn) {
+  const g = canvas.getContext('2d');
+  const src = g.getImageData(0, 0, VW, VH).data;
+  const r = mulberry32(seed);
+  g.save(); ID(g);
+  for (let i = 0; i < n; i++) {
+    const x = r() * VW, y = r() * VH;
+    const o = ((y | 0) * VW + (x | 0)) * 4;
+    const j = (r() - 0.5) * 12;
+    if (src[o + 3] < 250) { r(); r(); r(); r(); continue; }
+    g.fillStyle = `rgba(${clamp(src[o] + j, 0, 255) | 0},${clamp(src[o + 1] + j, 0, 255) | 0},${clamp(src[o + 2] + j * 1.1, 0, 255) | 0},${alpha})`;
+    const wx = VIEW.x + x / PX, wy = VIEW.y + y / PX;
+    const a = angFn(wx, wy) + (r() - 0.5) * 0.35;
+    const L = (lenR[0] + r() * (lenR[1] - lenR[0])) * PX, Wd = (widR[0] + r() * (widR[1] - widR[0])) * PX;
+    g.setTransform(Math.cos(a), Math.sin(a), -Math.sin(a), Math.cos(a), x, y);
+    g.beginPath(); g.ellipse(0, 0, L / 2, Wd / 2, 0, 0, Math.PI * 2); g.fill();
+  }
+  g.restore();
+}
+dabTexture(bgFar, Math.round(26000 * PX * PX * VW * VH / (1920 * 1080) / (PX * PX)), 101, [10, 26], [3, 7], 0.5, (x, y) => (y < SILL || (y > SILL && y < BENCH)) ? -0.03 : Math.PI / 2 + 0.05);
+tick('dabs-far');
+const bgFarSoft = mk(); { const g = bgFarSoft.getContext('2d'); g.filter = `blur(${1.4 * PX}px)`; g.drawImage(bgFar, 0, 0); }
+
+// ---- bench + monitor body (nearer, crisper)
+const bgNear = mk(); const gN = ctxOf(bgNear);
+paintBench(gN);
+// glossy bench: dim reflection of the window
+gN.save(); gN.beginPath(); gN.rect(-10, BENCH, 1940, 400); gN.clip();
+gN.globalAlpha = 0.34; gN.filter = `blur(${5 * PX}px)`;
+gN.translate(0, BENCH + 2 + 0.62 * BENCH); gN.scale(1, -0.62);
+gN.drawImage(bgFarSoft, VIEW.x, VIEW.y, VW / PX, VH / PX);
+gN.restore(); VT(gN);
+{ const gr = gN.createLinearGradient(0, BENCH, 0, 1080); gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.35, 'rgba(18,16,26,0.35)'); gr.addColorStop(1, 'rgba(12,11,17,0.85)');
+  gN.fillStyle = gr; gN.fillRect(-10, BENCH + 2, 1940, 400); }
+paintMonitor(gN);
+dabTexture(bgNear, 9000, 202, [16, 40], [2.5, 5], 0.3, () => 0.0);
+tick('bench');
+
+main.save(); ID(main); main.drawImage(bgFarSoft, 0, 0); main.drawImage(bgNear, 0, 0); main.restore();
+paintScreen(main);
+
+// ---- light pools on the bench and wall from Clawd (warm) and the screen (cool)
+main.save();
+main.globalCompositeOperation = 'screen';
+main.fillStyle = radial(main, CG[0], CG[1], 0, 420, [[0, 'rgba(255,160,120,0.55)'], [0.25, 'rgba(230,130,100,0.28)'], [0.6, 'rgba(200,110,90,0.08)'], [1, 'rgba(0,0,0,0)']]);
+main.fillRect(CG[0] - 500, CG[1] - 500, 1000, 1000);
+main.fillStyle = radial(main, MON.x + MON.w / 2, BENCH + 30, 0, 200, [[0, 'rgba(170,205,220,0.25)'], [1, 'rgba(0,0,0,0)']]);
+main.fillRect(MON.x - 200, BENCH - 100, MON.w + 400, 400);
+main.restore();
+tick('pools');
+
+// ---- the screen reflected in the glossy bench
+main.save(); main.globalCompositeOperation = 'screen'; main.filter = `blur(${7 * PX}px)`;
+main.fillStyle = 'rgba(150,190,210,0.10)'; main.fillRect(MON.x + 6, BENCH + 20, MON.w - 12, 70);
+main.restore(); VT(main);
+// ---- where the beams land on the bench: soft warm patches
+main.save(); main.globalCompositeOperation = 'screen';
+for (const [cx, cy, rx, al] of [[1068, 792, 110, 0.22], [1214, 800, 70, 0.14], [1374, 806, 104, 0.2]]) {
+  main.save(); main.translate(cx, cy); main.scale(1, 0.16);
+  main.fillStyle = radial(main, 0, 0, 0, rx, [[0, `rgba(255,238,220,${al})`], [0.6, `rgba(255,236,218,${al * 0.5})`], [1, 'rgba(0,0,0,0)']]);
+  main.beginPath(); main.arc(0, 0, rx, 0, 7); main.fill(); main.restore();
+}
+main.restore();
+// ---- cables on the bench (cel props)
+function cable(g, pts, w) {
+  brush(g, pts, w + 2.4, COL.ink, 0.02, 0.02, 1);
+  brush(g, pts, w, '#3c3a4b', 0.02, 0.02, 1);
+  const hi = pts.map(p => [p[0], p[1] - w * 0.28]);
+  brush(g, hi, w * 0.3, 'rgba(170,166,190,0.7)', 0.1, 0.1, 0.2);
+}
+cable(main, [[1046, 722], [1120, 710], [1210, 707], [1300, 714], [1380, 713], [1440, 706]], 4.2);
+cable(main, [[1060, 740], [1150, 752], [1236, 764], [1320, 748], [1392, 728], [1452, 716]], 3.4);
+cable(main, [[868, 719], [800, 712], [742, 706], [698, 703], [676, 712], [668, 740], [664, 770]], 3.6);
+// Clawd's glow reflected in the glossy bench: a soft vertical streak in front of the plate
+main.save(); main.globalCompositeOperation = 'screen';
+main.fillStyle = radial(main, 0, 0, 0, 1, [[0, 'rgba(255,150,110,0.32)'], [1, 'rgba(0,0,0,0)']]);
+main.setTransform(PX * 70, 0, 0, PX * 150, (CX - VIEW.x) * PX, (792 - VIEW.y) * PX);
+main.beginPath(); main.arc(0, 0, 1, 0, 7); main.fill();
+main.restore(); VT(main);
+
+// ---- B (far), clipped by the bench's far edge
+const layB = mk(); const gB = ctxOf(layB);
+gB.save(); gB.beginPath(); gB.rect(0, 0, 1920, BENCH); gB.clip(); drawB(gB); gB.restore();
+// B stands further back in the dim room: night-palette multiply, then the screen's cool light
+paraOnto(layB, g => { const gr = g.createLinearGradient(1600, 0, 1860, 0); gr.addColorStop(0, '#b4b3cc'); gr.addColorStop(1, '#8a87a6'); big(g, gr); }, 'multiply', 1);
+paraOnto(layB, g => big(g, radial(g, MON.x + MON.w - 10, MON.y + 50, 10, 300, [[0, 'rgba(150,200,222,0.5)'], [0.6, 'rgba(120,170,200,0.18)'], [1, 'rgba(0,0,0,0)']])), 'screen', 1);
+// hard rims: cool from the screen on the left edges, fading rightward; faint window light on the right edges
+rimOnto(layB, 1.8, 0.4, g => big(g, radial(g, MON.x + MON.w, MON.y + 40, 0, 230, [[0, 'rgba(206,238,250,1)'], [0.5, 'rgba(190,226,242,0.6)'], [1, 'rgba(190,226,242,0)']])), 0.8);
+rimOnto(layB, -2, 1.5, g => big(g, COL.rimW), 0.35, g => { g.fillStyle = '#fff'; g.fillRect(1700, 0, 300, 560); });
+main.save(); ID(main); main.drawImage(layB, 0, 0); main.restore();
+tick('B');
+
+// ---- harness (back ribs + plate), Clawd glow, front ribs
+const layH = mk(); const gH = ctxOf(layH);
+for (const th of RIBS_BACK) drawRib(gH, th);
+drawPlate(gH);
+const layHF = mk(); const gHF = ctxOf(layHF);
+for (const th of RIBS_FRONT) drawRib(gHF, th);
+for (const L of [layH, layHF]) {
+  paraOnto(L, g => big(g, radial(g, CG[0], CG[1], 0, 260, [[0, 'rgba(255,150,105,0.95)'], [0.45, 'rgba(240,130,95,0.45)'], [1, 'rgba(0,0,0,0)']])), 'screen', 1);
+  // warm rim on the edges facing Clawd (left ribs: right edges; right ribs: left edges)
+  rimOnto(L, -2.2, 0, g => big(g, radial(g, CG[0], CG[1], 0, 240, [[0, 'rgba(255,190,150,1)'], [1, 'rgba(255,170,130,0)']])), 1, g => { g.fillStyle = '#fff'; g.fillRect(0, 0, CX, 1080); });
+  rimOnto(L, 2.2, 0, g => big(g, radial(g, CG[0], CG[1], 0, 240, [[0, 'rgba(255,190,150,1)'], [1, 'rgba(255,170,130,0)']])), 1, g => { g.fillStyle = '#fff'; g.fillRect(CX, 0, 960, 1080); });
+}
+main.save(); ID(main); main.drawImage(layH, 0, 0); main.restore();
+// Clawd glow
+main.save(); main.globalCompositeOperation = 'screen';
+main.fillStyle = radial(main, CG[0], CG[1], 0, 170, [[0, 'rgba(255,170,130,0.7)'], [0.4, 'rgba(240,130,100,0.3)'], [1, 'rgba(0,0,0,0)']]);
+main.fillRect(CG[0] - 200, CG[1] - 200, 400, 400);
+main.restore();
+{ const t = mk(); const g = ctxOf(t); drawClawdFlat(g, '#ff9a70'); main.save(); ID(main); main.globalCompositeOperation = 'screen'; main.filter = `blur(${10 * PX}px)`; main.drawImage(t, 0, 0); main.filter = `blur(${28 * PX}px)`; main.drawImage(t, 0, 0); main.restore(); }
+drawClawdFlat(main, COL.clawd);
+main.save(); ID(main); main.drawImage(layHF, 0, 0); main.restore();
+tick('harness');
+
+// ---- A (near)
+const layA = mk(); const gA = ctxOf(layA);
+drawA(gA);
+// Clawd's warm light on A (face, hand, sleeve): soft para + hard rim on the edges facing it
+paraOnto(layA, g => big(g, radial(g, CG[0] - 40, CG[1] - 10, 0, 520, [[0, 'rgba(255,150,110,0.85)'], [0.35, 'rgba(240,130,100,0.4)'], [0.7, 'rgba(200,110,100,0.08)'], [1, 'rgba(0,0,0,0)']])), 'screen', 1);
+rimOnto(layA, -3, -2.5, g => big(g, radial(g, CG[0], CG[1], 0, 520, [[0, 'rgba(255,200,165,1)'], [0.6, 'rgba(255,170,130,0.6)'], [1, 'rgba(255,160,120,0)']])), 1);
+// window light rim on the hair and back
+rimOnto(layA, 2.4, 2.2, g => big(g, COL.rimW), 0.9, g => { const gr = g.createLinearGradient(0, 560, 0, 720); gr.addColorStop(0, '#fff'); gr.addColorStop(1, 'rgba(255,255,255,0)'); big(g, gr); });
+// cool ambient gradient over the lower body (depth)
+paraOnto(layA, g => { const gr = g.createLinearGradient(0, 640, 0, 1080); gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.5, '#a8a4c0'); gr.addColorStop(1, '#4a4662'); big(g, gr); }, 'multiply', 1);
+paraOnto(layA, g => { const gr = g.createLinearGradient(140, 0, 520, 0); gr.addColorStop(0, '#6e6a88'); gr.addColorStop(1, '#ffffff'); big(g, gr); }, 'multiply', 0.8);
+main.save(); ID(main); main.drawImage(layA, 0, 0); main.restore();
+tick('A');
+
+// ---- light shaft: three beams through the high window, upper left; dust in them
+const BEAMS = [[250, 350, 980, 1140, 0.26], [372, 414, 1172, 1252, 0.17], [440, 522, 1292, 1452, 0.22]];
+function inBeam(r) {
+  const b = BEAMS[Math.floor(r() * BEAMS.length)], u = r(), v = Math.pow(r(), 0.8);
+  return [lerp(lerp(b[0], b[1], u), lerp(b[2], b[3], u), v), lerp(-20, 800, v), v, b[4]];
+}
+{
+  const t = mk(); const g = ctxOf(t);
+  for (const [a0, a1, b0, b1, al] of BEAMS) {
+    const gr = g.createLinearGradient(0, -20, 0, 800);
+    gr.addColorStop(0, `rgba(255,242,224,${al})`); gr.addColorStop(0.55, `rgba(255,238,220,${al * 0.6})`); gr.addColorStop(1, `rgba(255,236,218,${al * 0.2})`);
+    g.fillStyle = gr; g.beginPath(); g.moveTo(a0, -20); g.lineTo(a1, -20); g.lineTo(b1, 800); g.lineTo(b0, 800); g.closePath(); g.fill();
+  }
+  const r = mulberry32(9);
+  for (let i = 0; i < 14; i++) {           // thin inner streaks
+    const b = BEAMS[i % 3], u = r(), w = 3 + r() * 12;
+    const x0 = lerp(b[0], b[1], u), x1 = lerp(b[2], b[3], u);
+    g.beginPath(); g.moveTo(x0 - w * 0.25, -20); g.lineTo(x0 + w * 0.25, -20); g.lineTo(x1 + w, 800); g.lineTo(x1 - w, 800); g.closePath();
+    g.fillStyle = `rgba(255,246,232,${0.04 + r() * 0.08})`; g.fill();
+  }
+  main.save(); ID(main); main.globalCompositeOperation = 'screen'; main.filter = `blur(${9 * PX}px)`; main.drawImage(t, 0, 0);
+  main.filter = `blur(${40 * PX}px)`; main.globalAlpha = 0.6; main.drawImage(t, 0, 0); main.restore();
+}
+{
+  const r = mulberry32(1234);
+  main.save(); main.globalCompositeOperation = 'screen';
+  for (let i = 0; i < 520; i++) {
+    const [x, y, v, al] = inBeam(r);
+    const s = 0.5 + Math.pow(r(), 4) * 2.6, a = (0.3 + r() * 0.7) * (1 - v * 0.55) * (al / 0.3);
+    main.fillStyle = `rgba(255,248,236,${a})`; main.beginPath(); main.arc(x, y, s, 0, 7); main.fill();
+  }
+  // a few soft out-of-focus motes near the lens
+  for (let i = 0; i < 14; i++) {
+    const [x, y] = inBeam(r); const s = 6 + r() * 16;
+    main.fillStyle = radial(main, x, y, 0, s, [[0, 'rgba(255,246,236,0.10)'], [0.8, 'rgba(255,246,236,0.07)'], [1, 'rgba(255,246,236,0)']]);
+    main.beginPath(); main.arc(x, y, s, 0, 7); main.fill();
+  }
+  // warm sparks lifting off Clawd
+  for (let i = 0; i < 30; i++) {
+    const x = CX + (r() - 0.5) * 200, y = CFEET - 50 - Math.pow(r(), 0.7) * 280, s = 0.7 + r() * 1.5;
+    main.fillStyle = `rgba(255,196,160,${0.3 + r() * 0.5})`; main.beginPath(); main.arc(x, y, s, 0, 7); main.fill();
+  }
+  main.restore();
+}
+tick('shaft');
+
+// ---- post: diffusion bloom, grade, vignette, grain
+if (!NOPOST) {
+  const src = mk(); src.getContext('2d').drawImage(out, 0, 0);
+  const b1 = mk(); { const g = b1.getContext('2d'); g.filter = `brightness(0.55) contrast(3.2) blur(${12 * PX}px)`; g.drawImage(src, 0, 0); }
+  const b2 = mk(); { const g = b2.getContext('2d'); g.filter = `blur(${46 * PX}px)`; g.drawImage(b1, 0, 0); }
+  main.save(); ID(main); main.globalCompositeOperation = 'screen'; main.globalAlpha = 0.45; main.drawImage(b1, 0, 0); main.globalAlpha = 0.5; main.drawImage(b2, 0, 0); main.restore();
+  // soft diffusion of the whole frame (anime 'diffusion filter')
+  main.save(); ID(main); main.globalCompositeOperation = 'soft-light'; main.globalAlpha = 0.25; main.filter = `blur(${8 * PX}px)`; main.drawImage(src, 0, 0); main.restore();
+  // grade: warm centre, cool edges
+  main.save(); main.globalCompositeOperation = 'multiply';
+  main.fillStyle = radial(main, 900, 600, 200, 1250, [[0, 'rgba(255,255,255,1)'], [0.6, 'rgba(225,222,238,1)'], [1, 'rgba(120,116,150,1)']]);
+  main.fillRect(-10, -10, 1940, 1100); main.restore();
+  // grain
+  const gt = mk(256, 256); { const g = gt.getContext('2d'); const id = g.createImageData(256, 256); const r = mulberry32(555); for (let i = 0; i < id.data.length; i += 4) { const v = 128 + (r() + r() + r() - 1.5) * 60; id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 255; } g.putImageData(id, 0, 0); }
+  main.save(); ID(main); main.globalCompositeOperation = 'overlay'; main.globalAlpha = 0.12; main.fillStyle = main.createPattern(gt, 'repeat'); main.fillRect(0, 0, VW, VH); main.restore();
+}
+tick('post');
+stampClawd(main);
+main.getImageData(0, 0, 1, 1);
+tick('done (flushed)');
+console.log('TIMING ' + TIM.join(' | '));
+</script></body></html>

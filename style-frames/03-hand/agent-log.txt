@@ -1,0 +1,8 @@
+`frame.png` shows a slender anime hand, cupped and backlit by a low golden-hour window, with pixel-crisp Clawd standing in the palm. Clawd's orange glow lights the hollow of the cup, and a few sparks drift up from it; behind, a blurred monitor shows the gray gridworld with its orange agent square, as the sim-to-real echo. The hand is a raymarched 3D model with anime cel shading and ink lines, laid over a painted, brushstroked background, all in one deterministic `frame.html` that renders in about 50 seconds. I think it's strong: it reads instantly, the tone is tender and warm, and the anatomy holds up (four fingers and a thumb, joint creases, a clear thumbnail). But up close the hand looks like 3D toon rather than hand-drawn, the cup reads as gentle holding more than a sealed shelter, and a flat #D97757 Clawd can't be the brightest thing in a bright scene, so its glow has to come from the darker cup around it. My verdict for NOTES.md: code-drawn hands are viable for the video at mid-shot, since the pose and camera are fully adjustable for animation. Hero close-ups would want traced reference poses, and I wouldn't attempt faces this way.
+
+Files are in `C:/Users/USER/Projects/shelter-mv/style-frames/03-hand/`:
+- frame.png
+- frame.html
+- pass1.png to pass5.png
+- NOTES.md
+- render.sh (a small helper I added to run the headless render)

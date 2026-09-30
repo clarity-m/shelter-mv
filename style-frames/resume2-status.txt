@@ -1,0 +1,8 @@
+08-style-anime-cel exit=0 04:15
+09-style-pixel exit=0 04:16
+06-style-riso exit=0 04:23
+01b-pretrain-tokens exit=0 04:25
+02b-environment-poly exit=0 04:28
+05-clawd-sprites exit=0 04:29
+04b-swarm-contrast exit=0 04:29
+07-style-ligne-claire exit=0 04:42

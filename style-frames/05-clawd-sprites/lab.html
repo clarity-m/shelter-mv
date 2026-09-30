@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#161514;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script src="clawd-sprites.js"></script>
+<script>
+'use strict';
+// Design lab, round 3: sleep marks and look-up variants, at 8x16 and 3x6.
+const S = window.ClawdSprites;
+const ctx = document.getElementById('c').getContext('2d');
+ctx.fillStyle = '#161514'; ctx.fillRect(0, 0, 1920, 1080);
+const E = '......................';
+const body = [
+  '.....############.....',
+  '.....############.....',
+  '.....#ooo####ooo#.....',
+  '...################...',
+  '......#.#....#.#......'];
+const V = {
+  'z1 tetromino': [E, '.................ww...', '..................ww..', ...body],
+  'z2 4x3': ['.................wwww.', '...................w..', '.................wwww.', ...body],
+  'z4 zigzag': ['.................ww...', '..................w...', '..................ww..', ...body],
+  'z5 4x3 slant': ['................www...', '.................ww...', '.................www..', ...body],
+  'z7 two tetro': ['...................ww.', '....................ww', '................ww....', '.................ww...',
+    '.....############.....', '.....#ooo####ooo#.....', '...################...', '......#.#....#.#......'],
+  'look up: notch': [E, E, E,
+    '.....##o######o##.....', '.....############.....', '...################...', '.....############.....', '......#.#....#.#......'],
+  'look up: dome': [E, E,
+    '......##########......', '.....##o######o##.....', '.....############.....', '...################...', '.....############.....', '......#.#....#.#......'],
+  'look up: dome+arms': [E, E,
+    '......##########......', '...####o######o####...', '.....############.....', '.....############.....', '.....############.....', '......#.#....#.#......'],
+  'look up: tall-up': [E, E,
+    '......##o######o##....'.slice(0, 22), '.....##o######o##.....', '...################...', '.....############.....', '......#.#....#.#......', E].slice(0, 8),
+  'look up: notch+arms': [E, E, E,
+    '...#.##o######o##.#...', '....##############....', '.....############.....', '.....############.....', '......#.#....#.#......'],
+};
+const names = Object.keys(V);
+names.forEach((n, i) => {
+  const col = i % 5, row = (i / 5) | 0;
+  const cx = 190 + col * 380, gy = 230 + row * 380;
+  const g = V[n];
+  if (g.length !== 8 || g.some(r => r.length !== 22)) { ctx.fillStyle = 'red'; ctx.fillRect(cx - 50, gy - 50, 100, 50); }
+  ctx.fillStyle = 'rgba(245,240,232,0.12)'; ctx.fillRect(cx - 90, gy + 2, 180, 1);
+  S.drawFrame(ctx, g, cx, gy, 8, 16);
+  S.drawFrame(ctx, g, cx + 40, gy + 80, 3, 6);
+  S.drawFrame(ctx, g, cx - 50, gy + 80, 2, 4);
+  ctx.font = '14px Consolas'; ctx.fillStyle = 'rgba(245,240,232,0.8)'; ctx.textAlign = 'center';
+  ctx.fillText(n, cx, gy + 110);
+});
+</script>
+</body></html>

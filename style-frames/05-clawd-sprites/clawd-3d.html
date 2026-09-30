@@ -1,0 +1,154 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#161514;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script src="clawd-sprites.js"></script>
+<script src="clawd-3d.js"></script>
+<script>
+'use strict';
+// Extruded 3D Clawd turnaround sheet (clawd-3d.png). WebGL2 voxel raymarch, 2D labels on top.
+const S = window.ClawdSprites, C3 = window.Clawd3D;
+const W = 1920, H = 1080;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const BG = '#161514', WARM = '245,240,232', OR = '#D97757', FONT = 'Consolas, monospace';
+const DEG = Math.PI / 180;
+
+function txt(s, x, y, size, alpha, o = {}) {
+  ctx.font = `${o.bold ? 'bold ' : ''}${size}px ${FONT}`;
+  ctx.fillStyle = o.color || `rgba(${WARM},${alpha})`;
+  ctx.textAlign = o.align || 'left';
+  ctx.letterSpacing = (o.ls || 0) + 'px';
+  const w = ctx.measureText(s).width;
+  ctx.fillText(s, x, y);
+  ctx.letterSpacing = '0px';
+  return w;
+}
+const rectA = (x, y, w, h, a) => { ctx.fillStyle = `rgba(${WARM},${a})`; ctx.fillRect(x, y, w, h); };
+function section(num, title, x, y, sub) {
+  txt(num, x, y, 13, 1, { bold: true, color: OR, ls: 1 });
+  const w = txt(title, x + 30, y, 13, 0.9, { ls: 3 });
+  if (sub) txt(sub, x + 30 + w + 18, y, 12, 0.36);
+}
+
+// ---------------------------------------------------------------- views
+const DEPTH = 4;
+const vox = (g, o) => C3.buildVoxels(g, DEPTH, o);
+const views = [];
+const TURN = [
+  { name: 'FRONT', yaw: 0,    elev: 10 },
+  { name: '3/4',   yaw: -35,  elev: 22 },
+  { name: 'SIDE',  yaw: -90,  elev: 10 },
+  { name: 'BACK',  yaw: 180,  elev: 10 },
+  { name: 'TOP',   yaw: 0,    elev: 90 },
+];
+TURN.forEach((t, i) => {
+  const rect = [56 + i * 362, 132, 360, 326];
+  views.push({ tag: 'turn', label: t.name, sub: `yaw ${t.yaw}° · elev ${t.elev}°`,
+    boxes: vox(S.EMOTES.neutral), rect, center: [rect[0] + 180, rect[1] + 150],
+    target: [0, 5, 0], unitPx: 15, yaw: t.yaw * DEG, elev: t.elev * DEG, groundR: t.elev > 45 ? 9 : 11.5 });
+});
+const EMO = ['blink', 'happy', 'sad', 'surprised', 'sleepy', 'love'];
+EMO.forEach((name, i) => {
+  const rect = [56 + i * 302, 540, 300, 270];
+  views.push({ tag: 'emote', label: name, grid: S.EMOTES[name], boxes: vox(S.EMOTES[name]), rect,
+    center: [rect[0] + 150, rect[1] + 136], target: [0, 6.5, 0], unitPx: 12, yaw: -32 * DEG, elev: 20 * DEG, groundR: 11.5 });
+});
+const M = S.MOTION;
+[['HOP · apex', M.hop.frames[2], M.hop.dy[2], 'dy +3 rows: lifted 6 units, shadow stays'],
+ ['WALK · passing', M.walk.frames[1], 0, 'legs together, arm swing, eyes lead']].forEach(([label, g, dy, sub], i) => {
+  const rect = [56 + i * 450, 842, 440, 232];
+  views.push({ tag: 'motion', label, sub, grid: g, boxes: vox(g, { dy }), rect,
+    center: [rect[0] + 290, rect[1] + 118], target: [0, dy ? 7.5 : 5, 0], unitPx: dy ? 9 : 10,
+    yaw: -32 * DEG, elev: 22 * DEG, groundR: 12 });
+});
+
+[3, 4, 5].forEach((d, i) => {
+  const rect = [1612 + i * 86, 868, 86, 130];
+  views.push({ tag: 'depth', label: 'depth ' + d, boxes: C3.buildVoxels(S.EMOTES.neutral, d), rect,
+    center: [rect[0] + 43, rect[1] + 64], target: [0, 5, 0], unitPx: 4.2, yaw: -40 * DEG, elev: 22 * DEG, groundR: 9 });
+});
+
+// ---------------------------------------------------------------- render 3D
+const gcv = document.createElement('canvas'); gcv.width = W; gcv.height = H;
+const t0 = performance.now();
+const R = C3.createRenderer(gcv);
+views.forEach(v => R.draw(Object.assign({ ss: 3 }, v)));
+R.finish();
+const ms = performance.now() - t0;
+const info = R.gl.getExtension('WEBGL_debug_renderer_info');
+const gpu = info ? R.gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : 'unknown';
+
+// ---------------------------------------------------------------- compose
+ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H);
+for (let y = 12; y < H; y += 24) for (let x = 12; x < W; x += 24) rectA(x, y, 1, 1, 0.04);
+ctx.drawImage(gcv, 0, 0);
+
+txt('CLAWD 3D', 56, 58, 30, 0.95, { bold: true, ls: 6 });
+txt('extruded glyph · turnaround · Shelter MV', 262, 58, 15, 0.45, { ls: 1 });
+txt(`depth ${DEPTH} px-widths · lattice 1×2×0.5 · eyes recessed 1.0 · warm key, cool fill · clawd-3d.js`,
+    1864, 58, 13, 0.4, { align: 'right' });
+rectA(56, 78, 1808, 1, 0.1);
+
+section('01', 'TURNAROUND', 56, 114, 'canonical glyph, extruded; the model turns under fixed lights');
+section('02', 'EMOTES', 56, 520, 'eye holes become pockets, arm tips and legs move as slabs, accents become small voxels');
+section('03', 'MOTION KEYS', 56, 836);
+
+views.forEach(v => {
+  const [x, y, w, h] = v.rect;
+  if (v.tag === 'turn') {
+    txt(v.label, x + 20, y + h - 18, 13, 0.88, { ls: 3 });
+    txt(v.sub, x + 20, y + h - 2, 11, 0.36);
+  } else if (v.tag === 'emote') {
+    txt(v.label, x + 20, y + h - 2, 14, 0.88);
+    S.drawFrame(ctx, v.grid, x + 52, y + 50, 3, 6);
+  } else if (v.tag === 'depth') {
+    txt(v.label, x + 43, y + h + 2, 11, v.label === 'depth 4' ? 0.8 : 0.45, { align: 'center', color: v.label === 'depth 4' ? OR : undefined });
+  } else {
+    txt(v.label, x + 20, y + 40, 12, 0.88, { ls: 2 });
+    const words = v.sub.split(', ');
+    words.forEach((wd, k) => txt(wd + (k < words.length - 1 ? ',' : ''), x + 20, y + 58 + k * 16, 11, 0.36));
+    S.drawFrame(ctx, v.grid, x + 70, y + 160, 3, 6);
+  }
+});
+
+// dimension marks on FRONT and SIDE
+{
+  const f = views[0], s = views[2];
+  const a = C3.project(f, [-8, 10.9, 2]), b = C3.project(f, [8, 10.9, 2]);
+  rectA(a[0], a[1] - 12, b[0] - a[0], 1, 0.3); rectA(a[0], a[1] - 16, 1, 9, 0.3); rectA(b[0], b[1] - 16, 1, 9, 0.3);
+  txt('16', (a[0] + b[0]) / 2, a[1] - 18, 11, 0.55, { align: 'center' });
+  const c = C3.project(s, [0, 10.9, 2]), d = C3.project(s, [0, 10.9, -2]);
+  const x0 = Math.min(c[0], d[0]), x1 = Math.max(c[0], d[0]);
+  rectA(x0, c[1] - 12, x1 - x0, 1, 0.3); rectA(x0, c[1] - 16, 1, 9, 0.3); rectA(x1, c[1] - 16, 1, 9, 0.3);
+  txt('depth 4', (x0 + x1) / 2, c[1] - 18, 11, 0.55, { align: 'center' });
+}
+
+// recipe
+{
+  const x = 980, y = 882;
+  txt('RECIPE', x, y, 11, 0.5, { ls: 2 });
+  txt('DEPTH', 1612, y, 11, 0.5, { ls: 2 });
+  txt('3 to 5 reads as Clawd; 4 is canon', 1612, y + 132 + 26, 11, 0.36);
+  const counts = EMO.map(n => C3.buildVoxels(S.EMOTES[n], DEPTH).length);
+  const lines = [
+    ["'#'", 'body cell → box 1 × 2 × depth, horizontal runs merged'],
+    ["'o'", 'eye → 1.0-deep pocket with an ink floor (opts.eyes = "punch" cuts through)'],
+    ["'p' 'b'", 'inside the body → 0.5-deep inlay flush with the front face'],
+    ['accent', 'floating pixel → small inset voxel 0.76 × 1.76 × 0.76 at mid-depth'],
+    ['object', 'accent inside the body span → small voxel just in front of the face'],
+    ['boxes', `neutral ${C3.buildVoxels(S.EMOTES.neutral, DEPTH).length} · ` + EMO.map((n, i) => `${n} ${counts[i]}`).join(' · ')],
+  ];
+  lines.forEach(([k, s], i) => {
+    txt(k, x, y + 26 + i * 21, 12, 0.75, { color: OR });
+    txt(s, x + 76, y + 26 + i * 21, 12, 0.6);
+  });
+  const ly = y + 26 + lines.length * 21 + 12;
+  const sw = (hex, lx, name) => { ctx.fillStyle = hex; ctx.fillRect(lx, ly - 11, 14, 14); txt(name, lx + 22, ly, 12, 0.6); };
+  sw('#FFD9B0', x, 'key: warm, upper left front, casts shadows');
+  sw('#8FA6D9', x + 380, 'fill: cool, right and behind');
+  txt(`${gpu.replace(/\s*\(.*$/, '').slice(0, 40)} · ${views.length} views · ${ms.toFixed(0)} ms`, 1864, 1062, 11, 0.3, { align: 'right' });
+}
+document.title = `clawd3d ${ms.toFixed(0)} ms | ${gpu}`;
+</script>
+</body></html>

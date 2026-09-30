@@ -1,0 +1,18 @@
+You've hit your session limit · resets 4am (America/New_York)
+04b is finished. `frame.png` shows near-black space, a blown-white Alpha Centauri B cupped by five thin bands of about 380k crisp one-pixel collectors, and 11 shafts of light that appear beyond the bands to form the spark. I kept the cloud bank, recast as the edge of the humans' sim that the camera has just left: a crisp soap-film boundary with the painted golden-hour sky inside. `alt-nosim.png` shows the other option, with the edge removed, for comparison. The frame is one deterministic WebGL2 file (re-renders are byte-identical) that draws in about 0.15 s after about 2 s of one-time shader compile, so 3–5 s per frame is easy if frames are rendered in one page. Contrast, clarity and the spark are fixed, but at thumbnail size the bands still read more as fine dust rings than as millions of instances, and in a still the sim edge could pass for a pastel planet until the pull-back gives it context.
+
+Files are in `C:/Users/USER/Projects/shelter-mv/style-frames/04b-swarm-contrast/`:
+- frame.png
+- frame.html
+- alt-nosim.png
+- pass1.png–pass8.png
+- NOTES.md
+- render.sh
+`frame-v2.png` is done, and the v1 files are untouched. The swarm is now a 3D cage of eight crossing orbital bands: nearer collectors are brighter and larger, two nearly edge-on bands cross the star as a dark X, and the far arcs are dim red threads that disappear behind the disk. The spark is now light escaping through 11 open lanes, as broad soft shafts that start where each lane leaves the shell, light the surrounding dust, and fade within about one cage radius. I dropped the planet limb, because it read as a separate world with no tie to the swarm. The sim is now a small soap-film bubble held inside the cage beside the star, with a tiny sunset sea visible through it, so "hosted by the swarm" is literal (NOTES.md has the v2 section). The renderer is deterministic and draws in about 0.2 s after about 3 s of shader compile. At thumbnail size the cage still leans toward an atom icon, the tips of the shafts can look like smoke, and the bubble's sunset only reads at full size, so the pull-back animation has to establish it.
+
+Files are in `C:/Users/USER/Projects/shelter-mv/style-frames/04b-swarm-contrast/`:
+- frame-v2.png
+- frame-v2.html
+- v2-pass1.png–v2-pass8.png
+- render-v2.sh
+- NOTES.md
