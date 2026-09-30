@@ -996,13 +996,14 @@ vec3 clawd(vec2 p, float rb, float ra, float rl, float re, float k, float kl) {
   float eye = eo < 0.05 ? 1e9 : min(sdRoundBox(p, vec2(5.5 + uEye.x, 3.0 + sy + uEye.y), vec2(0.5, 1.0 * eo), rr),
                                     sdRoundBox(p, vec2(12.5 + uEye.x, 3.0 + sy + uEye.y), vec2(0.5, 1.0 * eo), rr));
   if (uEye.w > 0.5) {
-    // (revision 20) the happy arch eyes, ^^: a three-cell bar on the eye row and a cell under each end
+    // (revision 21) the happy arch eyes, ^^, exactly the sprite canon's emote (style-frames/05-clawd-sprites,
+    // glslx.js): three cells on the eye row and one under each end, crisp
     eye = 1e9;
     for (int e = 0; e < 2; e++) {
       float cx = (e == 0 ? 5.5 : 12.5) + uEye.x, cy = 3.0 + sy + uEye.y;
-      eye = min(eye, sdRoundBox(p, vec2(cx, cy - 0.4), vec2(1.5, 0.6), rr));
-      eye = min(eye, sdRoundBox(p, vec2(cx - 1.0, cy + 0.9), vec2(0.5, 0.8), rr));
-      eye = min(eye, sdRoundBox(p, vec2(cx + 1.0, cy + 0.9), vec2(0.5, 0.8), rr));
+      eye = min(eye, sdRoundBox(p, vec2(cx, cy), vec2(1.5, 1.0), 0.06));
+      eye = min(eye, sdRoundBox(p, vec2(cx - 1.0, cy + 2.0), vec2(0.5, 1.0), 0.06));
+      eye = min(eye, sdRoundBox(p, vec2(cx + 1.0, cy + 2.0), vec2(0.5, 1.0), 0.06));
     }
   }
   return vec3(max(d, -eye), eye, d);

@@ -5,26 +5,25 @@
 - `rack.js` gained `beatWave(T, f, lead)` (R19). `fleet3d.js` is unchanged (D's voyage uses it).
 - `datacenter.js` is S35's aisle and campus (unchanged since R15).
 
-**Revision 19 (Claire's notes on cut 17).**
-- **S06 and S16:** the main pulse lands on beats 1 and 3 (a faint echo on 2 and 4), each wave starting
-  early so its peak falls on the beat; S16's rows light on 1 and 3.
-- **S23:** the satellites are brighter, flare and then twinkle; the closed ring glows.
-- **S26:** the slit slides open in one move (local 3-50).
-- **S29:**
-  - an ignition bloom peaks on 73.1 (frame 5195), and the star trails start on it;
-  - the lasers have a white-hot core in a warm halo;
-  - the sails are 1.4x (via `sailMesh`'s `side`), screen-blended;
-  - the push accelerates to the cut, and the camera follows at 30%.
+**Revision 19.**
+- **S06 and S16:** the main pulse peaks on beats 1 and 3, with a faint echo on 2 and 4.
+- **S23:** the satellites flare, then twinkle; the closed ring glows.
+- **S26:** the slit slides open in one move.
+- **S29:** an ignition bloom on 73.1; brighter lasers, 1.4x sails; the push accelerates to the cut.
 
 **Revision 20.**
-- **S06:** one bar. The card slides into bay A on beat 1, its vents light on 3, and the stop on
-  13.4 hushes it. The last frame (946) is still. Its rows and lit vents are in MATCH.md for T's S07,
-  and T's rows already sit on them.
-- **S23:** 48 satellites, spaced evenly by arc length, about 60 px apart. The ring's pulse crosses
-  it left to right, one beat per crossing.
-- **S29:**
-  - the ribbon's pulses pass behind the climber;
-  - the sails light in three waves (3, then 12, then all on 76.2), each pushed from when it lights.
+- **S23:** 48 evenly spaced satellites; the ring's pulse crosses left to right.
+- **S29:** the ribbon's pulses pass behind the climber.
+
+**Revision 21.**
+- **S06** reads its bars, beats and stops from its own range, so it works at any length. Card 1
+  seats and lights on beat 1, and card 2 on beat 3. In a second bar both cards pulse with the rack
+  on 1 and 3, and the stops hush them. At one bar (the A/B's bar 11) it settles to rest with both
+  cards lit, for S07 (MATCH.md).
+- **S29:** the sails light on bar 76's triplet grid (local 228 + 6k), in groups of 3, 1, 2 / 8, 3,
+  4 / 20, 7, 9 / 64, 10, 10. The accented steps get the big groups and a brighter flash, and every
+  group is in view. The dozen sails out of view and the hero light on the last accent (pushed
+  earlier, the hero would cross the formation).
 
 **Known issues.**
 - S29 holds three GL contexts and S35 two.

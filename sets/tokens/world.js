@@ -77,7 +77,7 @@ uniform vec2 uClawdW;            // world centre of the burst
 uniform vec4 uClawd;             // x0, y0 (device, top-left), cell (device), on
 uniform int uGlyph[5]; uniform int uEyes[5];
 uniform float uSkyG, uLightG;
-uniform vec4 uHot;               // layer (1-based), amount, half-width (world px): a lit card's warm light on a layer
+uniform vec4 uHot;               // layer A, layer B (1-based; 0 = none), amount, half-width (world px)
 uniform float uRayTh[11]; uniform float uRayL[11]; uniform float uRayW[11];
 uniform float uTime;
 uniform vec4 uRip[8];            // beat ripples: age (frames), amp, speed (world px/frame), width (world px)
@@ -240,9 +240,9 @@ void main(){
       float d = texture(uAtlas, vec2(xs/uRes.x, (float(l + 1)*uAtlRow + uAtlRow*0.5 + dd)/uAtlH)).r*2.;
       col += d*tintAt(xs)*a*(1. + 1.6*ripL);
       // S07's match: the new card's warm light, carried onto its layer for the dissolve
-      if (uHot.y > 0. && float(l + 1) == uHot.x){
+      if (uHot.z > 0. && (float(l + 1) == uHot.x || float(l + 1) == uHot.y)){
         float hx = abs(x - uSX);
-        col += vec3(1.1, 0.46, 0.22)*uHot.y*a*smoothstep(uHot.z, uHot.z*0.75, hx)*exp(-sq(dd/(2.2*max(1., zk))));
+        col += vec3(1.1, 0.46, 0.22)*uHot.z*a*smoothstep(uHot.w, uHot.w*0.75, hx)*exp(-sq(dd/(2.2*max(1., zk))));
       }
       // his column: a tiny warm cell in every layer
       float wx = abs(x - uSX);
@@ -372,6 +372,7 @@ uniform vec2 uUIR;
 uniform vec4 uWash;           // amount, radius (device px), centre x, centre y (device, top-down)
 uniform vec4 uClawd; uniform int uGlyph[5]; uniform int uEyes[5];
 uniform vec3 uFlash;          // amount, line y (device, top-down), his x (device)
+uniform float uDim;           // a held breath: the world dims and greys a touch (Clawd stays exact)
 out vec4 o;
 float sh(float v){ return v < 0.8 ? v : 0.8 + 0.2*(1. - exp(-(v - 0.8)/0.2)); }
 void main(){
@@ -394,6 +395,10 @@ void main(){
     float band = exp(-sq(fdy/190.))*(0.35 + 0.65*exp(-sq(fdx/760.)));
     float core = exp(-(fdx*fdx + fdy*fdy*3.)/(2.*sq(140.)));
     c += vec3(1., 0.985, 0.96)*uFlash.x*(0.9*band + 1.5*core);
+  }
+  if (uDim > 0.){
+    float lu = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = mix(c, vec3(lu), 0.55*uDim)*(1. - 0.3*uDim);
   }
   c *= 1. - uBlack;
   // HUD: diegetic, composited before grain (the UI canvas covers only the bottom-left corner)
@@ -934,7 +939,8 @@ export function createTokenWorld(canvas, { W, H, log = () => {} }) {
     gl.uniform4f(U.uClawd, cx0, cy0, cell, clawdOn);
     gl.uniform1iv(U.uGlyph, CB.body); gl.uniform1iv(U.uEyes, CB.eyes);
     gl.uniform1f(U.uSkyG, P.skyG ?? 1); gl.uniform1f(U.uLightG, P.lightG ?? 1);
-    { const h = P.hot || { layer: 0, amp: 0, hw: 1 }; gl.uniform4f(U.uHot, h.layer, h.amp, h.hw, 0); }
+    { const h = P.hot || {}; const ls = h.layers || (h.layer ? [h.layer] : []);
+      gl.uniform4f(U.uHot, ls[0] || 0, ls[1] || 0, h.amp || 0, h.hw || 1); }
     gl.uniform1fv(U.uRayTh, rays.th); gl.uniform1fv(U.uRayL, rays.L); gl.uniform1fv(U.uRayW, rays.w);
     gl.uniform1f(U.uTime, P.f / 30);
     {
@@ -973,7 +979,7 @@ export function createTokenWorld(canvas, { W, H, log = () => {} }) {
     gl.uniform4f(U.uWash, Wsh.amp, Wsh.r * k, X(SX), Y(CYw));
     gl.uniform4f(U.uClawd, cx0, cy0, cell, clawdOn);
     gl.uniform1iv(U.uGlyph, CB.body); gl.uniform1iv(U.uEyes, CB.eyes);
-    gl.uniform3f(U.uFlash, flash, Y(HZ), X(SX));
+    gl.uniform3f(U.uFlash, flash, Y(HZ), X(SX)); gl.uniform1f(U.uDim, P.dim ?? 0);
     draw(null, W, H);
     if (P.profile) {
       gl.finish();

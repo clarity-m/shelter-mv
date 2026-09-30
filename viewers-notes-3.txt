@@ -1,0 +1,9 @@
+S04: appears to be a frozen frame between 0:21 and 0:22
+
+S18: let the cursor sweep far left and far right, showing some curiosity
+
+S21: appears to be a glitch, where the highlights pass through the reactor skeleton
+
+S29: the bar where the sails light up is split into triplets A-a-a-A-a-a-A-a-a-A-a-a, edit the timing accordingly. 
+
+S31: clawd does blink->look->look>^^->look->blink, simplify to 4-5 so the expressions can ring. some small glitches, birds disappear mid-flight, clawd ^^ looks off. 

@@ -4,10 +4,19 @@ The positions are screen pixels in 1920x1080 (y down), at the outside shot's FIR
 twin's LAST frame puts its light on these marks. Revision 8 (2026-09-29 00:56) is at the top; the
 older targets it retired are listed at the end.
 
-## Revision 20: S06 -> S07, the rack's rows (for agent T)
+## Revisions 20-21: S06 -> S07, the rack's rows (for agent T)
 
-S06 is now bar 13 only (frames 875-946). Its last frame, 946, is still: the camera's push has eased
-to rest and the pulses have calmed by local 67. S07 opens on frame 947. In screen px (1920x1080) at 946:
+**Revision 21:** the main cut has S06 at bars 13-14, hard-cutting to S08, and no S07. For the lead's
+A/B (S06 at bar 11, frames 731-802, then S07 at bar 12), S06's code is length-agnostic. At one bar
+its last frame, 802, is the view below, at rest (the camera's push and drift have eased to a stop,
+and the pulses have calmed by local 67). One thing changes: **bay B (row 5, y 656) now holds card 2,
+lit like bay A**. It is bay A shifted down 364 px, with the same vents (x 817-1146, centred at
+981.5) over bay y 597-715. The rest of the frame matches the R20 frame. Reference:
+`out/stills/match_S06_last_r21.png` (taken from the test clip).
+
+**Revision 20** (bar 13 only, frames 875-946). The last frame, 946, was still: the camera's push had
+eased to rest and the pulses had calmed by local 67. S07 opened on frame 947. In screen px
+(1920x1080) at 946:
 - **The six rows**, the rack's unit and bay centres, 121.2 px apart: **y 171, 292, 413, 535, 656,
   777** (T's old `170 + 120 i` is within 1-7 px).
 - **The lit row:** only bay A (row 2, y 292) holds the new card.
@@ -213,3 +222,5 @@ them.
 - 2026-09-29 19:58 (revision 15): S35 runs to 4420 (shift1 18). Frame 4331 is bit-identical, and the
   campus's square is now at 4420.
 - 2026-09-30 04:05 (revision 20): S06 -> S07's rows and the lit vents at frame 946 (for T).
+- 2026-09-30 11:55 (revision 21): S06 is length-agnostic. Its one-bar ending (the A/B's frame 802) is the
+  same view with bay B's card lit too.

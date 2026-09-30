@@ -460,9 +460,13 @@ export { acting };
 // pauses, its attention following his work, never crowding it. A world point relative to his feet
 // (so it rides the hill with him), keyed over the whole pivot: c = S18's frame (0-287), then S19's
 // frame + 288; S19 continues the same path, so it runs straight across the cut.
+// revision 21 (Claire: curiosity): slow, wide sweeps to the far right and far left of the frame, looking
+// round at everything he makes, with pauses, each time coming back to watch him (from 260 on, as before)
 const WATCH = [
-  [55, [1.4, 2.6, -0.8]], [100, [0.6, 2.9, -0.9]], [135, [-0.8, 2.8, -0.7]], [170, [-0.2, 3.4, -1.0]],
-  [215, [0.9, 3.3, -1.1]], [260, [-0.6, 3.5, -0.8]], [300, [-2.2, 3.6, -0.6]], [330, [-3.0, 3.7, -0.4]],
+  [55, [1.4, 2.6, -0.8]], [80, [1.4, 2.6, -0.8]], [100, [5.5, 3.2, -0.6]], [115, [5.5, 3.2, -0.6]],     // bar 48: far right
+  [140, [0.2, 3.0, -0.9]], [165, [6.5, 5.2, -0.8]], [185, [6.5, 5.2, -0.8]], [212, [0.6, 3.6, -1.1]],   // bar 49: high, far right
+  [238, [-9.0, 4.8, -0.8]], [254, [-9.0, 4.8, -0.8]], [284, [-1.2, 3.6, -0.7]],                        // bar 50: high, far left
+  [310, [-2.4, 3.6, -0.6]], [330, [-3.0, 3.7, -0.4]],                                                    // S19: toward the tree
 ];
 export function watchW(c, CX, gy, CZ) {
   let o = WATCH[0][1];

@@ -47,9 +47,43 @@ export const flashS04 = (fl) => (fl < 0 || fl > 12 ? 0 : Math.pow(0.5, fl / 2.2)
 export function stackS04(T, W, f) {
   return stackState(T, W, f, {
     n: 6, gap: 62, shrink: 0.95, lift0: F04, liftDur: 8, stagger: 0.8, tau: (f - F04) * 0.06,
-    from: F04 - 2, fireAll: [611, 620], keys: 9, halfLife: 9,
+    from: F04 - 2, fireAll: [611, 620], keys: 9, halfLife: 9, defer: [BREATH0, BREATH1],
   });
 }
+
+// ---- S04's 9.4 bass stop as a held breath (R21: an exact freeze read as a glitch). From the stop
+// (646) motion eases to about 16% speed within three frames and drifts on, while the world dims and
+// greys a touch; on the bar-10 downbeat (659) time snaps back to the real frame, bright. Returns the
+// frame to show (a float) and the breath amount.
+export const BREATH0 = 646, BREATH1 = 659;
+export function breathS04(f) {
+  if (f < BREATH0 || f >= BREATH1) return { fe: f, b: 0 };
+  const x = f - BREATH0;
+  let fe = BREATH0;
+  for (let i = 0; i < x; i++) fe += lerp(1, 0.16, smoothstep(0, 3, i));
+  return { fe, b: smoothstep(0, 3, x) };
+}
+
+// The same held breath for any shot [f0, f1), read from the stops that fall inside it: each runs from
+// its stop to the next bar downbeat (the snap back, bright) or, if that is past the shot, to the cut.
+// Returns the frame to show (float), the breath amount, and the frames since the last snap.
+export function breathAt(T, f, f0, f1) {
+  const bars = T.events('bars');
+  let sinceSnap = Infinity;
+  for (const s of T.events('stops')) {
+    if (s < f0 || s >= f1) continue;
+    const next = bars.find((b) => b > s);
+    const end = next !== undefined && next < f1 ? next : f1;
+    if (end < f1 && f >= end) sinceSnap = Math.min(sinceSnap, f - end);
+    if (f < s || f >= end) continue;
+    const x = f - s;
+    let fe = s;
+    for (let i = 0; i < x; i++) fe += lerp(1, 0.16, smoothstep(0, 3, i));
+    return { fe, b: smoothstep(0, 3, x), sinceSnap: Infinity };
+  }
+  return { fe: f, b: 0, sinceSnap };
+}
+export const stopsIn = (T, f0, f1) => T.events('stops').filter((s) => s >= f0 && s < f1);
 
 // ---- the other sequences in the batch (the lanes and long-exposure dashes along the line) race
 // ahead of the main stream as the riser builds, and keep that pace through the hook. World px of

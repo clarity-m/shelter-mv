@@ -132,10 +132,12 @@ function formFigure(p, t) {
 // Small flocks cross the open sky on the phrase starts (sung onsets 5835, 5900, 6040): dark wings
 // flapping, loosely together, clear of the tree's crown, gone before the hold (so S32's seam, which
 // reads S31's last frame, has none).
+// (revision 21) each flock comes in from off screen and flies on out of it (over the top or the right
+// edge, trailing birds included), never vanishing mid-flight, and all are gone before the hold
 const FLOCKS = [
-  { f0: 5835, dur: 96, a: [2000, 205], b: [880, 150], n: 7, s: 1.0, seed: 1 },
-  { f0: 5900, dur: 110, a: [760, 105], b: [2010, 72], n: 5, s: 0.85, seed: 2 },
-  { f0: 6040, dur: 74, a: [2010, 262], b: [1060, 214], n: 6, s: 1.1, seed: 3 },
+  { f0: 5835, dur: 100, a: [2060, 232], b: [960, -75], n: 7, s: 1.0, seed: 1 },
+  { f0: 5900, dur: 112, a: [1120, -70], b: [2170, 150], n: 5, s: 0.85, seed: 2 },
+  { f0: 6038, dur: 76, a: [2060, 282], b: [1280, -80], n: 6, s: 1.1, seed: 3 },
 ];
 const hsh = (a, b) => { const x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return x - Math.floor(x); };
 function drawBirds(fe) {

@@ -62,6 +62,26 @@ them. Key everything to bars and timestamps instead.
 - Grid: 100 BPM, bar 2.4 s = 72 frames, bar b starts at 0.38 + 2.4(b-1) s.
 
 ## Status
+- 2026-09-30: CUT 20 (Revision 21, Claire's `viewers-notes-3.txt` plus chat notes: fixes). The film is `out/film.mp4`
+  (= `out/film_cut20.mp4`); there are 31 shots, in cut 18's early order again (S07 removed; S06 is 13-14).
+  - **S01:** cut 18's fan-by-fan unfold; each ray's outline stands alone for 7 frames before its
+    fill, and there's no spin.
+  - **S04:** the 9.4 stop is a held breath (a slow drift and dim, snapping back on 10.1), not a
+    freeze.
+  - **S06:** both racks (card 1 on beat 1, card 2 on beat 3), pulses on 1 and 3; the code works at
+    1 or 2 bars.
+  - **S18:** the humans' cursor makes curious far-left and far-right sweeps.
+  - **S21:** the filaments are masked by the plasma's own light, so they hide behind the coils; the
+    steady glow is 14% lower after the flash.
+  - **S29:** the sails light on bar 76's triplet grid (5411 + 6k, accents brighter).
+  - **S31:** exactly five eye motions (blink, look, ^^ in place, return, blink); the canonical crisp
+    ^^; the birds leave the frame.
+  - **The A/B of Claire's alternate hook-1 order** (S04, S06 one bar, S07, S05, S08):
+    `out/ab/hook1_alt.mp4` against `out/ab/hook1_cut18order.mp4` (bars 9-16 with audio;
+    `render/ab_hook1.py`). S05, S06 and S07 work in both orders. Awaiting her pick.
+  - Verified: 6532 frames, A/V +0.0 ms, 0 single-frame spikes, 0 short bursts; every continuity cut
+    is at most 3.7.
+  - Cut 19 is in git (0b236b6) and `out/film_cut19.mp4`.
 - 2026-09-30: CUT 19 (Revision 20, from Claire's `viewers-notes-2.txt` on cut 18; she thinks it may be the last or
   second-to-last revision). `render/briefs/R20-common.md` has the plan, and `render/revise20_shots.py` the bars. The
   film is `out/film.mp4` (= `out/film_cut19.mp4`); there are 32 shots.

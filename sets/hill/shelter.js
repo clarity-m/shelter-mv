@@ -189,26 +189,21 @@ export function createShelter(canvas, opts = {}) {
 // Clawd blinks and twice glances up at her. Its first frame (fe 5771) is S31's opening view exactly
 // as before revision 1: presence 0, lean 0, eyes open and centred.
 export const S31_F0 = 5771;
-// (revision 20) one shared moment in bars 83-84: she turns her head to him on the 5937 phrase; he looks
-// up at her and his eyes go to the happy arch (^^) and hold about two beats; she leans back on 6002
-// and her head turns back up to the city. He glances up at her once before (bar 82) and once after.
-const GLANCES = [[5889, 5925], [5944, 5998], [6021, 6075]];   // glance up at her (fe ranges)
-const BLINKS = [5836, 6080, 6150, 6181];
-const ARCH = [5953, 5990];                                    // his ^^, held
+// (revision 21, Claire) exactly five eye motions, each given room to ring: a blink (5922); the look, his
+// eyes a whole column toward her as she turns to him (5941); the ^^, the canonical happy emote, formed
+// in that same looking position and held longest (5955-5997); the return to rest (5997); a blink
+// (6032). Nothing else in between; she leans back on 6002.
+const BLINKS = [5922, 6032], LOOK = [5941, 5997], ARCH = [5955, 5997];
 export function s31Anim(fe) {
   const sm = (a, b, x) => { const t = clampP((x - a) / (b - a)); return t * t * (3 - 2 * t); };
-  let g = 0;
-  for (const [a, b] of GLANCES) g = Math.max(g, sm(a, a + 5, fe) * (1 - sm(b - 5, b, fe)));
   let open = 1;
   for (const b of BLINKS) { const d = Math.abs(fe - b); if (d < 2.5) open = Math.min(open, d < 1 ? 0 : 0.35 * (d - 0.5)); }
-  // into the arch through a quick close, out of it by opening again
-  const arch = fe >= ARCH[0] && fe < ARCH[1];
-  if (!arch) { const d0 = ARCH[0] - fe, d1 = fe - ARCH[1]; if (d0 > 0 && d0 < 3) open = Math.min(open, d0 / 3); if (d1 >= 0 && d1 < 3) open = Math.min(open, d1 / 3); }
+  const looking = fe >= LOOK[0] && fe < LOOK[1];
   return {
     presence: sm(S31_F0 + 6, S31_F0 + 80, fe),
     lean: sm(6002, 6044, fe),
     turn: 0.95 * sm(5937, 5951, fe) * (1 - sm(6004, 6024, fe)),
-    eyes: { dx: -0.85 * g, dy: -0.6 * g, open, arch },
+    eyes: { dx: looking ? -1 : 0, dy: 0, open, arch: fe >= ARCH[0] && fe < ARCH[1] },
   };
 }
 export const S31_LAST = Object.assign({ time: 150 + 6189 / 30, crane: 1 }, s31Anim(6189));

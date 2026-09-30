@@ -7,19 +7,20 @@
   camera creeps; light converges on him after the riser cuts (8.4). R20: the arrival is keyed to
   the shot start (317), the build to global frames (unchanged from R19).
 - **S04 (9-10):** a white bloom flash on 9.1; the line lifts into 6 layers in one clean camera move.
-  Chops 611/620 fire up the whole stack. The stop (646-655) holds.
-- **S05 (11-12, xin 6):** opens on S04's last frame; the layers fall into the line; the loss
-  curve sweeps down to him.
-- **S07 (14, R20):** opens on S06's last frame (O's MATCH.md): six layer rows on the rack's rows
-  (121.2 px apart), the lit card's row warm, the empty bay's row dark until beat 1's eighth,
-  and his column under the vents (x 981.5), at zoom 1. A pull-back closes the rows into a stack
-  that grows a layer per beat to nine, with heads firing up the stack on every beat and chop.
-  The 14.4 stop freezes it to the cut on STEP 131 072 (the style frame).
+  Chops 611/620 fire up the whole stack. R21: the 9.4 stop is a held breath (16% speed, dimmed and
+  greyed, never an exact freeze), snapping back bright on 10.1 (`breathS04` in `hook.js`).
+- **S05 (xin 6):** keyed to its own start; it opens on the previous shot's last frame (S04 in the
+  main order, 11-12; S07 in the alternate, 13-14); the layers fall, the loss curve sweeps down.
+  Stops inside it (alternate 13.4, 14.4) are breaths that step the loss down; else it settles.
+- **S07 (alternate order, bar 12; `s07.js`):** opens on the rack's rows (both lit cards warm), pulls
+  back to a stack growing a layer per beat, arcs firing faster, into S05. Unused in the
+  main order.
 
 **Technique.** `world.js`: Canvas2D tokens, trails, layers, light, HUD; WebGL2 sky,
 field, halo, ripples, reflections, glow, bloom, flash, grain, Clawd.
 `hook.js` shares cameras, lens, flash, stack and lanes.
 
-**Page ms/frame (1080p, shared GPU).** S03 269, S04 306, S05 194, S07 403.
+**Page ms/frame (1080p, shared GPU).** S03 269, S04 277, S05 194.
 
 **Known issues.** Re-render S03 once S02 is final (its xin reads S02's live last frame).
+A/B stills: out/stills/AB_*.

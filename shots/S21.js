@@ -14,6 +14,8 @@
 // a dozen bright filaments stay behind and travel along the plasma's helical field lines (landing.js
 // HELIX), round the ring. That is what a tokamak's plasma does: it rotates toroidally, and its bright
 // edge filaments stay aligned with the twisted field. Nearer filaments are brighter; they pulse on the beats.
+// Revision 21 (Claire: the highlights passed through the reactor's skeleton): the filaments are masked by
+// the plasma's own light in the rendered frame, so the coils and column in front hide them.
 import { createFusion } from '../sets/paper-fusion/fusion.js';
 import { coreEdges, proj, FOCUS, LD, HELIX } from '../sets/paper-fusion/landing.js';
 import { SC } from '../sets/inside-montage/reactor.js';
@@ -30,7 +32,8 @@ const EDGES = coreEdges().map((e, i) => {
 });
 const BURN_LEN = 7;    // frames a line takes to burn away
 
-let F, glCanvas, g2, lc, lg;
+let F, glCanvas, g2, lc, lg, fc, fg, mc, mg, mo, mog, mImg;
+const MW = 480, MH = 270;             // the visibility mask's resolution
 function drawLines(k, push, scale) {
   // intensity and colour per line: the flash on the kick, then each burns warm and goes
   const z = LD / (LD - push), s = scale;
@@ -70,9 +73,9 @@ function drawFilaments(k, f, T, push, scale) {
   const z = LD / (LD - push), s = scale;
   const X = (p) => (FOCUS[0] + (p[0] - FOCUS[0]) * z) * s, Y = (p) => (FOCUS[1] + (p[1] - FOCUS[1]) * z) * s;
   const on = smoothstep(7, 16, k), beat = T.pulse('beats', f, 6);
-  const I0 = on * (1.0 + 0.45 * beat);
+  const I0 = on * (1.35 + 0.5 * beat);
   if (I0 <= 0.001) return 0;
-  lg.globalCompositeOperation = 'lighter'; lg.lineCap = 'round';
+  fg.globalCompositeOperation = 'lighter'; fg.lineCap = 'round';
   const Rmax = SC.R0 + SC.A, STEPS = 12;
   let n = 0;
   for (const fl of FIL) {
@@ -85,12 +88,29 @@ function drawFilaments(k, f, T, push, scale) {
       const I = I0 * fl.w * tail * tail * (0.3 + 0.7 * front);
       if (I < 0.02) continue;
       const g = Math.round(236 - 70 * (1 - tail)), bl = Math.round(210 - 120 * (1 - tail));
-      lg.strokeStyle = `rgba(255,${g},${bl},${Math.min(1, 0.9 * I).toFixed(3)})`;
-      lg.lineWidth = (2.2 + 2.6 * tail) * s * (0.8 + 0.4 * front);
-      lg.beginPath(); lg.moveTo(X(pa), Y(pa)); lg.lineTo(X(pb), Y(pb)); lg.stroke(); n++;
+      fg.strokeStyle = `rgba(255,${g},${bl},${Math.min(1, 0.9 * I).toFixed(3)})`;
+      fg.lineWidth = (2.2 + 2.6 * tail) * s * (0.8 + 0.4 * front);
+      fg.beginPath(); fg.moveTo(X(pa), Y(pa)); fg.lineTo(X(pb), Y(pb)); fg.stroke(); n++;
     }
   }
   return n;
+}
+
+// the plasma's visibility: bright where the plasma shows, dark where the coils, column and cap stand in
+// front of it (their card is dark against the glow). The filament layer keeps only the bright parts.
+function maskFilaments(W, H) {
+  mg.drawImage(glCanvas, 0, 0, MW, MH);
+  const src = mg.getImageData(0, 0, MW, MH).data, dst = mImg.data;
+  for (let i = 0; i < src.length; i += 4) {
+    const lum = (0.2126 * src[i] + 0.7152 * src[i + 1] + 0.0722 * src[i + 2]) / 255;
+    const t = Math.min(Math.max((lum - 0.40) / 0.18, 0), 1);
+    dst[i] = dst[i + 1] = dst[i + 2] = 255; dst[i + 3] = Math.round(255 * t * t * (3 - 2 * t));
+  }
+  mog.putImageData(mImg, 0, 0);
+  fg.globalCompositeOperation = 'destination-in';
+  fg.imageSmoothingEnabled = true;
+  fg.drawImage(mo, 0, 0, W, H);
+  fg.globalCompositeOperation = 'source-over';
 }
 
 export default {
@@ -100,6 +120,9 @@ export default {
     g2 = ctx.canvas.getContext('2d');
     lc = document.createElement('canvas'); lc.width = ctx.W; lc.height = ctx.H;
     lg = lc.getContext('2d');
+    fc = document.createElement('canvas'); fc.width = ctx.W; fc.height = ctx.H; fg = fc.getContext('2d');
+    mc = document.createElement('canvas'); mc.width = MW; mc.height = MH; mg = mc.getContext('2d', { willReadFrequently: true });
+    mo = document.createElement('canvas'); mo.width = MW; mo.height = MH; mog = mo.getContext('2d'); mImg = mog.createImageData(MW, MH);
     F = createFusion(glCanvas, (s) => ctx.log(s));
     ctx.log(`S21: ${EDGES.length} drawing edges, focus ${FOCUS.map((v) => v.toFixed(0)).join(', ')}`);
   },
@@ -113,7 +136,9 @@ export default {
       const beat = T.pulse('beats', fr.f, 5);
       const breath = Math.sin(2 * Math.PI * k / 144);
       const voice = T.envSmooth('vocals', fr.f, 4) - 0.5;
-      ign = (1 + 0.55 * Math.exp(-k / 5)) * (1.1 + on * (0.3 * beat + 0.08 * breath + 0.1 * voice));
+      // (revision 21) the steady glow settles a little lower after the flash, so the filaments carry the brilliance
+      const settle = 1 - 0.14 * smoothstep(10, 22, k);
+      ign = settle * (1 + 0.55 * Math.exp(-k / 5)) * (1.1 + on * (0.3 * beat + 0.08 * breath + 0.1 * voice));
     }
     const reach = k < 0 ? 0.3 : 0.35 + 7.5 * (1 - Math.exp(-k / 11));
     const u = fr.fl / (fr.n - 1);
@@ -126,7 +151,15 @@ export default {
     lg.setTransform(1, 0, 0, 1, 0, 0); lg.globalCompositeOperation = 'source-over'; lg.clearRect(0, 0, lc.width, lc.height);
     let drawn = 0;
     if (k >= 0 && k < 24) drawn += drawLines(k, push, s);
-    if (k >= 0) drawn += drawFilaments(k, fr.f, T, push, s);
+    if (k >= 0) {
+      fg.setTransform(1, 0, 0, 1, 0, 0); fg.globalCompositeOperation = 'source-over'; fg.clearRect(0, 0, fc.width, fc.height);
+      const nf = drawFilaments(k, fr.f, T, push, s);
+      if (nf > 0) {
+        maskFilaments(ctx.W, ctx.H);
+        lg.globalCompositeOperation = 'lighter'; lg.drawImage(fc, 0, 0); lg.globalCompositeOperation = 'source-over';
+        drawn += nf;
+      }
+    }
     if (drawn > 0) {
       g2.globalCompositeOperation = 'lighter';
       g2.filter = `blur(${(7 * s).toFixed(2)}px)`; g2.globalAlpha = 0.9; g2.drawImage(lc, 0, 0);

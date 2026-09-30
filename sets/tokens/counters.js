@@ -37,7 +37,8 @@ export function drawOdometer(g, { value, rate, x, y, size, alpha = 1, sep = ',',
     for (let j = 0; j < n; j++) {
       const vj = (value + rate * (n > 1 ? j / n - 0.5 : 0)) / Math.pow(10, p);
       const d = Math.floor(vj) % 10, fr = vj - Math.floor(vj);
-      const roll = p === 0 || sp > 0.04 ? fr : smooth(0.88, 1, fr);
+      // a mechanical carry-roll while it runs; at rest (rate 0) every digit sits exactly
+      const roll = rate <= 0 ? 0 : p === 0 || sp > 0.04 ? fr : smooth(0.88, 1, fr);
       const a = alpha / n * (sp > 2 ? 0.75 : 1);
       g.fillStyle = `rgba(255,255,255,${a})`;
       g.fillText(String(d), cx, y - roll * lh);

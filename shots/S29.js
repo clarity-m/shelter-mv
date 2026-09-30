@@ -26,11 +26,11 @@
 //   - the lasers are brighter (a white-hot core in a warm halo) and the sails larger;
 //   - once the beams have lit the sails the push accelerates all the way to the cut (it used to ease
 //     out), and the camera rides along at about a third of the flock's speed.
-// Revision 20 (Claire):
-//   - the pulses inside the ribbon pass behind the climber and its payload;
-//   - the beams reach the sails in three waves, mirroring S23's satellites: a few on 76.1, more on
-//     the half-beat, then all the rest at once on 76.2. Each sail is pushed from the moment it lights
-//     (at most 6 frames ahead of the rest).
+// Revision 20 (Claire): the pulses inside the ribbon pass behind the climber and its payload.
+// Revision 21 (Claire: bar 76 is in triplets, A-a-a-A-a-a-A-a-a-A-a-a): the beams reach the sails on
+//   that grid, one step every 6 frames from 76.1 (local 228). A group lights on every step, a few,
+//   then more, then the rest; the accented A's (the beats) light bigger groups with a brighter
+//   flash. Each sail is pushed from the moment it lights.
 import { createPaper, smooth, clamp, lerp, easeInOut, easeOut, toScreen, panFor } from '../sets/paper-kit/kit.js';
 import { groundScene, spaceScene, layerXF } from '../sets/paper-kit/elevator.js';
 import { EL, STROKES, heat } from '../sets/paper-kit/elevatorlines.js';
@@ -152,15 +152,31 @@ function clipSeg(B, a, b, near = 0.5) {
   if (zb < near) { const u = (near - zb) / (za - zb); b = b.map((v, i) => v + (a[i] - v) * u); }
   return [a, b];
 }
-// (R20) the beams' three waves: the hero and two near the middle, then twelve spread out, then the rest
-const WAVE_T = [BEAMS, BEAMS + 9, BEAMS + 18];
-const FIRST = new Set([N_SAILS, 5 * 14 + 6, 4 * 14 + 8]);
-const waveOf = (i) => (FIRST.has(i) ? 0 : hash(i, 17) < 0.09 ? 1 : 2);
-const beamAt = (i) => { const w = waveOf(i); return WAVE_T[w] - 6 + (w === 2 ? 1.5 : 3) * hash(i, 3); };
-const pushOf = (i, fl) => { const t0 = Math.max(beamAt(i) + 6, AWAY - 6), p = clamp((fl - t0) / (LAST - AWAY), 0, 1.15); return p * p * (0.75 + 0.25 * p); };
+// (R21) the triplet grid of bar 76: step k lights at BEAMS + 6k; A's are k = 0, 3, 6, 9. The group
+// sizes grow. Three near sails spread across the frame light first, then the sails in view in a
+// shuffled order, so every step shows its group. The dozen out of view join the last accent's crowd,
+// and so does the hero (the nearest member, on the beam side of the sheet): pushed any earlier it
+// would drive up through the formation.
+const TRIP = 6, GROUP = [3, 1, 2, 8, 3, 4, 20, 7, 9, 63, 10, 10];
+const FIRST = [57, 31, 72];
+const STEP = (() => {
+  const inView = (i) => { const q = project(slotAt(i), CAM); return q[2] > 0.3 && q[0] > 80 && q[0] < 1840 && q[1] > 60 && q[1] < 1020; };
+  const rest = []; for (let i = 0; i < N_SAILS; i++) if (!FIRST.includes(i)) rest.push(i);
+  rest.sort((a, b) => hash(a, 23) - hash(b, 23));
+  const hid = rest.filter((i) => !inView(i)), vis = rest.filter(inView);
+  const m = new Map(); FIRST.forEach((i) => m.set(i, 0));
+  hid.forEach((i) => m.set(i, 9)); m.set(N_SAILS, 9);
+  const size = (k) => GROUP[k] - (k === 9 ? hid.length : 0);
+  let k = 1, n = 0;
+  for (const i of vis) { while (n >= size(k)) { k++; n = 0; } m.set(i, k); n++; }
+  return m;
+})();
+const litAt = (i) => BEAMS + TRIP * STEP.get(i), accented = (i) => STEP.get(i) % 3 === 0;
+const pushOf = (i, fl) => { const p = clamp((fl - litAt(i)) / 60, 0, 1.2); return p * p * (0.75 + 0.25 * p); };
 function drawFlock(g, s, fl, tsec) {
-  const away = awayAt(fl), D = PUSH_D * away;                       // the main push (the camera follows it)
-  const cam = Object.assign({}, CAM, { pos: TRAVEL.map((v) => v * FOLLOW * D), pitch: CAM.pitch + 0.06 * away, yaw: CAM.yaw - 0.05 * away }), B = camBasis(cam);
+  const away = awayAt(fl);
+  let Dm = 0; for (let i = 0; i <= N_SAILS; i++) Dm += PUSH_D * pushOf(i, fl); Dm /= N_SAILS + 1;     // the flock's mean push
+  const cam = Object.assign({}, CAM, { pos: TRAVEL.map((v) => v * FOLLOW * Dm), pitch: CAM.pitch + 0.06 * away, yaw: CAM.yaw - 0.05 * away }), B = camBasis(cam);
   const P = (p) => project(p, cam);
   const sails = [];
   for (let i = 0; i <= N_SAILS; i++) {                              // (N_SAILS is the hero, the nearest member)
@@ -169,9 +185,11 @@ function drawFlock(g, s, fl, tsec) {
     const e = easeOut(u), slot = slotAt(i), Di = PUSH_D * pushOf(i, fl);
     const c = [0, 1, 2].map((j) => lerp(BURST3[j], slot[j], e) + TRAVEL[j] * Di);
     const open = smooth(0.3, 1, u) * smooth(BURST + 6, BURST + 62, fl);
-    const tb = beamAt(i), lit = clamp((fl - tb - 5) / 6, 0, 1), grow = clamp((fl - tb) / 7, 0, 1);
+    // the beam arrives on the sail's step, and the sail lights over 2 frames with a flash
+    const tl = litAt(i), grow = clamp((fl - tl + 7) / 7, 0, 1), lit = clamp((fl - tl + 1) / 2, 0, 1);
+    const flash = fl >= tl - 1 ? (accented(i) ? 1.4 : 0.6) * Math.exp(-Math.max(0, fl - tl) / 3) : 0;
     const warm = 0.55 * (1 - e) * (1 - smooth(BURST + 20, BURST + 44, fl));
-    sails.push({ i, c, open, lit: Math.max(lit, warm), grow, z: depthOf(B, c), spin: (hash(i, 9) - 0.5) * 1.4 * (1 - open) });
+    sails.push({ i, c, open, lit: Math.max(lit, warm), flash, grow, z: depthOf(B, c), spin: (hash(i, 9) - 0.5) * 1.4 * (1 - open) });
   }
   sails.sort((a, b) => b.z - a.z);
   g.lineCap = 'round'; g.lineJoin = 'round'; g.globalCompositeOperation = 'lighter';
@@ -190,7 +208,7 @@ function drawFlock(g, s, fl, tsec) {
   }
   let n = 0;
   g.globalCompositeOperation = 'screen';                            // (R19) larger sails overlap: screen, not add
-  for (const q of sails) if (drawSail(g, s, P, sailMesh(q.i, { c: q.c, open: q.open, spin: q.spin, t: tsec, side: SHEET.side * SAIL_K }), { lit: q.lit, light: SHEET.N, hot: q.lit })) n++;
+  for (const q of sails) if (drawSail(g, s, P, sailMesh(q.i, { c: q.c, open: q.open, spin: q.spin, t: tsec, side: SHEET.side * SAIL_K }), { lit: q.lit, light: SHEET.N, hot: q.lit + q.flash })) n++;
   g.globalCompositeOperation = 'source-over';
   return n;
 }
@@ -324,7 +342,9 @@ export default {
     if (fl >= BURST) {
       reset(lg); lg.clearRect(0, 0, ctx.W, ctx.H);
       if (drawFlock(lg, s, fl, fr.t)) {
-        const glow = smooth(BEAMS, BEAMS + 12, fl);
+        // (R21) the flock's glow swells on the accented steps
+        const lastA = BEAMS + 18 * Math.floor(Math.max(0, fl - BEAMS) / 18), aFl = fl >= BEAMS ? Math.exp(-(fl - lastA) / 3.5) : 0;
+        const glow = smooth(BEAMS - 6, BEAMS + 12, fl) * (1 + 0.8 * aFl);
         g2.save(); g2.globalCompositeOperation = 'lighter';
         if (glow > 0) { g2.filter = `blur(${(7 * s).toFixed(2)}px)`; g2.globalAlpha = 0.55 * glow; g2.drawImage(lc, 0, 0); }
         g2.filter = 'none'; g2.globalAlpha = 1; g2.drawImage(lc, 0, 0);
