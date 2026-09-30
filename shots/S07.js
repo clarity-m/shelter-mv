@@ -4,14 +4,13 @@
 // S05, which grows its loss curve out of this shot's last arcs. Keyed to its own shot start and
 // length, with the music read by global frame; no stop treatments (R22). The state lives in
 // sets/tokens/s07.js so S05 can open on its last frame.
+// R23 (Claire: the visualization stands on its own): no corner STEP / LOSS HUD.
 import { createTokenWorld } from '../sets/tokens/world.js';
-import { headAt, speedAt, stepAt } from '../sets/tokens/train.js';
+import { headAt, speedAt } from '../sets/tokens/train.js';
 import { drawFired } from '../sets/tokens/stack.js';
 import { beatRipples, downbeat, breath } from '../sets/tokens/pulse.js';
-import { drawHUD } from '../sets/tokens/hud.js';
 import { eyesAt, laneOffAt, laneVAt } from '../sets/tokens/hook.js';
 import { s07State, MATCH07 } from '../sets/tokens/s07.js';
-import { smoothstep } from '../lib/util.js';
 
 let Wd;
 const EYES = [{ at: 0 }, { at: 11, dc: -1 }, { at: 29 }, { at: 41, dc: -1 }, { at: 55 }];   // shot-local
@@ -38,7 +37,6 @@ export default {
       ripples: beatRipples(T, f, { base: 0.6, gain: 0.2, down: 1.1, from: f0 + 6 }).slice(0, 8), ripLayer: 0.8,
       eyes: eyesAt(fl, EYES, BLINKS),
       drawLight: (g, api) => drawFired(g, api, s.st, 1.7 + db.boost, 1),
-      drawUI: (g, api) => drawHUD(g, api, { step: stepAt(f), a: smoothstep(4, 12, fl) }),
     });
   },
 };

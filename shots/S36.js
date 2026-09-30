@@ -35,7 +35,7 @@
 //    reaches at 196: the last frame puts the ring and coils exactly on sets/paper-fusion/LANDING.md's
 //    lines (landing.js coreLines(): 0.00 px), where S21 flashes them on the kick. The bass returns
 //    under it all; the snare pickup (194, 203, 208) brightens the ring.
-import { createHill } from '../sets/inside-montage/hillx.js';
+import { loadHillxDoor } from '../sets/door/hillx-fix.js';  // (R23) hillx with solid Clawds (world-oriented, depth-tested)
 import { reactorEdges, reactorPlacement, SC } from '../sets/inside-montage/reactor.js';
 import { helixEdges } from '../sets/paper-fusion/landing.js';
 import { nightPal, NIGHT } from '../sets/inside-montage/night.js';
@@ -525,7 +525,15 @@ function sceneAt(T, f, fl) {
     }
     const up = !!beam || calling || (i === 0 && fl >= OUT[0] - 4 && fl < HOOK);
     const popFlare = i === 0 ? POPS.reduce((a, p) => a + Math.exp(-Math.max(0, fl - p) / 5) * smoothstep(p - 3, p, fl), 0) * 0.7 : 0;
-    const pose = { x, z, y, u: U_CLAWD, form: 'luminous', hop, look, armL: up ? -2 : 0, armR: up ? -2 : 0,
+    // (R23, Claire: like S34's) a solid in the world, not a sprite: the crew faces the lens while the
+    // world is painted in and the cursors leave; then each turns three-quarters toward the sun, his
+    // work, as his hook takes hold (the new ones once they have landed): a quarter turn at most, so he
+    // reads as himself, and the camera's rise shows his sides and top
+    const aL = Math.atan2(camShore.pos[0] - x, camShore.pos[2] - z) + 0.3 * (hash(i, 23) - 0.5);
+    const turn = (i === 0 ? 0.3 : 0.45) * (c.x < 0.4 ? 1 : -1);
+    const tw = i < 4 ? smoothstep(HOOK - 6, HOOK + 10, fl) : smoothstep(c.pop + 8, c.pop + 22, fl);
+    const yaw = aL - turn * easeIO(tw);
+    const pose = { x, z, y, u: U_CLAWD, form: 'luminous', hop, look, yaw, armL: up ? -2 : 0, armR: up ? -2 : 0,
       glow: 1.0 + 0.25 * (up ? 1 : 0) + popFlare + (i === 0 ? 0.9 * Math.exp(-Math.max(0, fl - OUT[0]) / 6) * smoothstep(OUT[0] - 4, OUT[0], fl) : 0),
       eyeLight: 0.5 + 0.4 * sung, alpha: i < 4 ? 1 : smoothstep(0, 3, u) };
     if (i === 0) main = Object.assign(pose, { light: 1.2 }); else crowd.push(pose);
@@ -536,7 +544,7 @@ function sceneAt(T, f, fl) {
   const kN = lerp(0, 0.86, smoothstep(PULL[0] + 6, PRESS[1], fl)) + 0.1 * smoothstep(PRESS[1], 200, fl);
   return {
     state: {
-      rung: 4, time: 80 + fl / 30, cam, hill: LAND, sun: { az, el: Math.max(el, -8) }, tree: null, mountains: 0, props: false,
+      rung: 4, time: 80 + fl / 30, cam, hill: LAND, solidClawds: { depth: 4 }, sun: { az, el: Math.max(el, -8) }, tree: null, mountains: 0, props: false,
       salt: 1 - smoothstep(170, 196, fl),
       river: { pts: SEA.pts, head: SEA.head, flow: 0.4 * fl / 30 },
       clawd: main, crowd, lines, ribbons, ribbonCore: 0.5, palLin: palAt(fl, kN),
@@ -643,7 +651,9 @@ export default {
     glc = document.createElement('canvas'); glc.width = ctx.W; glc.height = ctx.H;
     g2 = ctx.canvas.getContext('2d');
     greyCv = mkCv(ctx.W, ctx.H); maskCv = mkCv(ctx.W, ctx.H); maskBlur = mkCv(ctx.W, ctx.H);
-    hill = createHill(glc, { log: ctx.log, seeding: SEEDING });
+    const HXL = await loadHillxDoor(ctx.log, { icy: false, solid: true });
+    if (!HXL.solid) ctx.log('S36: WARNING no solid Clawds');
+    hill = HXL.createHill(glc, { log: ctx.log, seeding: SEEDING });
     hill.warm([4]);
     CURSOR = createPaperCursor(47);
     BD_ATLAS = codeAtlas(BD_LABELS.map((l) => l.text), { px: 48, width: 2048, maxH: 512 });

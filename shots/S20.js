@@ -50,7 +50,7 @@
 // lights as its pair of chain segments comes into contact during the fold, filling into the native
 // pattern (helix bands beside the diagonal, sheet streaks). Revision 20 (Claire: like S34's, part of
 // the world): the map is painted on the funnel's far-right terraces in perspective, not a panel.
-import { loadHillxIcy } from '../sets/door/hillx-fix.js';  // hillx, with S18's glacier caps on the far peaks (revision 11)
+import { loadHillxDoor } from '../sets/door/hillx-fix.js';  // hillx with S18's glacier caps (R11), the field (R14) and solid Clawds (R23)
 import { nightPal } from '../sets/inside-montage/night.js';
 import { EXT, LOOSE, NEAR, FOLD, blendConf, chainPoints, NRES } from '../sets/inside-montage/protein.js';
 import { HILL, hillH, camBasis, project } from '../sets/hill/scene.js';
@@ -136,6 +136,38 @@ function Kat(fl) {
   const a = a0 + 1.4 * u, r = r0 * (1 - u) ** 1.4;
   return [FUN[0] + r * Math.cos(a), lerp(K0[1], K_BOT[1], u * u * (3 - 2 * u)), FUN[1] + r * Math.sin(a)];
 }
+// (R23) the solid Clawds' facing: angles blended the short way round, and a fixed point on the lens's
+// side of the hill (between the camera's first and last places)
+// his box on screen (the hull of its projected corners, in the engine's frame: x mirrored, turned by
+// the yaw, glyph units to metres) and the depth of its middle: the 2D overlays (the chain's code, the
+// beads' names) are hidden where they pass behind a nearer Clawd, as the ribbons and lines are
+function clawdShield(B, c) {
+  const s = c.u, cy = Math.cos(c.yaw), sy = Math.sin(c.yaw), P = [], y0 = c.y + (c.hop || 0);
+  for (const lx of [-8, 8]) for (const ly of [0.6, 10]) for (const lz of [-2, 2]) {
+    const q = project(B, [c.x + (-lx * cy + lz * sy) * s, y0 + ly * s, c.z + (lx * sy + lz * cy) * s]);
+    if (q[2] > 0.05) P.push([q[0], q[1]]);
+  }
+  P.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], hi = [];
+  for (const p of P) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (let i = P.length - 1; i >= 0; i--) { const p = P[i]; while (hi.length >= 2 && cross(hi[hi.length - 2], hi[hi.length - 1], p) <= 0) hi.pop(); hi.push(p); }
+  return { hull: lo.slice(0, -1).concat(hi.slice(0, -1)), z: project(B, [c.x, y0 + 5 * s, c.z])[2] };
+}
+function shielded(shields, x, y, z) {
+  for (const sh of shields || []) {
+    if (!(sh.z < z - 0.05) || sh.hull.length < 3) continue;
+    let inside = true;
+    for (let i = 0; i < sh.hull.length && inside; i++) {
+      const a = sh.hull[i], b = sh.hull[(i + 1) % sh.hull.length];
+      if ((b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]) < 0) inside = false;
+    }
+    if (inside) return true;
+  }
+  return false;
+}
+const lerpAng = (a, b, t) => a + ((((b - a) % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI) * t;
+const LENS_SIDE = [0.0, 4.0, 1.8];
 const turnAt = (fl) => 0.9 * easeIO((fl - 176) / 90) + 0.25 * smoothstep(222, 287, fl);   // (as before, one bar later)
 // (R19) and one full turn about its own axis as it spirals down, done (exactly nothing) once it rests
 const SPIN = [100, 186];
@@ -303,8 +335,15 @@ function inside(T, f, fl, lineK) {
     const sending = fl < STROKES[i].t1 + 2;              // (R15) each sends out its own cursor
     const up = grips || sending;
     const flare = 0.5 * smoothstep(STROKES[i].t0 - 7, STROKES[i].t0 - 4, fl) * (1 - smoothstep(STROKES[i].t0 - 2, STROKES[i].t0 + 8, fl));   // a little light as its cursor leaves
+    // (R23, Claire: like S34's) a solid in the world, not a sprite: each faces halfway between the
+    // lens's side of the hill and his work (the chain on the near rim, then the knot as it spirals
+    // down), so the camera's orbit shows his sides and top; for the happy hop all turn to the lens
+    const at = (p) => Math.atan2(p[0] - x, p[2] - z);
+    const work = fl < SLIDE[0] ? K0 : Kat(fl);
+    let yaw = lerpAng(at(LENS_SIDE), at(work), 0.5) + 0.2 * (hash(i, 29) - 0.5);
+    yaw = lerpAng(yaw, at(camEnd.pos), smoothstep(HAPPY[0] - 8, HAPPY[0] + 4, fl));
     const pose = {
-      x, z, y, u: U_CLAWD, form: 'luminous', hop, look,
+      x, z, y, u: U_CLAWD, form: 'luminous', hop, look, yaw,
       armL: up ? -2 : 0, armR: up ? -2 : 0, arch: false,
       glow: 1.0 + 0.1 * (vox - 0.5) + 0.25 * (up ? 1 : 0) + flare + (done ? 0.15 : 0), eyeLight: 0.5 + 0.4 * sung,
       alpha: 1,
@@ -312,6 +351,8 @@ function inside(T, f, fl, lineK) {
     homes[i] = project(B, [x, y + hop + 0.45, z]);
     if (isMain) main = Object.assign(pose, { light: 1.2 + 0.8 * flare }); else crowd.push(pose);
   });
+  // (R23) where each solid Clawd stands on screen, for the 2D code and names behind him
+  const shields = fl < PB0 ? [main, ...crowd].filter(Boolean).map((c) => clawdShield(B, c)) : [];
   // the painted world goes toward night under the glowing knot (and further in the last beat),
   // through its palette, so the crisp Clawds keep their exact colour; S19's backlight all through
   const k = smoothstep(NIGHT0, PB1, fl), n = easeIO((fl - SETTLE[0]) / (SETTLE[1] - SETTLE[0]));
@@ -322,12 +363,14 @@ function inside(T, f, fl, lineK) {
   if (mapOn) contactMapWorld(fl, { now: contactMap(ch), before: contactMap(chainAt(Math.max(0, fl - 5))) }, lines, ribbons, lineK);
   return {
     state: {
+      // (R23) solid Clawds, on the lab's screen too, so the pull-back carries on the same world
+      solidClawds: { depth: 4 },
       rung: 4, time: 64 + clockAt(fl) / 30, cam: horizonSafe(toX(cam), KB), hill: bumps, sun: { az: 19.8, el: 5.3 },
       tree: null, props: false, salt: -1,                  // (R14) the field, no trees or props
       clawd: main, crowd, lines, ribbons, ribbonCore: 0.4, palLin,
       keyAz: lerp(19.8 + 62, 19.8 + 12, l19), keyEl: lerp(30, 16, l19), exposure: lerp(1, 0.8, l19), vignette: lerp(0.16, 0.42, l19),
     },
-    cam, B, ch, homes,
+    cam, B, ch, homes, shields,
   };
 }
 
@@ -387,7 +430,7 @@ function labelsAt(fl, B) {
     const a = smoothstep(0, 1.5, u) * (1 - smoothstep(8, 13, u));
     const q = project(B, bd.p);
     // beside its cursor, alternately low and high so a cursor's three names never sit on each other
-    out.push({ text: bd.name, n: Math.min(bd.name.length, Math.floor(u * 1.9) + 1), x: q[0] + 44 * CUR_S + 8, y: q[1] + (bd.j % 2 ? -30 : 40) * CUR_S, a });
+    out.push({ text: bd.name, n: Math.min(bd.name.length, Math.floor(u * 1.9) + 1), x: q[0] + 44 * CUR_S + 8, y: q[1] + (bd.j % 2 ? -30 : 40) * CUR_S, z: q[2], a });
   }
   return out;
 }
@@ -415,7 +458,7 @@ function chainPath(ch, B) {
   }
   return out;
 }
-function drawChainCode(g, k, fl, B, ch) {
+function drawChainCode(g, k, fl, B, ch, shields) {
   if (fl < CODE_A[0] || fl > CODE_A[2]) return;
   const drawn = NRES * easeIO((fl - LINK[0]) / (LINK[1] - LINK[0]));
   const a = smoothstep(CODE_A[0], CODE_A[0] + 3, fl) * (1 - smoothstep(CODE_A[1], CODE_A[2], fl));
@@ -444,7 +487,7 @@ function drawChainCode(g, k, fl, B, ch) {
     const nx = -Math.sin(ang), ny = Math.cos(ang);                       // below the band (screen down side)
     const off = 0.95 * fs + 0.12 * 1400 * 0.85 / z + lift;
     const ch_ = CHAIN_CODE[j % CHAIN_CODE.length];
-    if (ch_ !== ' ') {
+    if (ch_ !== ' ' && !shielded(shields, x + nx * off, y + ny * off, z)) {
       const tip = drawn < NRES ? Math.exp(-Math.max(0, drawn - r) / 3) : 0;   // fresh at the drawing tip
       g.save(); g.translate(x + nx * off, y + ny * off); g.rotate(ang);
       g.font = `${fs.toFixed(1)}px Consolas, "Courier New", monospace`; g.globalAlpha = a * (0.78 + 0.22 * tip);
@@ -575,7 +618,7 @@ function contactMapWorld(fl, cm, lines, ribbons, lineK) {
 }
 
 let CURSOR = null;
-function drawOverlay(g, k, fl, B, homes) {
+function drawOverlay(g, k, fl, B, homes, shields) {
   if (fl < 0 || fl > 112) return;
   g.save(); g.setTransform(k, 0, 0, k, 0, 0);
   const curs = cursorsAt(fl, B, homes);
@@ -602,7 +645,7 @@ function drawOverlay(g, k, fl, B, homes) {
       bs: CUR_S / 1.45, lit: 1, heat: 0.1, litAt: [26, 40], a: cu.a, shadow: 0 });
   }
   for (const lb of labelsAt(fl, B)) {
-    if (lb.a <= 0.01) continue;
+    if (lb.a <= 0.01 || shielded(shields, lb.x + 20, lb.y, lb.z)) continue;
     const shown = lb.text.slice(0, lb.n), fs = 22;
     g.save();
     g.font = `${fs}px Consolas, "Courier New", monospace`; g.textBaseline = 'middle';
@@ -669,7 +712,8 @@ export default {
   async setup(ctx) {
     g2 = ctx.canvas.getContext('2d');
     KB = KX * ctx.scale;
-    const HX = await loadHillxIcy(ctx.log);
+    const HX = await loadHillxDoor(ctx.log, { icy: true, solid: true });
+    if (!HX.solid) ctx.log('S20: WARNING no solid Clawds');
     createHill = HX.createHill;
     ctx.log(`S20: hillx ${HX.icy ? 'with the glacier caps' : 'as it is'}`);
     big = mk(Math.round(XW * ctx.scale), Math.round(XH * ctx.scale));
@@ -700,8 +744,8 @@ export default {
         g2.drawImage(greyCv, 0, 0);
       }
       const m = I.state.clawd, cp = project(I.B, [m.x, m.y + 0.45, m.z]);
-      drawChainCode(g2, k, fl, I.B, I.ch);
-      drawOverlay(g2, k, fl, I.B, I.homes);
+      drawChainCode(g2, k, fl, I.B, I.ch, I.shields);
+      drawOverlay(g2, k, fl, I.B, I.homes, I.shields);
       return;
     }
     ensureLab(ctx);

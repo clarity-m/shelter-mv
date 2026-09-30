@@ -1,6 +1,7 @@
 // GLSL sources for the hill set. Scene state arrives as uniforms (see hill.js).
 import { MAT, HUMAN_PRIMS, CLOUDS, DOME, HILL_EPS } from './scene.js';
 import { PAL_KEYS } from './palettes.js';
+import { CLIT_GLSL, VOL_BODY } from './clawdlight.js';
 
 const fx = (x) => { const s = (+x).toFixed(5); return s.indexOf('.') < 0 ? s + '.0' : s; };
 const g3 = (a) => `vec3(${fx(a[0])},${fx(a[1])},${fx(a[2])})`;
@@ -308,6 +309,7 @@ precision highp float; precision highp int; precision highp sampler2D;
 #define PAINTTEX ${opt.paintTex ? 1 : 0}
 ${SCENE_DECL}
 ${SCENE_CAST}
+${CLIT_GLSL}
 layout(location = 0) out vec4 oCol;
 layout(location = 1) out vec4 oAux;
 vec3 albedo(int mat) {
@@ -489,7 +491,8 @@ vec3 shadeHit(Hit h, vec3 rd) {
 #endif
   c += P_SUNL * mix(alb, vec3(1.0), 0.35) * fres * back * (0.15 + 0.85 * sh) * 0.55;
   vec3 lc = uCGlow.xyz - p; float dl = length(lc);
-  c += alb * P_CLAWDL * uCGlow.w * max(dot(n, lc / dl) * 0.8 + 0.2, 0.0) / (1.0 + dl * dl * 2.5) * (0.4 + 0.6 * ao);
+  vec3 cOld = alb * P_CLAWDL * uCGlow.w * max(dot(n, lc / dl) * 0.8 + 0.2, 0.0) / (1.0 + dl * dl * 2.5) * (0.4 + 0.6 * ao);
+  c += uCLit.x > 0.0 ? mix(cOld, clawdLit(p, n, alb, ao, h.mat), uCLit.x) : cOld;   // (revision 23) his light in the world
   float fm = h.mat == M_FLOOR ? 1.0 : (h.mat == M_HILL ? floorMix(p.xz) : 0.0);
   if (fm > 0.0) {
     vec3 rf = reflect(rd, vec3(0.0, 1.0, 0.0));
@@ -965,6 +968,7 @@ precision highp float; precision highp int; precision highp sampler2D;
 uniform sampler2D uAux; uniform vec2 uRes; uniform float uK;
 uniform vec4 uGeo; uniform float uForm, uSit, uGlow, uRays, uAlpha, uEyeLight;
 uniform int uGridOn; uniform int uGB[24]; uniform vec4 uEye;
+uniform float uHalo;   // (revision 23) the radiant form's flat 2D halo (1; S31 uses the world's glow instead)
 out vec4 o;
 float sdRoundBox(vec2 p, vec2 c, vec2 hb, float r) { vec2 q = abs(p - c) - hb + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
 float smin(float a, float b, float k) { if (k <= 0.0) return min(a, b); float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
@@ -1106,7 +1110,7 @@ vec4 radiant(vec2 g) {
     beam = max(beam, cover(dr) * pow(1.0 - hh, 1.6) * w * 0.85);
   }
   float rr = length((g - CEN) * vec2(0.62, 1.0));
-  vec3 halo = vec3(1.0, 0.62, 0.38) * (0.16 * exp(-rr * rr / 18.0) + 0.05 * exp(-rr / 7.0)) * uGlow;
+  vec3 halo = vec3(1.0, 0.62, 0.38) * (0.16 * exp(-rr * rr / 18.0) + 0.05 * exp(-rr / 7.0)) * uGlow * uHalo;
   if (aBody <= 0.0 && beam <= 0.0 && aEye <= 0.0) return vec4(halo, -1.0);
   float di = -body;
   vec3 c = mix(C_PEACH, C_WHITE, smoothstep(0.2, 3.0, di) * 0.9);
@@ -1133,6 +1137,14 @@ void main() {
   o = vec4(r.rgb * r.a, r.a);
 }`;
 
+// (revision 23) Clawd's glow in the air around him (clawdlight.js VOL_BODY), shadowed by her body
+export const CLAWDVOL_FS = `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D;
+${SCENE_DECL}
+${sdfCodeD(HUMAN_PRIMS, 'sdHumanLD')}
+float volOcc(vec3 p) { return sdHumanLD(toHuman(p)); }
+${VOL_BODY}`;
+
 // ---------------------------------------------------------------- the shelter's people (S31)
 // Kites of glowing paper over the far slopes (string, tail) and a few tiny faceless figures on
 // the far ridge. Screen-space SDFs placed by projecting world anchors (hill.js), depth-tested
@@ -1146,7 +1158,19 @@ uniform vec4 uPA[8], uPB[8], uPC[8];
 uniform vec3 uWarm, uCool;
 uniform int uNTre; uniform vec4 uRA[12], uRB[12], uRC[12];   // (revision 20) cloud-pruned pines: A base x, y (design px), px per m, depth m;
 //   B grow, height m, seed, lean (-1, 1); C style, pads, trunk thickness, shade
+uniform vec2 uSunPx;                                  // (revision 23) the sun on screen (design px): the trees' rim light
+uniform vec3 uHaze, uHazeT; uniform float uTreeFog, uTime;   // (revision 23) the trees' distance haze (linear: foliage, bark), per m
 out vec4 o;
+float hsh(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float vn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hsh(i), hsh(i + vec2(1, 0)), f.x), mix(hsh(i + vec2(0, 1)), hsh(i + vec2(1, 1)), f.x), f.y); }
+float sminT(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / max(k, 1e-6); return min(a, b) - h * h * k * 0.25; }
+// a segment's distance, position along it (0..1) and signed side (+ to the left of a -> b)
+vec3 segI(vec2 q, vec2 a, vec2 b) {
+  vec2 ba = b - a, pa = q - a; float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+  float d = length(pa - ba * h);
+  return vec3(d, h, ba.x * pa.y - ba.y * pa.x >= 0.0 ? d : -d);
+}
 // kites  A: x, y (design px), px per m, angle; B: string end x, y, alpha, tail phase; C: depth m, glow
 // people A: feet x, y, px per m, depth m; B: alpha, arm up, scale, flip; C: walk phase, walk amp, glow
 float sdSeg(vec2 p, vec2 a, vec2 b) { vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0); return length(pa - ba * h); }
@@ -1214,15 +1238,25 @@ void main() {
     if (i >= uNTre) break;
     vec4 A = uRA[i], B = uRB[i], C = uRC[i];
     if (B.x <= 0.0) continue;
-    // a cloud-pruned garden pine (niwaki; revision 20, Claire): a sculpted trunk and flat rounded pads of
-    // foliage, each tree in its own classic style (C.x: 0 formal upright, 1 informal upright, 2 slanting,
-    // 3 windswept, 4 a broad low twin-trunk spreader), with its own number of pads (C.y), trunk (C.z),
-    // shade (C.w) and lean (B.w); it rises and its pads fill out, bottom up, as the wave passes
+    // a cloud-pruned garden pine (niwaki; revision 20, Claire), each in its own classic style (C.x: 0 formal
+    // upright, 1 informal upright, 2 slanting, 3 windswept, 4 a broad low twin-trunk spreader), with its own
+    // number of pads (C.y), trunk (C.z), shade (C.w) and lean (B.w); it rises and its pads fill out, bottom
+    // up, as the wave passes.
+    // (revision 23, Claire: finished like the rest of the world) The pads are clumps of the main tree's teal
+    // foliage, each clump its own dome: sky light on the tops, the low sun's warm rim on the edges that face
+    // it, dappled light, darker undersides and folds, a few of the canopy's gold glints. The trunk tapers from
+    // a root flare, rounded, with bark striations, rimmed by the sunset and shaded under the pads. A soft
+    // contact shadow grounds it, and its greens haze with distance.
     float s = A.z, pxm = 1.0 / (s * uK), g = B.x, hT = B.y * (0.3 + 0.7 * g), sd = B.z, ln = B.w;
     int style = int(C.x + 0.5); float np = C.y, th = C.z;
     vec2 q = (px - A.xy) / s; q.y = -q.y;                               // metres, y up from the base
-    if (abs(q.x) > 1.0 * hT + 4.0 * pxm || q.y < -0.3 || q.y > 1.2 * hT) continue;
-    float vis = smoothstep(A.w - 3.0, A.w - 1.0, tPix);
+    if (abs(q.x) > 1.0 * hT + 4.0 * pxm || q.y < -0.06 * hT - 4.0 * pxm || q.y > 1.25 * hT) continue;
+    float vis = smoothstep(A.w - 3.0, A.w - 1.0, tPix), grown = min(1.0, g * 1.6);
+    float fz = 1.0 - exp(-max(A.w - 7.0, 0.0) * uTreeFog);             // its distance haze
+    // the contact shadow: a soft dark pool at its foot, on the ground at its own depth only
+    float onGround = 1.0 - smoothstep(3.0, 8.0, abs(tPix - A.w));
+    float cs = exp(-pow(q.x / (0.3 * hT), 2.0) - pow((q.y + 0.008 * hT) / (0.03 * hT + 2.0 * pxm), 2.0));
+    acc = over(acc, mix(vec3(0.012, 0.02, 0.02), uHazeT * 0.5, fz), cs * onGround * 0.6 * grown);
     vec2 k1, k2, k3;
     if (style == 0) { k1 = vec2(0.02, 0.33); k2 = vec2(-0.01, 0.6); k3 = vec2(0.01, 0.93); }
     else if (style == 1) { k1 = vec2(0.13, 0.33); k2 = vec2(0.05, 0.6); k3 = vec2(0.2, 0.86); }
@@ -1231,10 +1265,26 @@ void main() {
     else { k1 = vec2(0.07, 0.22); k2 = vec2(0.02, 0.4); k3 = vec2(0.12, 0.56); }
     vec2 t0 = vec2(0.0), t1 = vec2(ln * k1.x, k1.y) * hT, t2 = vec2(ln * k2.x, k2.y) * hT, t3 = vec2(ln * k3.x, k3.y) * hT;
     float w0 = 0.05 * th * hT;
-    float dT = min(sdSeg(q, t0, t1) - w0, min(sdSeg(q, t1, t2) - 0.76 * w0, sdSeg(q, t2, t3) - 0.56 * w0));
-    vec2 u1 = vec2(-ln * 0.17, 0.3) * hT, u2 = vec2(-ln * 0.32, 0.46) * hT;   // the twin's stem (style 4)
-    if (style == 4) dT = min(dT, min(sdSeg(q, t1 * 0.45, u1) - 0.6 * w0, sdSeg(q, u1, u2) - 0.45 * w0));
-    float dP = 1e9;
+    // the trunk: three tapering segments joined smoothly, flaring at the root; its cross-section coordinate
+    // (-1..1) and axis come from the nearest part, for the round shading and the bark
+    vec3 sa = segI(q, t0, t1), sb = segI(q, t1, t2), sc = segI(q, t2, t3);
+    float flare = 0.9 * w0 * exp(-max(q.y, 0.0) / (0.045 * hT));
+    float wa = mix(w0, 0.76 * w0, sa.y) + flare, wb = mix(0.76 * w0, 0.56 * w0, sb.y), wc = mix(0.56 * w0, 0.34 * w0, sc.y);
+    float da = sa.x - wa, db = sb.x - wb, dc = sc.x - wc;
+    vec2 ax = normalize(t1 - t0 + vec2(0.0, 1e-4)); float uT = sa.z / wa;
+    if (db < da && db <= dc) { ax = normalize(t2 - t1); uT = sb.z / wb; }
+    else if (dc < da) { ax = normalize(t3 - t2); uT = sc.z / wc; }
+    float dT = sminT(sminT(da, db, 0.5 * w0), dc, 0.4 * w0), dNear = min(da, min(db, dc));
+    if (style == 4) {                                                   // the twin's stem
+      vec2 u0 = t1 * 0.45, u1 = vec2(-ln * 0.17, 0.3) * hT, u2 = vec2(-ln * 0.32, 0.46) * hT;
+      vec3 s4 = segI(q, u0, u1), s5 = segI(q, u1, u2);
+      float w4 = mix(0.62, 0.5, s4.y) * w0, w5 = mix(0.5, 0.36, s5.y) * w0;
+      float d4 = s4.x - w4, d5 = s5.x - w5;
+      if (min(d4, d5) < dNear) { dNear = min(d4, d5); if (d4 < d5) { ax = normalize(u1 - u0); uT = s4.z / w4; } else { ax = normalize(u2 - u1); uT = s5.z / w5; } }
+      dT = sminT(dT, sminT(d4, d5, 0.3 * w0), 0.35 * w0);
+    }
+    // the pads: five clumps each (the middle ones higher), smoothly joined, leafy at the edge, flat beneath
+    float dP = 1e9, hB = -1e9, hB2 = -1e9, padLow = 0.0, bB = 1.0; vec2 eB = vec2(0.0), eP = vec2(0.0);
     for (int k = 0; k < 5; k++) {
       float fk = float(k);
       if (fk >= np) break;
@@ -1249,36 +1299,73 @@ void main() {
       y = (y + 0.03 * (hk - 0.5)) * hT;
       float tx = y <= t1.y ? mix(t0.x, t1.x, y / max(t1.y, 1e-4)) : y <= t2.y ? mix(t1.x, t2.x, (y - t1.y) / max(t2.y - t1.y, 1e-4))
                 : mix(t2.x, t3.x, clamp((y - t2.y) / max(t3.y - t2.y, 1e-4), 0.0, 1.0));
-      if (style == 4 && side * ln < 0.0) tx = mix(u1.x, u2.x, clamp((y - u1.y) / max(u2.y - u1.y, 1e-4), 0.0, 1.0));
+      if (style == 4 && side * ln < 0.0) { vec2 u1 = vec2(-ln * 0.17, 0.3) * hT, u2 = vec2(-ln * 0.32, 0.46) * hT; tx = mix(u1.x, u2.x, clamp((y - u1.y) / max(u2.y - u1.y, 1e-4), 0.0, 1.0)); }
       float grow = smoothstep(0.12 * fk, 0.12 * fk + 0.45, g);
-      a *= hT * (0.85 + 0.3 * hk) * grow; b *= hT * (0.9 + 0.2 * hk) * (0.4 + 0.6 * grow);
+      a *= hT * (0.85 + 0.3 * hk) * grow; b *= hT * (0.9 + 0.2 * hk) * (0.4 + 0.6 * grow) * 1.25;
       if (a <= 0.0) continue;
       vec2 c = vec2(tx + side * off * hT, y);
       if (style == 3) c.x += ln * 0.35 * a;                               // the windswept pads stream downwind
       float dPad = 1e9;
-      for (int m = -1; m <= 1; m++) {
-        vec2 cm = c + vec2(float(m) * 0.52 * a, (m == 0 ? 0.28 : 0.05) * b);
-        vec2 rr = vec2(m == 0 ? 0.62 * a : 0.5 * a, m == 0 ? b * 1.1 : b * 0.85);
+      for (int m = 0; m < 5; m++) {
+        float fm = float(m) - 2.0, am = abs(fm);
+        float hm = fract(sin(sd * 21.7 + fk * 5.3 + fm * 3.1) * 4375.85);
+        vec2 cm = c + vec2(fm * 0.3 * a + (hm - 0.5) * 0.16 * a, (0.42 - 0.16 * am) * b + (hm - 0.5) * 0.26 * b);
+        vec2 rr = vec2((0.36 - 0.035 * am) * a, (1.0 - 0.14 * am) * b) * (0.88 + 0.24 * hm);
         vec2 e = (q - cm) / rr;
-        dPad = min(dPad, (length(e) - 1.0) * min(rr.x, rr.y));
+        float hg = 1.0 - dot(e, e);                                     // this clump's dome height here
+        if (hg > hB) { hB2 = hB; hB = hg; eB = e; } else if (hg > hB2) hB2 = hg;
+        dPad = sminT(dPad, (length(e) - 1.0) * min(rr.x, rr.y), 0.35 * b);
       }
-      dP = min(dP, max(dPad, (y - 0.55 * b) - q.y));
-      dT = min(dT, sdSeg(q, vec2(tx, y - 0.2 * b), c) - 0.02 * th * hT);
+      dPad += (vn(q * 5.0 + vec2(sd * 7.3, fk * 1.7)) - 0.5) * 0.12 * b + (vn(q * 13.0 + vec2(sd * 3.1, fk)) - 0.5) * 0.05 * b;
+      float bottom = c.y - 0.35 * b + (vn(vec2(q.x * 4.0, sd + fk)) - 0.5) * 0.12 * b;
+      dPad = max(dPad, bottom - q.y);
+      if (dPad < dP) { padLow = bottom; bB = b; eP = (q - c - vec2(0.0, 0.3 * b)) / vec2(1.05 * a, 1.3 * b); }
+      dP = min(dP, dPad);
+      // a branch from the trunk into the pad
+      vec3 sr = segI(q, vec2(tx, y - 0.2 * b), c - vec2(0.0, 0.1 * b));
+      float wr = 0.02 * th * hT * (1.0 - 0.4 * sr.y), dr = sr.x - wr;
+      if (dr < dNear) { dNear = dr; ax = normalize(c - vec2(tx, y - 0.2 * b) + vec2(1e-4, 0.0)); uT = sr.z / wr; }
+      dT = sminT(dT, dr, 0.3 * w0);
     }
     float d = min(dT, dP);
     float cov = clamp(0.5 - d / pxm, 0.0, 1.0);
     if (cov <= 0.0) continue;
-    // its own dusky teal (bluer to greener), lit along the pads' tops and darker beneath; a dark bark;
-    // the low sun's warm rim
-    vec3 leaf = mix(vec3(0.024, 0.078, 0.094), vec3(0.045, 0.1, 0.066), C.w);
-    vec3 c;
+    vec2 sunD = normalize(vec2(uSunPx.x - A.x, A.y - uSunPx.y) + vec2(1e-4, 0.0));   // toward the sun, y up
+    vec3 warm = vec3(1.0, 0.7, 0.44), c, rimC;
     if (dP < dT) {
-      float top = clamp(1.0 + dP / (0.05 * hT + pxm), 0.0, 1.0);
-      c = leaf * (0.8 + 0.5 * top) + uWarm * 0.12 * top;
-    } else c = vec3(0.075, 0.052, 0.058);
-    c += uWarm * 0.16 * clamp(1.0 + d / (pxm * 2.5), 0.0, 1.0) * step(0.0, q.x - ln * 0.1 * hT);
-    c = mix(c, vec3(0.42, 0.3, 0.36), clamp((A.w - 15.0) / 110.0, 0.0, 0.5));
-    acc = over(acc, c, cov * vis * min(1.0, g * 1.6));
+      // each clump's dome, blended with the whole pad's, so the pad reads as one mass with soft lumps
+      vec3 n = normalize(mix(normalize(vec3(eB, sqrt(max(hB, 0.0)) + 0.15)),
+                             normalize(vec3(eP, sqrt(max(1.0 - dot(eP, eP), 0.0)) + 0.15)), 0.5));
+      vec3 leaf = mix(vec3(0.022, 0.070, 0.068), vec3(0.034, 0.088, 0.050), C.w);   // the main tree's teal .. greener
+      float sky = 0.5 + 0.5 * n.y;
+      float low = smoothstep(0.0, 0.6 * bB, q.y - padLow);                // the underside in shade
+      float fold = smoothstep(0.0, 0.22, hB - hB2);                       // where two clumps meet
+      float dap = smoothstep(0.5, 0.8, vn(q * 2.6 + vec2(sd * 5.1, 0.0))) * smoothstep(-0.1, 0.7, n.y);
+      // the low sun behind it: a warm rim a few pixels deep along the silhouette's sun side, and the sunward
+      // flanks of the clumps glowing through
+      float face = max(dot(normalize(eB + 1e-5), sunD), 0.0);
+      float rim = exp(max(dP, -40.0 * pxm) / (2.4 * pxm)) * (0.1 + 0.9 * face) + 0.28 * pow(clamp(1.0 - n.z, 0.0, 1.0), 1.3) * face;
+      float core = 0.72 + 0.28 * smoothstep(0.0, 3.0 * w0, dT);             // darker where the trunk enters
+      float mott = 0.84 + 0.32 * vn(q * 7.0 + vec2(sd * 2.3, 0.0));        // leafy mottling, like the canopy's paint
+      c = leaf * (0.7 + 1.4 * sky) * (0.35 + 0.65 * low) * (0.8 + 0.2 * fold) * core * mott
+        + leaf * vec3(3.2, 3.4, 1.6) * dap * low * 0.9;
+      rimC = warm * rim * 1.1 * (0.3 + 0.7 * low);
+      // the canopy's gold glints, twinkling
+      vec2 gc = floor(q / 0.22), gp = (gc + vec2(hsh(gc + sd), hsh(gc + sd + 7.1))) * 0.22;
+      float gl = step(0.86, hsh(gc * 1.3 + sd * 3.0)) * exp(-dot(q - gp, q - gp) / (pxm * pxm * 1.5));
+      c += vec3(1.0, 0.8, 0.46) * gl * max(0.0, 0.45 + 0.55 * sin(uTime * (1.5 + 2.0 * hsh(gc)) + 6.28 * hsh(gc + 3.3))) * 0.8;
+    } else {
+      float u = clamp(uT, -1.0, 1.0), rnd = sqrt(max(1.0 - u * u, 0.0));
+      vec2 nrm = vec2(-ax.y, ax.x) * sign(u + 1e-6);
+      float stri = vn(vec2(u * 2.2 + sd * 3.0, dot(q, ax) / max(w0, 1e-3) * 0.9));
+      vec3 bark = vec3(0.07, 0.056, 0.05) * (0.7 + 0.6 * stri);
+      float rimT = (0.35 * pow(abs(u), 2.0) + exp(max(dT, -40.0 * pxm) / (1.8 * pxm))) * max(dot(nrm, sunD), 0.0);
+      float padShade = smoothstep(0.0, 0.25 * hT, dP);                    // in the shade just under a pad
+      c = bark * (0.6 + 0.9 * rnd) * (0.72 + 0.28 * padShade);
+      rimC = warm * rimT * 1.0 * (0.4 + 0.6 * padShade);
+    }
+    c = mix(c, dP < dT ? uHaze : uHazeT, fz) + rimC * (1.0 - 0.45 * fz);   // the haze, and the sun's rim through it
+    acc = over(acc, c, cov * vis * grown);
   }
   o = vec4(acc.rgb + add * (1.0 - acc.a), acc.a);
 }`;

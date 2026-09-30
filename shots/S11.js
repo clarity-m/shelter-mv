@@ -209,7 +209,7 @@ function drawScene(gc, kk, fl, P) {
     }
     const ep = fl < RESET ? EPIS[0] : EPIS[1];
     const step = fl < RESET ? Math.floor(fl / 2) + 131 : Math.floor((Math.min(fl, MADE) - RESET) / 2);
-    drawHUD(gc, [['EPISODE', groupInt(ep)], ['STEP', String(step)]]);
+    drawHUD(gc, [['EPISODE', groupInt(ep)], ['STEP', String(step)]], { dark: true });
     if (cur) P.draw(gc, cur.x, cur.y, { press: cur.press, rot: cur.rot });
     return;
   }
@@ -220,7 +220,7 @@ function drawScene(gc, kk, fl, P) {
   const pose = fl < STOP ? walkPose(walked(walkF) / 66, { eyes: { dx: 0.6 } })     // his stride runs on across the cuts
     : { eyes: fl >= STOP + 9 && fl < STOP + 12 ? { kind: 'closed' } : { dx: 0.7, dy: -0.2 }, sy: 1 - 0.05 * Math.exp(-(fl - STOP) / 3) };
   drawClawd(gc, FX, FY, U, pose);
-  drawHUD(gc, [['EPISODE', groupInt(EPIS[fi + 2] + (walkF - FL[fi]) * 3)], ['STEP', String(Math.floor((walkF - FL[fi]) * 1.5) + 12)]]);
+  drawHUD(gc, [['EPISODE', groupInt(EPIS[fi + 2] + (walkF - FL[fi]) * 3)], ['STEP', String(Math.floor((walkF - FL[fi]) * 1.5) + 12)]], { dark: true });
   const cur = cursorAt(fl);                          // (it stays through the first flick, then leaves)
   if (cur) P.draw(gc, cur.x, cur.y, { press: cur.press, rot: cur.rot });
 }

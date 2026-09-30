@@ -9,12 +9,12 @@
 // through at full speed. The shot now hard-cuts to the rack at bar 11, so it ends on a clean hit:
 // the last chop (725) fans across the whole stack and lands, blooming, just before the cut, as the
 // camera's slow push comes to rest.
+// R23 (Claire: the visualization stands on its own): no corner STEP / LOSS HUD.
 import { createTokenWorld } from '../sets/tokens/world.js';
-import { headAt, speedAt, stepAt } from '../sets/tokens/train.js';
+import { headAt, speedAt } from '../sets/tokens/train.js';
 import { drawFired } from '../sets/tokens/stack.js';
 import { beatRipples, downbeat, breath } from '../sets/tokens/pulse.js';
 import { camS04, magS04, flashS04, stackS04, eyesAt, phasesS03, laneOffAt, laneVAt } from '../sets/tokens/hook.js';
-import { drawHUD } from '../sets/tokens/hud.js';
 import { clamp, easeOut, lerp } from '../lib/util.js';
 
 let Wd;
@@ -32,7 +32,6 @@ export default {
     for (let l = 1; l <= st.layers.n; l++) st.layers.pulse[l] = Math.min(2.2, st.layers.pulse[l] + 1.4 * flash);
     const kick = T.pulse('beats', f, 4);
     const db = downbeat(T, f, f0);
-    const step = stepAt(f);
     const lit = new Map();
     for (const h of st.fired) lit.set(h.q, Math.max(lit.get(h.q) || 0, h.amp * 0.8));
     // the burst out of him on 9.1 runs along the line; then the beats
@@ -54,7 +53,6 @@ export default {
       ripples: ripples.slice(0, 8),
       eyes: eyesAt(fl, EYES, BLINKS),
       drawLight: (g, api) => drawFired(g, api, st, 1.7 + db.boost, 1),
-      drawUI: (g, api) => drawHUD(g, api, { step }),
     });
   },
 };

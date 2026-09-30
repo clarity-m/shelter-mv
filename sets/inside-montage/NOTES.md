@@ -6,15 +6,15 @@
 
 **R11:**
 - The rung-4 luminous Clawd is now the valley engine's crisp solid (Claire): flat #D97757, ink eye slots, and a darker side face swept along `uExt` (hillx derives it from the camera).
-- `landShade` evaluates facet normals only within 75 m. A ray a hair below level made them NaN, blacking out the frame (test: `shots/_R11NaN.js`).
+- `landShade` evaluates facet normals only within 75 m (a ray a hair below level made them NaN; test `shots/_R11NaN.js`).
 
-**S27 (R11: bars 71-72, 5051-5182, about 140 ms/frame):** the blueprint alone. The observatory is O's S26 again.
+**S27 (R11: bars 71-72, 5051-5182, about 140 ms/frame):** the blueprint alone.
 - About 2,100 Clawds draw `elevatorlines.js`, with the camera level:
   - 71.1-2: the anchor, tower and stays;
   - 71.3-4: the ribbon;
   - 72.1-2: the climber and sails.
 - Code rows stream along the flat into the anchor.
-- The foreground is a drafting table, kept clear. On it the force balance about GEO is drawn from 71.1, held through 72.2, and gone by 72.3:
+- On the clear drafting table in front, the force balance about GEO (drawn 71.1, held to 72.2, gone by 72.3):
   - the Earth's arc;
   - gravity and spin arrows;
   - the taper and the tension curve peaking at GEO;
@@ -27,6 +27,6 @@
 **S30 (R10):**
 - Bars 77-79: two beats in, then two beats of D's voyage.
 - The shelter's code rings the hill and runs along the ring.
-- Bar 80 lands on S31 (1.4).
+- Bar 80 lands on S31 (0.6). R23: as Clawd sits, his rays go and his light settles into the world (opt-in `clawdLit`, `clawdVol`, `halo`).
 
 **Re-render** S27 if `elevatorlines.js` changes, and S30 if `voyage.js`, `shelter.js` or `S31.js` changes.

@@ -1,27 +1,29 @@
 # sets/hill: the hill and the shelter (inside, rungs 4-5)
 
-**Shots.** S31 (r5): the pair sit by the tree under the city and ring; the camera cranes; kicks pulse the windows; time freezes 6118-6130.
+**Shots.** S31 (r5): the pair by the tree under the city and ring; a crane; kicks pulse the windows; time freezes 6118-6130.
 
-**Revision 1:** sprite-sheet poses for Clawd (`clawd-pose.js`, `clawd.grid` + `dy`); `s31Anim(fe)`: her lean on 6002 and the far ridge's people and kites (`presence`).
+**R1:** Clawd's sprite poses (`clawd-pose.js`); `s31Anim(fe)`: her lean (6002), far people and kites (`presence`).
 
-**S30** lands on S31's first frame (presence 0, lean 0, eyes open, no figure, no wave).
+**S30** lands on S31's first frame (no figure or wave; world light 1).
 
 **S32.** `S31_LAST` / `S31_LAST_SQUARE` carry lean, eyes and presence; S32's seam renders S31's frame 6130: re-render S32 if it changes.
 
-**R19:** SKYLINE adds 44 mid-rise blocks (64 towers max, here and in hillx). `waveT` (frames since 81.1) sends a warm wave from the pair (`uWave`): towers flash, the ring brightens. Unset or 0 changes nothing.
+**R19:** 64 towers max (also hillx). `waveT` (frames since 81.1): a warm wave from the pair (`uWave`), towers flashing; unset or 0 changes nothing.
 
 **R20:**
 - `s31Anim` gains the shared moment (`turn`: her head to Clawd).
-- The wave wakes the shelter: cloud-pruned garden pines (`youngTrees`, niwaki SDFs in the extras pass) and S31's birds. No meadow (Claire).
-- `ringLand` (A/B only, `shots/_R20TORUS.js`) swaps the ring for the habitat's land.
+- The wave wakes cloud-pruned pines (`youngTrees`, niwaki SDFs in `EXTRAS_FS`); birds; no meadow (Claire).
+- `ringLand`: A/B only (`_R20TORUS.js`).
 
-**R22:** eased eyes: blink 5922, look up 5938-5946, ^^ 5953-5997, look back 5999-6009, blink 6036. `eyes.arch` (0..1, `uEye.w`) morphs each eye into a small vector arch within its footprint.
+**R22:** eased eyes: blink 5922, look up 5938-5946, ^^ 5953-5997, look back 5999-6009, blink 6036. `eyes.arch` (0..1, `uEye.w`) morphs each eye into a small vector arch.
 
-**Technique.** A port of `10-world-ladder`. Scene elements are per-frame uniforms; strokes and motes are world-anchored; Clawd is a crisp 2D composite; kites, people and young trees are depth-tested screen SDFs (`EXTRAS_FS`).
+**R23 (Claire):** `worldLight` (S31 1; S30 eases it in as he sits) swaps the radiant form's 2D rays and halo for light in the world (`clawdlight.js`, shared with hillx): a pool on the grass and her, with her soft shadow (`uCLit`), and a depth-aware glow in the air she shadows (`volPass`). Pines: clumpy shaded pads, rimmed bark, contact shadows, greens hazing with distance. `hill.figureMask()` marks her pixels for S31's forming outline.
 
-**Shelter API.** `createShelter(canvas, {log})` returns `.render({time, crane, cam, build, cityPulse, clawdGlow, figure, lean, eyes, presence})`, a pure function. `.hill.warm([5])` precompiles. `build` 0..1 assembles hill, tree, towers and ring. `cam` stays inside the dome (R 220 m); any aspect works.
+**Technique.** Per-frame uniforms; world-anchored strokes and motes; Clawd a crisp 2D composite; kites, people and pines depth-tested screen SDFs (`EXTRAS_FS`).
 
-**Page time, 1080p:** 0.1-0.3 s (0.5-0.65 s under load).
+**Shelter API.** `createShelter(canvas, {log}).render({time, crane, cam, build, ...})` is pure (keys in shelter.js); `.hill.warm([5])` precompiles; `cam` stays inside the dome (R 220 m).
+
+**Page time:** 0.3-0.45 s at 1080p.
 
 **Known issues:** rungs 1-3 not ported; no strokes on the figure in r4; 1 spp.
 

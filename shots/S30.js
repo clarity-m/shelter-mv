@@ -296,6 +296,9 @@ export default {
       cityPulse: f >= LAND ? 0 : 0.4 * T.pulse('kicks', f, 5),
       floorGrid: 0.7 * (1 - gHill),
       clawdGlow: glow,
+      // (revision 23) as he sits down his light settles into the world (a glow in the air, a pool on the
+      // grass) and the radiant form's flat rays go, so the landing is S31's opening frame
+      worldLight: f >= LAND ? ease((f - LAND - 22) / 20) : 0,
     });
     // Clawd works standing (hopping on the kicks with the rest) and sits down once it is built
     st.clawd.sit = f >= LAND ? ease((f - LAND - 22) / 20) : 0;

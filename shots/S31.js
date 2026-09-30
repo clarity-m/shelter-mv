@@ -52,6 +52,9 @@ export function s31Params(T, f, f0, nFrames) {
     // over the first beat, see render)
     waveT: fe - S31_F0,
     figure: fe > S31_F0,
+    // revision 23: his light is part of the world (a glow in the air, a pool on the grass, light on her),
+    // not the radiant form's flat rays
+    worldLight: 1,
   };
 }
 
@@ -75,14 +78,10 @@ function figureBox(p) {
 }
 function formFigure(p, t) {
   const F = formAt(t), [x0, y0, bw, bh] = figureBox(p);
-  const A = gA.getImageData(x0, y0, bw, bh).data, B = gB.getImageData(x0, y0, bw, bh).data;
-  // her pixels: where the render with her differs from the one without, closed (dilated then eroded
-  // by a pixel) so her silhouette has no pinholes
-  const n = bw * bh, m0 = new Uint8Array(n), m1 = new Uint8Array(n), m = new Uint8Array(n);
-  for (let i = 0, j = 0; i < n; i++, j += 4) {
-    const d = Math.max(Math.abs(A[j] - B[j]), Math.abs(A[j + 1] - B[j + 1]), Math.abs(A[j + 2] - B[j + 2]));
-    m0[i] = d > 10 ? 1 : 0;
-  }
+  // her pixels: (revision 23) the figure's own materials in the render with her, the last one made (her
+  // shadow in his light and her shade in his glow also differ between the two renders, so the difference
+  // no longer marks only her), closed (dilated then eroded by a pixel) so her silhouette has no pinholes
+  const n = bw * bh, m0 = sh.hill.figureMask(x0, y0, bw, bh), m1 = new Uint8Array(n), m = new Uint8Array(n);
   const at = (a, x, y) => (x < 0 || y < 0 || x >= bw || y >= bh ? 0 : a[y * bw + x]);
   for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
     let v = 0;

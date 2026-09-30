@@ -36,6 +36,9 @@
 //           uv: [u0, v0, u1, v1] (atlas px, v down), col: [r, g, b] (linear), a: number | [4 corners] }] }
 //           the film's code lying in the world: added as light after the lines, before bloom,
 //           perspective-correct, hidden behind nearer scene and under Clawds (as the lines are)
+//   clawdLit, clawdVol (revision 23, from sets/hill/clawdlight.js; shelter.js `worldLight` sets them): Clawd's light
+//           in the world, a pool on the land and a glow in the air (the glow drawn under the Clawds); per Clawd:
+//           halo (0..1, the radiant form's flat 2D halo, default 1)
 //
 // The original header follows.
 // The hill set renderer. One scene, ray-cast in WebGL2, seen through the ladder's lenses:
@@ -58,7 +61,7 @@ import { gridBits } from '../hill/clawd-pose.js';
 import { lookPal, LOOK_KEYS } from './valley.js';
 import {
   LIT_FS, SEED_VS, STROKE_FS, MOTE_FS, BLUR_FS, DOWN_FS, COPY_FS, SKYONLY_FS, WRAP_FS, COMP_FS, FINISH_FS,
-  SKY5_FS, GHOST_FS, CLAWD_FS, FAM, LINE_VS, LINE_FS, RIBBON_VS, RIBBON_FS, DECAL_FS,
+  SKY5_FS, GHOST_FS, CLAWD_FS, FAM, LINE_VS, LINE_FS, RIBBON_VS, RIBBON_FS, DECAL_FS, CLAWDVOL_FS,
 } from './glslx.js';
 
 export { MAT, camBasis, project, hillH, HILL, LADDER_CAM, LADDER_SUN };
@@ -346,6 +349,9 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
     const cy = c && (c.y !== undefined ? c.y : hillH(st.hill, c.x, c.z));
     if (c) U.uCGlow = [c.x, cy + (c.hop || 0) + 5 * c.u * (1 - 0.2 * (c.sit || 0)), c.z, (c.glow ?? 1) * (c.light ?? 1) * (c.alpha ?? 1)];
     else U.uCGlow = [0, -50, 0, 0];
+    // (revision 23, from sets/hill) his light in the world: mix from the old term, source radius, strength, range
+    const cl = st.clawdLit;
+    U.uCLit = cl && cl.mix > 0 ? [cl.mix, cl.core ?? 0.3, cl.k ?? 1, cl.range ?? 5] : [0, 0, 0, 0];
     // towers
     const tA = new Float32Array(256), tB = new Float32Array(256);
     const tw = (st.towers || []).slice(0, 64);
@@ -437,12 +443,39 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
     gl.bindVertexArray(vao);
     return n;
   }
-  function clawdPass(st, B, clawdY) {
+  // (revision 23, from sets/hill) Clawd's glow in the air, added into the Clawd layer before the Clawds
+  // (st.clawdVol: { k, core, shafts, range, fall, col }); compiled on first use
+  function volPass(st, B, U) {
+    const v = st.clawdVol;
+    if (!v || !(v.k > 0) || !U || !(U.uCGlow[3] > 0)) return false;
+    const L = U.uCGlow.slice(0, 3), pr = project(B, L), R = v.range ?? 2;
+    if (pr[2] <= 0.2) return false;
+    const rp = 1.08 * B.F * R / Math.sqrt(Math.max(pr[2] * pr[2] - R * R, 0.25));
+    const x0 = Math.max(0, Math.floor((pr[0] - rp) * K)), x1 = Math.min(W, Math.ceil((pr[0] + rp) * K));
+    const y0 = Math.max(0, Math.floor((pr[1] - rp) * K)), y1 = Math.min(H, Math.ceil((pr[1] + rp) * K));
+    if (x1 <= x0 || y1 <= y0) return false;
+    if (!P.vol) P.vol = compile(CLAWDVOL_FS, 'vol');
+    gl.useProgram(P.vol);
+    gl.bindVertexArray(vao);
+    bind(P.vol, Object.assign({}, U, { uRes: [W, H], uVol: [v.k, v.core ?? 0.3, v.shafts ?? 0, R], uVolFall: v.fall ?? 0.6,
+      uVolCol: v.col || [1.0, 0.66, 0.42] }), { uAux: T.aux });
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(x0, H - y1, x1 - x0, y1 - y0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.SCISSOR_TEST);
+    return true;
+  }
+  function clawdPass(st, B, clawdY, U) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, FB.kc);
     gl.viewport(0, 0, W, H);
     gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    const vol = st.clawd && (st.clawd.alpha ?? 1) > 0 ? volPass(st, B, U) : false;
     if (st.crowd && st.crowd.length) return crowdPass(st, B, clawdY);
-    return oneClawd(st.clawd, B, clawdY);
+    if (!vol) return oneClawd(st.clawd, B, clawdY);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);   // his body over his glow
+    const info = oneClawd(st.clawd, B, clawdY);
+    gl.disable(gl.BLEND);
+    return info;
   }
   // fork option: the crowd. Every Clawd (the main one too) goes premultiplied-over, far to near,
   // into the crisp layer, depth-tested against the scene like the main one. Only the main one
@@ -591,7 +624,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       uRays: c.rays ?? 1, uAlpha: c.alpha ?? 1, uEyeLight: c.eyeLight ?? 0.5,
       uLegX: c.legs || [4.5, 6.5, 11.5, 13.5], uPose: [c.look || 0, c.arch ? 1 : 0, c.armL || 0, c.armR || 0],
       uGridOn: grid ? 1 : 0, uGB: grid || new Int32Array(24),
-      uExt: ext,
+      uExt: ext, uHalo: c.halo ?? 1,
     }, { uAux: T.aux });
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(Math.max(0, bx0), Math.max(0, H - by1), Math.max(1, bx1 - bx0), Math.max(1, by1 - by0));
@@ -670,7 +703,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       timed('sky', () => run(P.sky5, FB.under, Object.assign({ uDomeMer: st.dome.mer, uDomeLat: st.dome.lat, uDomeFade: st.dome.fade || 0 }, U), { uCol: T.col, uAux: T.aux }));
       timed('ghost', () => run(P.ghost, FB.paint, Object.assign({ uGhost: st.ghost, uContour: st.contour, uContourStep: st.contourStep, uEdgeK: st.edge }, U), { uCol: T.under, uAux: T.aux }));
       if (st.motes > 0) timed('motes', () => { TIMES.nMotes = seedDraws(P.mote, FB.paint, MOTE_LAYERS, Object.assign({ uMoteNear: st.moteNear ?? 3.5, uMoteRise: st.moteRise ?? 0.9 }, U), 1, { bloom: st.motes }); });
-      info = timed('clawd', () => clawdPass(st, B, clawdY));
+      info = timed('clawd', () => clawdPass(st, B, clawdY, U));
       run(P.comp, FB.comp, { uDim: dimRGB(st.dim) }, { uPaint: T.paint, uClawd: T.kc });
       if (st.ribbons && st.ribbons.length) timed('ribbons', () => { TIMES.nRibbon = ribbonPass(st, B); });
       if (st.lines && st.lines.length) timed('lines', () => { TIMES.nLines = linePass(st, B); });
@@ -683,7 +716,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       run(P.copy, FB.under, {}, { uSrc: T.col });
       run(P.copy, FB.paint, {}, { uSrc: T.under });
       if ((st.strokeLift || 0) > 0 && st.paint > 0) timed('strokes', () => { TIMES.nStrokes = seedDraws(P.seed, FB.paint, STROKE_LAYERS, Object.assign({ uMoteOnly: 1 }, U), 0, {}); });
-      info = timed('clawd', () => clawdPass(st, B, clawdY));
+      info = timed('clawd', () => clawdPass(st, B, clawdY, U));
       run(P.comp, FB.comp, { uDim: dimRGB(st.dim) }, { uPaint: T.paint, uClawd: T.kc });
       if (st.ribbons && st.ribbons.length) timed('ribbons', () => { TIMES.nRibbon = ribbonPass(st, B); });
       if (st.lines && st.lines.length) timed('lines', () => { TIMES.nLines = linePass(st, B); });
@@ -695,7 +728,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       timed('wrap', () => lightWrap(U, 0.3, 3.5));
       run(P.copy, FB.paint, {}, { uSrc: T.under });
       if (st.paint > 0) timed('strokes', () => { TIMES.nStrokes = seedDraws(P.seed, FB.paint, STROKE_LAYERS, U, 0, {}); });
-      info = timed('clawd', () => clawdPass(st, B, clawdY));
+      info = timed('clawd', () => clawdPass(st, B, clawdY, U));
       run(P.comp, FB.comp, { uDim: dimRGB(st.dim) }, { uPaint: T.paint, uClawd: T.kc });
       if (st.ribbons && st.ribbons.length) timed('ribbons', () => { TIMES.nRibbon = ribbonPass(st, B); });
       if (st.lines && st.lines.length) timed('lines', () => { TIMES.nLines = linePass(st, B); });

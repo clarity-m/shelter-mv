@@ -16,7 +16,7 @@ import {
 import { PAL4, SHELTER, palLinear, PAL_KEYS } from './palettes.js';
 import {
   LIT_FS, SEED_VS, STROKE_FS, MOTE_FS, BLUR_FS, DOWN_FS, COPY_FS, SKYONLY_FS, WRAP_FS, COMP_FS, FINISH_FS,
-  SKY5_FS, GHOST_FS, CLAWD_FS, EXTRAS_FS, FAM,
+  SKY5_FS, GHOST_FS, CLAWD_FS, EXTRAS_FS, FAM, CLAWDVOL_FS,
 } from './glsl.js';
 import { gridBits } from './clawd-pose.js';
 
@@ -171,7 +171,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
     blur: compile(BLUR_FS, 'blur'), down: compile(DOWN_FS, 'down'), copy: compile(COPY_FS, 'copy'),
     skyonly: compile(SKYONLY_FS, 'skyonly'), wrap: compile(WRAP_FS, 'wrap'), comp: compile(COMP_FS, 'comp'),
     fin: compile(FINISH_FS, 'finish'), sky5: compile(SKY5_FS, 'sky5'), ghost: compile(GHOST_FS, 'ghost'),
-    clawd: compile(CLAWD_FS, 'clawd'), extras: compile(EXTRAS_FS, 'extras'),
+    clawd: compile(CLAWD_FS, 'clawd'), extras: compile(EXTRAS_FS, 'extras'), vol: compile(CLAWDVOL_FS, 'vol'),
   };
   const T = {
     col: tex(W, H, 'f16'), aux: tex(W, H, 'f32'),
@@ -300,6 +300,9 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
     const cy = c && (c.y !== undefined ? c.y : hillH(st.hill, c.x, c.z));
     if (c) U.uCGlow = [c.x, cy + (c.hop || 0) + 5 * c.u * (1 - 0.2 * (c.sit || 0)), c.z, (c.glow ?? 1) * (c.light ?? 1) * (c.alpha ?? 1)];
     else U.uCGlow = [0, -50, 0, 0];
+    // (revision 23) his light in the world (clawdlight.js): mix from the old term, source radius, strength, range
+    const cl = st.clawdLit;
+    U.uCLit = cl && cl.mix > 0 ? [cl.mix, cl.core ?? 0.3, cl.k ?? 1, cl.range ?? 5] : [0, 0, 0, 0];
     // towers
     const tA = new Float32Array(256), tB = new Float32Array(256);
     const tw = (st.towers || []).slice(0, 64);
@@ -366,7 +369,28 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
     gl.bindVertexArray(vao);
     return n;
   }
-  function clawdPass(st, B, clawdY) {
+  // (revision 23) Clawd's glow in the air (clawdlight.js VOL_BODY): added into the Clawd layer before his
+  // body, over a box round his light's reach (st.clawdVol: { k, core, shafts, range, fall, col })
+  function volPass(st, B, U) {
+    const v = st.clawdVol;
+    if (!v || !(v.k > 0) || !(U.uCGlow[3] > 0)) return false;
+    const L = U.uCGlow.slice(0, 3), pr = project(B, L), R = v.range ?? 2;
+    if (pr[2] <= 0.2) return false;
+    const rp = 1.08 * B.F * R / Math.sqrt(Math.max(pr[2] * pr[2] - R * R, 0.25));
+    const x0 = Math.max(0, Math.floor((pr[0] - rp) * K)), x1 = Math.min(W, Math.ceil((pr[0] + rp) * K));
+    const y0 = Math.max(0, Math.floor((pr[1] - rp) * K)), y1 = Math.min(H, Math.ceil((pr[1] + rp) * K));
+    if (x1 <= x0 || y1 <= y0) return false;
+    gl.useProgram(P.vol);
+    gl.bindVertexArray(vao);
+    bind(P.vol, Object.assign({}, U, { uRes: [W, H], uVol: [v.k, v.core ?? 0.3, v.shafts ?? 0, R], uVolFall: v.fall ?? 0.6,
+      uVolCol: v.col || [1.0, 0.66, 0.42] }), { uAux: T.aux });
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(x0, H - y1, x1 - x0, y1 - y0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.SCISSOR_TEST);
+    return true;
+  }
+  function clawdPass(st, B, clawdY, U) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, FB.kc);
     gl.viewport(0, 0, W, H);
     gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
@@ -384,18 +408,21 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
     const pad = form ? 8 : grid ? 3 : 1.5, padTop = grid ? 7 : pad;
     const bx0 = Math.floor((x0 - pad * Upx) * K), bx1 = Math.ceil((x0 + (18 + pad) * Upx) * K);
     const by0 = Math.floor((y0 - lift - padTop * Upx) * K), by1 = Math.ceil((y0 - lift + (10 + pad) * Upx) * K);
+    const vol = U ? volPass(st, B, U) : false;
     gl.useProgram(P.clawd);
     gl.bindVertexArray(vao);
     bind(P.clawd, {
       uRes: [W, H], uK: K, uGeo: [x0, y0 - lift, Upx, depth], uForm: form, uSit: c.sit || 0, uGlow: c.glow ?? 1,
       uRays: c.rays ?? 1, uAlpha: c.alpha ?? 1, uEyeLight: c.eyeLight ?? 0.5,
       uGridOn: grid ? 1 : 0, uGB: grid || new Int32Array(24),
-      uEye: [c.eyes?.dx || 0, c.eyes?.dy || 0, c.eyes?.open ?? 1, +(c.eyes?.arch || 0)],
+      uEye: [c.eyes?.dx || 0, c.eyes?.dy || 0, c.eyes?.open ?? 1, +(c.eyes?.arch || 0)], uHalo: c.halo ?? 1,
     }, { uAux: T.aux });
+    if (vol) { gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); }   // his body over his glow
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(Math.max(0, bx0), Math.max(0, H - by1), Math.max(1, bx1 - bx0), Math.max(1, by1 - by0));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disable(gl.SCISSOR_TEST);
+    if (vol) gl.disable(gl.BLEND);
     return { x: pr[0], y: pr[1] - 5 * Upx, U: Upx };
   }
   // Kites and distant people (world anchors projected here, drawn by EXTRAS_FS):
@@ -438,8 +465,11 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
     gl.useProgram(P.extras);
     gl.bindVertexArray(vao);
     gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    // (revision 23) the trees' rim light comes from the sun's place on screen; their greens haze with distance
+    const sunP = project(B, v3.add(B.pos, v3.mul(U.uSun, 1000)));
     bind(P.extras, { uRes: [W, H], uK: K, uNKite: nk, uNPer: np, uKA: KA, uKB: KB, uKC: KC, uPA: PA, uPB: PB, uPC: PC, uNTre: nt, uRA: RA, uRB: RB, uRC: RC,
-      uWarm: st.extrasWarm || [1.0, 0.7, 0.44], uCool: st.extrasCool || [0.05, 0.045, 0.09] }, { uAux: T.aux });
+      uWarm: st.extrasWarm || [1.0, 0.7, 0.44], uCool: st.extrasCool || [0.05, 0.045, 0.09],
+      uSunPx: sunP[2] > 0 ? [sunP[0], sunP[1]] : [960, -2000], uHaze: st.treeHaze || [0.2, 0.28, 0.24], uHazeT: st.treeHazeBark || [0.28, 0.25, 0.245], uTreeFog: st.treeFog ?? 0.0075, uTime: U.uTime }, { uAux: T.aux });
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disable(gl.BLEND);
   }
@@ -468,7 +498,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       timed('ghost', () => run(P.ghost, FB.paint, Object.assign({ uGhost: st.ghost, uContour: st.contour, uContourStep: st.contourStep, uEdgeK: st.edge }, U), { uCol: T.under, uAux: T.aux }));
       if (st.motes > 0) timed('motes', () => { TIMES.nMotes = seedDraws(P.mote, FB.paint, MOTE_LAYERS, Object.assign({ uMoteNear: st.moteNear ?? 3.5, uMoteRise: st.moteRise ?? 0.9 }, U), 1, { bloom: st.motes }); });
       timed('extras', () => extrasPass(st, B, U));
-      info = timed('clawd', () => clawdPass(st, B, clawdY));
+      info = timed('clawd', () => clawdPass(st, B, clawdY, U));
       run(P.comp, FB.comp, {}, { uPaint: T.paint, uClawd: T.kc });
       timed('post', () => bloomAndFinish(T.comp, 0.7, st.bloom1 ?? 0.5, st.bloom2 ?? 0.8,
         { uVig: st.vignette ?? 0.22, uGrain: 0.02, uWeave: 0, uCurve: 0, uExposure: st.exposure }));
@@ -478,7 +508,7 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
       run(P.copy, FB.paint, {}, { uSrc: T.under });
       if (st.paint > 0) timed('strokes', () => { TIMES.nStrokes = seedDraws(P.seed, FB.paint, STROKE_LAYERS, U, 0, {}); });
       extrasPass(st, B, U);
-      info = timed('clawd', () => clawdPass(st, B, clawdY));
+      info = timed('clawd', () => clawdPass(st, B, clawdY, U));
       run(P.comp, FB.comp, {}, { uPaint: T.paint, uClawd: T.kc });
       timed('post', () => bloomAndFinish(T.comp, 0.8, st.bloom1 ?? 0.45, st.bloom2 ?? 0.65,
         { uVig: st.vignette ?? 0.25, uGrain: 0.03, uWeave: 0.04, uCurve: 0.3, uExposure: st.exposure }));
@@ -489,5 +519,25 @@ in vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }`;
 
   // render a throwaway frame per rung so the driver's first frame does not pay for compiles
   function warm(rungs = [4, 5]) { for (const r of rungs) render({ rung: r }); gpuSync(); }
-  return { render, warm, W, H, K, gl, TIMES, basis: camBasis, gpuSync };
+  // (revision 23) where the figure is in the last frame rendered, from the scene's own materials (skin to
+  // shoes): a w x h mask (1 = her) of the canvas box at x0, y0 (canvas px, y down), 0 off the canvas.
+  // S31's forming outline uses it, since her shadow in his light also differs between renders.
+  let matBuf = null;
+  function figureMask(x0, y0, w, h) {
+    const out = new Uint8Array(w * h);
+    const ax = Math.max(0, x0), ay = Math.max(0, y0), bx = Math.min(W, x0 + w), by = Math.min(H, y0 + h);
+    if (bx <= ax || by <= ay) return out;
+    const cw = bx - ax, ch = by - ay;
+    if (!matBuf || matBuf.length < cw * ch * 4) matBuf = new Float32Array(cw * ch * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, FB.scene);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.readPixels(ax, H - by, cw, ch, gl.RGBA, gl.FLOAT, matBuf);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+      const m = Math.floor(matBuf[((ch - 1 - y) * cw + x) * 4]);
+      if (m >= MAT.SKIN && m <= MAT.SHOE) out[(ay - y0 + y) * w + (ax - x0 + x)] = 1;
+    }
+    return out;
+  }
+  return { render, warm, W, H, K, gl, TIMES, basis: camBasis, gpuSync, figureMask };
 }

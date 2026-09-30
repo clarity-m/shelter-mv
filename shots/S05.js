@@ -1,20 +1,22 @@
 // S05, hook 1 (bars 13-14, after S07): numbers going up.
 // In (R22, Claire: the lead-in must connect to the frame before): it grows out of S07's last frame
-// (xin 6). S07's attention arcs, frozen where S07 left them, gather into one arc that rises from the
-// stack's hub to the top-left, and a bead of light rides it there, landing (about local 13) where
-// the loss curve begins. From there the curve falls in one sweep as before: the head with its live
-// readout ticking down, the curve drawing behind it, while the arc's residue fades and the stack
-// falls into the horizon line. Odometers (tokens seen, FLOPs, steps) spin to his right, and beads of
-// light run down the curve on every beat. His eyes follow the curve down, then glance at the counters.
+// (xin 6). S07's attention arcs, frozen where S07 left them, gather into a few fine lanes that rise
+// from the stack to the top-left and converge where the loss curve begins (R23: several fine lines,
+// not one bold arc). A small bead of light rides each lane; they land together (about local 13) and
+// the curve's head takes over. From there the curve falls in one sweep as before: the head with its
+// live readout ticking down, the curve drawing behind it, while the lanes' faint afterimage drains
+// and fades and the stack falls into the horizon line. Odometers (tokens seen, FLOPs, steps) spin to
+// his right, and beads of light run down the curve on every beat. His eyes follow the curve down,
+// then glance at the counters.
 // The bass stops on 13.4 and 14.4 play straight through (R22: no freeze, slow motion or hush). The
 // counters land on 131 072 steps and loss 2.8416 on the last frame, the hard cut to the lab.
+// R23 (Claire: the visualization stands on its own): no corner STEP / LOSS HUD.
 import { createTokenWorld, HZ, SX, fishM } from '../sets/tokens/world.js';
 import { headAt, speedAt, stepAt, lossAt, lossSmooth, chopLevel, tokensAt, flopAt } from '../sets/tokens/train.js';
 import { eyesAt, laneOffAt, laneVAt } from '../sets/tokens/hook.js';
 import { s07State, s07LastArcs } from '../sets/tokens/s07.js';
 import { beatRipples, downbeat, breath } from '../sets/tokens/pulse.js';
 import { drawOdometer, drawLabel } from '../sets/tokens/counters.js';
-import { drawHUD } from '../sets/tokens/hud.js';
 import { hash, smoothstep, clamp, easeInOut, easeOut, easeIn, lerp } from '../lib/util.js';
 
 let Wd, PREV;
@@ -62,15 +64,15 @@ export default {
     const chopP = T.pulse('chops', f, 5);
     // the stack's landing sends one strong ripple along the line
     const ripples = beatRipples(T, f, { base: 0.55, gain: 0.2, down: 1.0, extra: [{ f: f0 + FALL, amp: 1.2 }] });
-    // the lead-in: S07's arcs gather into one arc (1-10), a bead rides it from the stack's hub to the
-    // curve's start (4-13), and its residue fades while the curve falls (13-38)
+    // the lead-in: S07's arcs gather into a few fine lanes (1-10), a bead rides each from the stack to
+    // the curve's start (about 4-13), and the lanes' afterimage drains behind the beads, then fades
+    // softly while the curve falls (13-34)
     const gw = easeInOut(clamp((fl - 1) / 9));
-    const bead = easeInOut(clamp((fl - 4) / 9));
-    const resid = 1 - smoothstep(13, 38, fl);
+    const afterA = Math.pow(0.5, Math.max(0, fl - 13) / 5) * (1 - smoothstep(24, 34, fl));
     // the fall: the curve's head runs from the start down to him (the pre-R22 timing, from the landing)
     const sweep = easeInOut(clamp((fl - 12) / 60));
     const Lnow = lossSmooth(step);
-    const arcs = fl < 40 ? s07LastArcs(T, Wd, PREV) : null;
+    const arcs = fl < 36 ? s07LastArcs(T, Wd, PREV) : null;
     Wd.render({
       f, cam, head, speed: speedAt(f), expo: lerp(1.5, 1.2, camT), tau: 20 + fl * 0.07, reflG: 0.6, profile: 48,
       laneOff: laneOffAt(f), laneV: laneVAt(f),
@@ -87,36 +89,57 @@ export default {
         const sAt = (t) => step * Math.pow(t, 1 / 0.4);
         const cW = (t) => [x0 + (x1 - x0) * t, yEnd - (lossAt(sAt(t)) - Lnow) / (10.8 - Lnow) * (yEnd - yTop)];
         g.lineJoin = 'round'; g.lineCap = 'round';
-        // ---- the lead-in: S07's last arcs gather into one arc, from the stack's hub up to the curve's start
+        // ---- the lead-in: S07's last arcs gather into a few fine lanes that converge on the curve's start
         const P0 = cW(0);
         if (arcs) {
           const xw = (i) => SX + fishM(Wd.TOKS[i].s0 + Wd.TOKS[i].n / 2 - arcs.head);
-          let hx = 0, hy = 0, hw = 0;                                 // the hub: where S07's fans converge
-          for (const a of arcs.arcs) { const wt = a.amp * (0.1 + 0.55 * a.w); hx += xw(a.qi) * wt; hy += a.yq * wt; hw += wt; }
-          if (hw > 0) { hx /= hw; hy /= hw; } else { hx = SX - 200; hy = HZ - 200; }
-          const ddx = P0[0] - hx, ddy = P0[1] - hy, dlen = Math.hypot(ddx, ddy);
-          const D = (t) => [hx + ddx * t, hy + ddy * t - 0.28 * dlen * Math.sin(Math.PI * t)];
-          const NS = 28;
+          const NS = 28, sz = Math.sqrt(api.cam.z);
           const polyPass = (Q, lw, a0, a1) => {
             const gr = g.createLinearGradient(Q[0][0], 0, Q[Q.length - 1][0] + 0.01, 0);
             gr.addColorStop(0, `rgba(255,255,255,${Math.min(1, a0).toFixed(4)})`);
             gr.addColorStop(1, `rgba(255,255,255,${Math.min(1, a1).toFixed(4)})`);
-            g.strokeStyle = gr; g.lineWidth = lw * k * Math.sqrt(api.cam.z);
+            g.strokeStyle = gr; g.lineWidth = lw * k * sz;
             g.beginPath(); Q.forEach(([px, py], u) => (u ? g.lineTo(px, py) : g.moveTo(px, py))); g.stroke();
           };
-          // each arc bends onto the one arc: its key end toward the curve's start, its query end to the hub
-          for (const a of arcs.arcs) {
-            const xk = xw(a.ki), xq = xw(a.qi), sp = xq - xk;
-            if (sp < 2) continue;
+          // the drawn arcs in stack order (top layers first), split into K lanes of equal count
+          const A = arcs.arcs.filter((a) => xw(a.qi) - xw(a.ki) >= 2)
+            .map((a) => ({ a, wt: a.amp * (0.1 + 0.55 * a.w), xq: xw(a.qi), j: 0 }))
+            .sort((p, q) => p.a.yq - q.a.yq || p.xq - q.xq);
+          const K = Math.min(5, A.length);
+          let hx = 0, hy = 0, hw = 0;                                 // the hub: where S07's fans converge
+          for (const p of A) { hx += p.xq * p.wt; hy += p.a.yq * p.wt; hw += p.wt; }
+          if (hw > 0) { hx /= hw; hy /= hw; } else { hx = SX - 200; hy = HZ - 200; }
+          const lanes = [];
+          for (let j = 0; j < K; j++) {
+            let sx = 0, sy = 0, sw = 0;
+            for (let i = Math.floor(j * A.length / K); i < Math.floor((j + 1) * A.length / K); i++) {
+              const p = A[i]; p.j = j; sx += p.xq * p.wt; sy += p.a.yq * p.wt; sw += p.wt;
+            }
+            if (sw > 0) { sx /= sw; sy /= sw; } else { sx = hx; sy = hy; }
+            // a lane starts part-way in from its layers toward the hub, so the fans gather as they turn
+            const x = lerp(hx, sx, 0.55), y = lerp(hy, sy, 0.55);
+            const dx = P0[0] - x, dy = P0[1] - y, h = (0.25 + 0.06 * hash(j, 7, 91)) * Math.hypot(dx, dy);
+            const s0 = 3.5 + 1.2 * hash(j, 3, 17), s1 = 12.6 + 0.8 * hash(j, 5, 19);   // its bead's ride
+            lanes.push({ sw, b: easeInOut(clamp((fl - s0) / (s1 - s0))),
+              D: (t) => [x + dx * t, y + dy * t - h * Math.sin(Math.PI * t)] });
+          }
+          const swMax = Math.max(1e-6, ...lanes.map((L) => L.sw));
+          for (const L of lanes) L.wl = 0.55 + 0.45 * Math.sqrt(L.sw / swMax);
+          // each arc bends onto its lane (key end to the curve's start, query end to the lane's start),
+          // handing over to the lane as it arrives
+          const aF = 1 - smoothstep(3, 10.5, fl);
+          for (const p of aF > 0 ? A : []) {
+            const a = p.a, L = lanes[p.j];
+            const xk = xw(a.ki), xq = p.xq, sp = xq - xk;
             const hh = Math.min(22 + sp * 0.2, 260) * (0.8 + 0.4 * hash(a.seed, a.ki, 3));
-            const p = easeOut(clamp((a.age + fl + 1) / 4));            // arcs mid-draw finish drawing
-            const alpha = (0.10 + 0.55 * a.w) * a.amp * Math.pow(0.5, fl / 9) * 1.7 * (1 - 0.85 * gw) * resid;
+            const pd = easeOut(clamp((a.age + fl + 1) / 4));           // arcs mid-draw finish drawing
+            const alpha = (0.10 + 0.55 * a.w) * a.amp * Math.pow(0.5, fl / 9) * 1.7 * aF;
             if (alpha < 0.004) continue;
             const Q = [];
             for (let u = 0; u <= NS; u++) {
-              const t = p * u / NS;
+              const t = pd * u / NS;
               const ax = xk + sp * t, ay = a.yk + (a.yq - a.yk) * t - hh * Math.pow(Math.sin(Math.PI * t), 0.85);
-              const [ex, ey] = D(1 - t);
+              const [ex, ey] = L.D(1 - t);
               Q.push([X(lerp(ax, ex, gw)), Y(lerp(ay, ey, gw))]);
             }
             // as S07 draws them (stack.js drawFired): dimmer at the key, full at the query, and a
@@ -124,27 +147,39 @@ export default {
             polyPass(Q, 1.0 + 0.6 * a.w, alpha * 0.35, alpha);
             if (a.w > 0.6) polyPass(Q, 5, alpha * 0.03, alpha * 0.10);
           }
-          // the one arc, and the bead of light it carries to the curve's start
-          const da = 0.85 * gw * resid;
-          if (da > 0.005) {
+          // the lanes: fine, dim lines; behind its bead a lane drains to a faint afterimage, which then
+          // fades softly (x runs linearly along a lane, so a gradient in x is a gradient along it)
+          const la = smoothstep(0.4, 0.95, gw) * afterA;
+          for (const L of lanes) {
+            const base = 0.3 * L.wl * la, b = L.b;
+            if (base < 0.003) continue;
             const Q = [];
-            for (let u = 0; u <= 40; u++) { const [ex, ey] = D(u / 40); Q.push([X(ex), Y(ey)]); }
-            polyPass(Q, 1.6, da, da * 0.7);
-            polyPass(Q, 6, da * 0.12, da * 0.08);
+            for (let u = 0; u <= 40; u++) { const [ex, ey] = L.D(u / 40); Q.push([X(ex), Y(ey)]); }
+            const gr = g.createLinearGradient(Q[0][0], 0, Q[40][0] + 0.01, 0);
+            for (let s = 0; s <= 20; s++) {
+              const t = s / 20;
+              const a = base * (0.3 + 0.7 * smoothstep(b - 0.2, b, t)) * smoothstep(0, 0.1, t) * (1 - 0.5 * smoothstep(0.8, 1, t));
+              gr.addColorStop(t, `rgba(255,255,255,${Math.min(1, a).toFixed(4)})`);
+            }
+            g.strokeStyle = gr; g.lineWidth = (0.8 + 0.3 * L.wl) * k * sz;
+            g.beginPath(); Q.forEach(([px, py], u) => (u ? g.lineTo(px, py) : g.moveTo(px, py))); g.stroke();
           }
-          const ba = smoothstep(3, 6, fl) * (1 - smoothstep(13, 16, fl));
-          if (ba > 0.005) {
-            const Q = [];
-            for (let u = 0; u <= 10; u++) { const [ex, ey] = D(Math.max(0, bead - 0.09 * (1 - u / 10))); Q.push([X(ex), Y(ey)]); }
-            polyPass(Q, 2.2, 0, ba);                                   // its short comet tail
-            const [bx, by] = Q[10];
-            const gr = g.createRadialGradient(bx, by, 0, bx, by, 22 * k);
-            gr.addColorStop(0, `rgba(255,255,255,${(0.7 * ba).toFixed(3)})`); gr.addColorStop(1, 'rgba(255,255,255,0)');
-            g.fillStyle = gr; g.fillRect(bx - 22 * k, by - 22 * k, 44 * k, 44 * k);
-            g.fillStyle = `rgba(255,255,255,${ba.toFixed(3)})`; g.beginPath(); g.arc(bx, by, 2.8 * k, 0, 7); g.fill();
+          // and the beads riding them together, each small, with a short comet tail
+          const bf = smoothstep(3, 6, fl) * (1 - smoothstep(12.5, 15.5, fl));
+          for (const L of lanes) {
+            const ba = bf * (0.45 + 0.55 * L.wl);
+            if (ba < 0.005) continue;
+            const tail = [];
+            for (let u = 0; u <= 8; u++) { const [ex, ey] = L.D(Math.max(0, L.b - 0.08 * (1 - u / 8))); tail.push([X(ex), Y(ey)]); }
+            polyPass(tail, 1.2, 0, 0.5 * ba);
+            const [bx, by] = tail[8], r = 11 * k;
+            const gr = g.createRadialGradient(bx, by, 0, bx, by, r);
+            gr.addColorStop(0, `rgba(255,255,255,${(0.28 * ba).toFixed(3)})`); gr.addColorStop(1, 'rgba(255,255,255,0)');
+            g.fillStyle = gr; g.fillRect(bx - r, by - r, 2 * r, 2 * r);
+            g.fillStyle = `rgba(255,255,255,${(0.85 * ba).toFixed(3)})`; g.beginPath(); g.arc(bx, by, 1.6 * k, 0, 7); g.fill();
           }
         }
-        // ---- the loss curve falls in one sweep from where the bead landed, drawing behind its head
+        // ---- the loss curve falls in one sweep from where the beads landed, drawing behind its head
         const np = 260, nHead = Math.max(1, Math.round(np * sweep));
         const pts = [];
         for (let i = 0; i <= nHead; i++) { const [cx, cy] = cW(i / np); pts.push([X(cx), Y(cy)]); }
@@ -163,7 +198,7 @@ export default {
           const a = Math.min(1, 1 - smoothstep(8, 13, age));
           line(2.6, a * 0.4, i0, i1); line(1.5, a, Math.max(i0, i1 - 6), i1);
         }
-        // the head: a bright point with a short comet glow; it takes over from the bead as it lands
+        // the head: a bright point with a short comet glow; it takes over from the beads as they land
         const [hx, hy] = pts[pts.length - 1];
         const ha = Math.min(1, (1.0 - 0.5 * smoothstep(60, 80, fl) + 0.35 * chopP) * smoothstep(11, 14, fl));
         if (ha > 0.005) {
@@ -202,8 +237,6 @@ export default {
           drawOdometer(g, { value: r.value, rate: r.rate, x: cx, y, size: r.size * k * cam.z, alpha: Math.min(1, 0.95 * a * (1 + 0.12 * beatP)) });
         });
       },
-      // S07's corner HUD fades as the big counters take over
-      drawUI: fl < 12 ? (g, api) => drawHUD(g, api, { step, a: 1 - smoothstep(0, 10, fl) }) : null,
     });
   },
 };

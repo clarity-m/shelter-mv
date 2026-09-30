@@ -24,7 +24,7 @@
 //    previous cut's last frame.
 import { createPaper, panFor, toScreen } from '../sets/paper-lab/paper.js';
 import { sceneLab, labDust, CURSOR_REST, HAND_REST, MON } from '../sets/paper-lab/scenes.js';
-import { clamp, lerp, easeInOut, easeIn } from '../lib/util.js';
+import { clamp, lerp, easeInOut, easeIn, smoothstep } from '../lib/util.js';
 
 let E, SC;
 // the cursor's moves: [local frame from, to, dx, dy] (world px from its rest), holds in between;
@@ -52,6 +52,13 @@ const TZ = 1650;           // push depth: through the glass (the screen fills th
 // the fill (complete from 284), the light's swell and the exposure lift
 const REF = { f0: 1163, last: 287, push: [238, 292], fill: [252, 284], swell0: 246, expo0: 258 };
 const DROP = 131;          // the drop-out at the end of bar 16: the fill completes here
+// (R23, the lead's review: bar 15 sat still) a slow push-in from the first frame, already moving on the cut and
+// accelerating through bar 15 (the screen grows about 5% by its end and 7% by local 85, with the old dolly) into
+// the push, which then takes over: the creep fades out over 95-125 while the push outruns it, so from 125 on, the
+// last frame included, every frame is exactly as before (S10 opens on the last one). Smooth throughout, no steps
+// on the beats.
+const CREEP = { tz: 120, reach: 95, fade: [95, 125] };
+const creepAt = (fl) => { const x = fl / CREEP.reach; return CREEP.tz * (0.3 * x + 0.7 * x * x) * (1 - smoothstep(CREEP.fade[0], CREEP.fade[1], fl)); };
 function refClock(fl, last) {   // this shot's local frame -> the four-bar cut's
   return fl <= DROP ? fl + (REF.fill[1] - DROP) : REF.fill[1] + (REF.last - REF.fill[1]) * (fl - DROP) / (last - DROP);
 }
@@ -60,7 +67,7 @@ export function s08State(T, fr) {
   const fl = fr.fl, last = fr.n - 1, u = fl / last, fR = refClock(fl, last);
   // camera: constant-speed track (it is cut in and out of), turning to hold the wall still
   const tx = lerp(-80, 80, u);
-  const cam = { Zc: SC.cam.Zc, zref: SC.cam.zref, t: [tx, 0], pan: [0.75 * tx, 0], tz: 40 * u };
+  const cam = { Zc: SC.cam.Zc, zref: SC.cam.zref, t: [tx, 0], pan: [0.75 * tx, 0], tz: 40 * u + creepAt(fl) };
   // the glow breathes on the kicks and swells on the chop notes; as the light swells into the fill
   // it settles on the four-bar cut's last value
   const swell = easeIn(clamp((fR - REF.swell0) / (REF.fill[1] - REF.swell0), 0, 1));

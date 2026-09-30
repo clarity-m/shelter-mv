@@ -21,6 +21,10 @@
 //            runs out from the pair across the land and through the city; each tower's windows
 //            flash as it passes and stay a little brighter, and the ring brightens. Undefined
 //            (S30) or <= 0 (S31's first frame): exactly as before.
+// worldLight (revision 23, Claire) 0..1: Clawd's light becomes part of the world instead of the radiant
+//            form's flat 2D rays and halo: a soft glow in the air around him, a warm pool on the grass and
+//            light on her, with her soft shadow (clawdlight.js). S31 is 1 throughout; S30 eases it in as he
+//            sits down in bar 80, so its last frame is S31's first. Undefined or 0: exactly as before.
 // Any other key is passed through to the hill renderer's state (see hill.js defaultState).
 import { createHill, CLAWD_U } from './hill.js';
 import { HILL, SKYLINE, FAR_RIDGE, hillH } from './scene.js';
@@ -144,6 +148,7 @@ export function shelterState(o = {}) {
   const S = SHELTER_SPOTS;
   const showFig = o.figure ?? build >= 1;
   const cy = hillH(hill, S.clawd.x, S.clawd.z);
+  const wl = clamp(o.worldLight || 0);
   const st = {
     rung: 5,
     time,
@@ -152,7 +157,7 @@ export function shelterState(o = {}) {
     hill,
     tree: { x: S.tree.x, z: S.tree.z, grow: gTree },
     human: showFig ? { x: S.human.x, z: S.human.z, yaw: 0.35, lean: o.lean || 0, turn: o.turn || 0 } : null,
-    clawd: { x: S.clawd.x, z: S.clawd.z, y: cy, u: CLAWD_U * 0.95, form: 'radiant', sit: 1, glow: o.clawdGlow ?? 1, rays: 0.75, light: 0.9,
+    clawd: { x: S.clawd.x, z: S.clawd.z, y: cy, u: CLAWD_U * 0.95, form: 'radiant', sit: 1, glow: o.clawdGlow ?? 1, rays: 0.75 * (1 - wl), halo: 1 - wl, light: 0.9,
       eyes: o.eyes || null },
     ...shelterPeople(time, o.presence || 0),
     towers,
@@ -166,8 +171,10 @@ export function shelterState(o = {}) {
     dome: { mer: 0.12, lat: 0.03, fade: 0.6 },
     moteNear: 3.0, moteRise: 0.8, motes: 1,
     aura: 0.35, exposure: 1.0, vignette: 0.18,
+    clawdLit: wl > 0 ? { mix: wl, core: 0.35, k: 0.5, range: 5 } : null,
+    clawdVol: wl > 0 ? { k: 0.45 * wl, core: 0.28, shafts: 0.3, range: 1.7, fall: 0.3, col: [1.0, 0.66, 0.42] } : null,
   };
-  const own = ['build', 'crane', 'figure', 'cam', 'time', 'cityPulse', 'clawdGlow', 'lean', 'eyes', 'presence', 'waveT', 'turn'];
+  const own = ['build', 'crane', 'figure', 'cam', 'time', 'cityPulse', 'clawdGlow', 'lean', 'eyes', 'presence', 'waveT', 'turn', 'worldLight'];
   for (const [k, v] of Object.entries(o)) if (v !== undefined && !own.includes(k)) st[k] = v;
   return st;
 }

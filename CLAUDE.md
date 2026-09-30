@@ -62,6 +62,30 @@ them. Key everything to bars and timestamps instead.
 - Grid: 100 BPM, bar 2.4 s = 72 frames, bar b starts at 0.38 + 2.4(b-1) s.
 
 ## Status
+- 2026-09-30: CUT 22 (Revision 23, Claire's notes on cut 21 plus the lead's whole-film review). `render/briefs/R23-common.md`
+  has the plan. The film is `out/film.mp4` (= `out/film_cut22.mp4`); there are 32 shots.
+  - **S01:** the pen's speed breathes: quick on the long edges, braking into tips and corners, surging on the beats.
+    Each fan's outline finishes 7 frames before its fold lands on the chop (44, 84, 116, 147).
+  - **S05:** S07's arcs gather into five fine, dim lanes (not one bold arc) with a faint afterimage; the fall is
+    unchanged.
+  - **S35:** one continuous pull-out at a steady log rate (a power of ten every 12.7 frames). No on-beat camera steps;
+    it eases only into the campus hold.
+  - **HUD:**
+    - S11 and the valley HUD (S13, S14, S15) use S10's metrics: caps about 20 px, rows 32 px apart, the label at x
+      48, the value 144 px to its right. S11 uses dark ink.
+    - The pretraining corner HUD is removed from S03, S04, S05 and S07 (Claire: "the visualization stands on its
+      own"); S05's big counters stay.
+  - **S20 and S36:** the Clawds are world-oriented solids like S34's (`sets/door/hillx-fix.js` `loadHillxDoor()`
+    patches the hill engine at load; `state.solidClawds`). They are depth-tested against ribbons, beads, beams,
+    decals and the ice diagram. If hillx.js or glslx.js change, check the render log for "hillx-fix: WARNING".
+  - **S31:** Clawd's light is `sets/hill/clawdlight.js`: a soft volumetric glow shadowed by her body, a warm pool on
+    the grass, and light on her side. No 2D rays. The bonsai have shaded teal pads, rim-lit bark and contact shadows.
+    S30's bar 80 was re-rendered to match (his rays retract as he sits).
+  - **S08 (the lead's review):** a slow push-in from the first frame (`CREEP`) that flows into the push through the
+    glass; the last frame is unchanged.
+  - Verified: 6532 frames, 32/32 shots, A/V +0.0 ms, 0 single-frame spikes, 0 short bursts. Every continuity cut is at
+    most 3.7 (S08→S10's through-the-screen match is 6.2, as always); the flagged jumps are the same intended set as cut 21.
+  - Cut 21 is in git (ac867f3) and `out/film_cut21.mp4`.
 - 2026-09-30: CUT 21 (Revision 22, Claire's `viewers-notes-4.txt` on cut 20). `render/briefs/R22-common.md` has the
   plan, and `render/revise22_shots.py` the bars. The film is `out/film.mp4` (= `out/film_cut21.mp4`); there are 32 shots.
   - **How Claire writes notes now:** visual notes state intent (find the best change); musical-timing notes are

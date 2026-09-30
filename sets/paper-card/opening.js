@@ -2,11 +2,13 @@
 // two shots agree exactly at their cut. Everything is keyed to the vocal-chop notes of intro A.
 //   S01 (R22; Claire: "ideally, the cursor draws the outline, the paper folds in after"): dark card; the
 //        first chop lights the square. The humans' indigo paper cursor is the maker. It swoops in from the
-//        bottom right and draws the starburst's outline with its tip in one steady stroke, clockwise from the
-//        top: a thin line of light cut into the card only where the tip has passed. Behind the pen the paper
-//        folds in segment by segment, cut 18's fan-by-fan rhythm: each segment's flaps swing in about their
-//        creases and land on a chop (44, 84, 116, 147), the light arriving as they land, so the hit is the
-//        fold. Then the cursor lifts out between the top rays. The card does not turn; the chops glint.
+//        bottom right and draws the starburst's outline with its tip in one continuous stroke, clockwise from
+//        the top: a thin line of light cut into the card only where the tip has passed. Its pace breathes like
+//        a hand's (R23): quick along the straight edges, easing into the tips and corners, surging on the
+//        beats. Behind the pen the paper folds in segment by segment, cut 18's fan-by-fan rhythm: each
+//        segment's flaps swing in about their creases and land on a chop (44, 84, 116, 147), the light
+//        arriving as they land, so the hit is the fold. Then the cursor lifts out between the top rays. The
+//        card does not turn; the chops glint.
 //   S02: the rays fold shut in a sweep from the top (their light draws back into the hub) while Clawd's
 //        cells flip open one by one in a ripple out from the square, a pixel at a time; his legs land on
 //        the bar-4 downbeat. Bar 4 lets the light pour. The humans' cursor comes back, hovers over his shape
@@ -47,7 +49,6 @@ function capSD(w, i) {                             // card.js's sdUnevenCapsule 
 }
 const sqSD = (w) => { const dx = Math.abs(w[0]) - G.cell, dy = Math.abs(w[1]) - G.cell; return Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) + Math.min(Math.max(dx, dy), 0); };
 const sidePt = (j, u, sg) => { const Q = RG[j], x = u * Q.L, r = Q.r1 + (Q.r2 - Q.r1) * u; return [Q.d[0] * x + sg * r * Q.p[0], Q.d[1] * x + sg * r * Q.p[1]]; };
-const TIP_SLOW = 2.5;                              // the pen slows round the tips (time per px there)
 const OUT = RG.map((Q, j) => {
   const free = (w) => sqSD(w) > 0.3 && RG.every((_, i) => i === j || capSD(w, i) > 0.3);
   const u0 = [-1, 1].map((sg) => {
@@ -55,7 +56,7 @@ const OUT = RG.map((Q, j) => {
     return 1;
   });
   const Aa = (1 - u0[0]) * Q.L, Ac = Math.PI * Q.r2, Ab = (1 - u0[1]) * Q.L, A = Aa + Ac + Ab;
-  return { u0a: u0[0], u0b: u0[1], sa: Aa / A, sb: (Aa + Ac) / A, Aa, Ac, Ab, T: Aa + TIP_SLOW * Ac + Ab };
+  return { u0a: u0[0], u0b: u0[1], sa: Aa / A, sb: (Aa + Ac) / A, Aa, Ac, Ab };
 });
 const KERF_GEOM = new Float32Array(OUT.flatMap((o) => [o.u0a, o.u0b, o.sa, o.sb]));
 // the pen's point on ray j's outline at s (card px)
@@ -66,28 +67,60 @@ function penPt(j, s) {
   const th = -Math.PI / 2 + Math.PI * (s - o.sa) / (o.sb - o.sa);          // ccw side, the far end, cw side
   return [Q.d[0] * Q.L + Q.r2 * (Math.cos(th) * Q.d[0] + Math.sin(th) * Q.p[0]), Q.d[1] * Q.L + Q.r2 * (Math.cos(th) * Q.d[1] + Math.sin(th) * Q.p[1])];
 }
-// ---- S01 (R22): the pen draws round the star clockwise from the top in one steady stroke (a gentle start and
-// stop, slower round the tips); the segments are cut 18's fans re-cut to the pen's pace so each outline is
-// complete a few frames before its fold: the top ray, then four, three and three rays. Each segment's flaps
-// fold in over FOLD frames, swinging faster as they go, and land on its chop (intro A's chops 3, 4, 7 and 8:
-// 44, 84 on the bar-2 downbeat, 116 and 147); the light arrives with a flash as they land.
+// ---- S01 (R22): the pen draws round the star clockwise from the top in one stroke; the segments are cut 18's
+// fans re-cut to the pen: the top ray, then four, three and three rays. Each segment's flaps fold in over FOLD
+// frames, swinging faster as they go, and land on its chop (intro A's chops 3, 4, 7 and 8: 44, 84 on the
+// bar-2 downbeat, 116 and 147); the light arrives with a flash as they land.
 const SEGS = [{ rays: [0], ci: 3 }, { rays: [1, 2, 3, 4], ci: 4 }, { rays: [5, 6, 7], ci: 7 }, { rays: [8, 9, 10], ci: 8 }];
 const SEG_OF = RG.map((_, j) => SEGS.findIndex((g) => g.rays.includes(j)));
-const DRAW = [20, 138], FOLD = 6, FLASH = 7;
+const DRAW = [20, 140], FOLD = 6, FLASH = 7, LEADIN = 7;   // the stroke; each fan's last corner lands LEADIN before its chop
 const DRAW_K = new Float32Array(RG.map((_, j) => j));    // the stroke visits the rays in order
-const T_TOT = OUT.reduce((a, o) => a + o.T, 0);
+// (R23; Claire: "speed up/slow down the rate of the cursor drawing to match beat and unfolding shape") the pen's
+// pace breathes. Along the stroke, a hand's speed: quick on the long straight edges, braking into the tips and
+// the V corners between rays (speed as the square root of the distance to the corner: a steady deceleration)
+// and away again. In time, a surge rising just before each beat, sized to how much of that fan there is to
+// draw. Each fan's pace is solved (bisection) so its last corner lands exactly LEADIN frames before its chop.
+// The table is built once from the timeline's own beats and chops, so a frame stays a pure function of f.
+let acc = 0;
+const PATH = OUT.map((o) => { const r = { s0: acc, Aa: o.Aa, Ac: o.Ac, Ab: o.Ab, A: o.Aa + o.Ac + o.Ab }; acc += r.A; return r; });
+const SIG_END = acc;
+const HAND = { D: 110, v0: 8, t0: 24 }, SURGE = { a0: 0.15, a1: 0.35, tau: 4.5, lead: 2 }, PACE_DT = 1 / 16;
+const rayAtSig = (sig) => { for (let j = 10; j > 0; j--) if (sig >= PATH[j].s0) return j; return 0; };
+function handAt(sig) {                             // 0..1: the hand's speed here, from the nearest corner
+  const R = PATH[rayAtSig(sig)], l = sig - R.s0;
+  const dV = Math.min(l, R.A - l), dT = l < R.Aa ? R.Aa - l : l > R.Aa + R.Ac ? l - R.Aa - R.Ac : 0;
+  return Math.min(1, Math.sqrt((dV + HAND.v0) / HAND.D), Math.sqrt((dT + HAND.t0) / HAND.D));
+}
+let PACE = null;
+function paceTable(c1, beats) {
+  const lens = SEGS.map((g) => g.rays.reduce((a, j) => a + PATH[j].A, 0)), lmax = Math.max(...lens);
+  const alpha = (x) => (x > 0 ? x * Math.exp(1 - x) : 0);
+  const ease = (t) => smoothstep(DRAW[0], DRAW[0] + 3, t) * (1 - smoothstep(DRAW[1] - 6, DRAW[1], t));
+  const table = [0];
+  SEGS.forEach((g, k) => {
+    const t0 = k ? c1[SEGS[k - 1].ci] - LEADIN : DRAW[0], t1 = c1[g.ci] - LEADIN;
+    const s0 = PATH[g.rays[0]].s0, last = PATH[g.rays[g.rays.length - 1]], s1 = last.s0 + last.A;
+    const amp = SURGE.a0 + SURGE.a1 * lens[k] / lmax, n = Math.round((t1 - t0) / PACE_DT);
+    const surge = (t) => 1 + amp * beats.reduce((s, b) => s + alpha((t - b + SURGE.lead) / SURGE.tau), 0);
+    const run = (S, rec) => {
+      let s = s0;
+      for (let i = 0; i < n; i++) { const t = t0 + (i + 0.5) * PACE_DT; s += S * handAt(Math.min(s, SIG_END - 1e-6)) * surge(t) * ease(t) * PACE_DT; if (rec) rec.push(s); }
+      return s;
+    };
+    let lo = 0.1, hi = 400;
+    for (let it = 0; it < 60; it++) { const mid = (lo + hi) / 2; if (run(mid) < s1) lo = mid; else hi = mid; }
+    const rec = []; run((lo + hi) / 2, rec);
+    for (const s of rec) table.push(Math.min(s, s1));
+  });
+  return table;
+}
+// the pen at frame f: its ray j and the outline parameter s there (card.js's kerf parameter)
 function drawAt(f) {
-  const x = clamp((f - DRAW[0]) / (DRAW[1] - DRAW[0])), e = 0.03, v = 1 / (1 - e);
-  let tau = T_TOT * (x < e ? v * x * x / (2 * e) : x > 1 - e ? 1 - v * (1 - x) * (1 - x) / (2 * e) : v * (x - e / 2));
-  for (let j = 0; j < 11; j++) {
-    const o = OUT[j];
-    if (tau <= o.T || j === 10) {
-      const t = Math.min(tau, o.T), tc = TIP_SLOW * o.Ac;
-      const s = t < o.Aa ? o.sa * t / o.Aa : t < o.Aa + tc ? o.sa + (o.sb - o.sa) * (t - o.Aa) / tc : o.sb + (1 - o.sb) * (t - o.Aa - tc) / o.Ab;
-      return { j, s, draw: j + s };
-    }
-    tau -= o.T;
-  }
+  const x = (f - DRAW[0]) / PACE_DT, tb = PACE, i = Math.floor(x);
+  const sig = x <= 0 ? 0 : x >= tb.length - 1 ? SIG_END : tb[i] + (tb[i + 1] - tb[i]) * (x - i);
+  const j = rayAtSig(sig), R = PATH[j], o = OUT[j], l = Math.min(Math.max(sig - R.s0, 0), R.A);
+  const s = l < R.Aa ? o.sa * l / R.Aa : l < R.Aa + R.Ac ? o.sa + (o.sb - o.sa) * (l - R.Aa) / R.Ac : o.sb + (1 - o.sb) * (l - R.Aa - R.Ac) / R.Ab;
+  return { j, s, draw: j + s };
 }
 const landOf = (c1, j) => c1[SEGS[SEG_OF[j]].ci];
 // a flap's fold: it swings in about its crease at the tip (card.js's opening o), slow and then faster, landing on the chop
@@ -121,7 +154,7 @@ export const F_S02 = 155, F_FLY = 299, F_END = 316;
 // ---- the cursor (S01, R22). Positions are the arrow's tip in 1920-frame px. Its angle never changes.
 const HUB = [960, 540];
 const CUR_IN = [1330, 1125];                              // off frame, bottom right: where the hand is
-const ENTER = [12, 19], PRESS = [17, 20], PEN_UP = [138, 141], EXIT = [138, 153];
+const ENTER = [12, 19], PRESS = [17, 20], PEN_UP = [DRAW[1], DRAW[1] + 3], EXIT = [DRAW[1], 153];
 const mcAt = (f, fLight) => 1 + 0.035 * smoothstep(fLight, 227, f);          // the card's magnification
 const onScreen = (w, f, fLight) => { const m = mcAt(f, fLight); return [HUB[0] + m * w[0], HUB[1] + m * w[1]]; };
 const PEN0 = penPt(0, 0), PEN1 = penPt(10, 1);            // the stroke starts and ends in the valley of rays 10 and 0
@@ -218,6 +251,7 @@ export function openingState(T, f) {
   const chops = T.events('chops');
   const c1 = chops.filter((x) => x < 155);          // 11, 30, 35, 44, 84, 102, 106, 116, 147
   const fLight = c1[0];                             // 11: the square lights
+  if (!PACE) PACE = paceTable(c1, T.events('beats'));   // (R23) the pen's pace, once
   // the lamp behind the tissue warms up on the first note, then breathes a little with the voice
   const on = f < fLight ? 0 : 1 - Math.exp(-(f - fLight) / 5.5);
   const warm = f < fLight ? 0 : 0.34 + 0.66 * smoothstep(0, 130, f - fLight);

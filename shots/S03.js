@@ -10,9 +10,9 @@
 // R20: the shot starts at 5.2 (frame 317; S02 took its first beat). The arrival out of the wash is
 // keyed to the shot's first frame; everything locked to the music (the creep, the build, the
 // glances) is keyed to global frames, so the build to 9.1 is unchanged.
+// R23 (Claire: the visualization stands on its own): no corner STEP / LOSS HUD.
 import { createTokenWorld, HZ, SX } from '../sets/tokens/world.js';
-import { headAt, speedAt, stepAt, chopLevel } from '../sets/tokens/train.js';
-import { drawHUD } from '../sets/tokens/hud.js';
+import { headAt, speedAt, chopLevel } from '../sets/tokens/train.js';
 import { beatRipples, downbeat, breath } from '../sets/tokens/pulse.js';
 import { camS03, phasesS03, magS03, eyesAt, F04, laneOffAt, laneVAt } from '../sets/tokens/hook.js';
 import { smoothstep, clamp, easeOut } from '../lib/util.js';
@@ -56,7 +56,6 @@ export default {
       lit.set(idx, Math.max(lit.get(idx) || 0, amp));
       fired.push({ idx, age });
     }
-    const step = stepAt(f);
     // light on the music: ripples on the light percussion (scaled by the kick envelope), the fill's
     // hits on 8.4, and after the riser cuts one front of light converging on him from both sides
     const ripples = beatRipples(T, f, {
@@ -86,7 +85,6 @@ export default {
           else api.arc(g, SX, HZ - 3, x0, top, h, 0.8, a, a * 0.5, 1.2, 1 - p, 1);
         }
       },
-      drawUI: (g, api) => drawHUD(g, api, { step, a: smoothstep(22, 40, fl) }),
     });
   },
 };

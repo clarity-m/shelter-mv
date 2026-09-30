@@ -21,30 +21,38 @@ import { createBurn } from '../sets/paper-kit/burn.js';
 import { hash } from '../lib/util.js';
 
 // ---------------------------------------------------------------- the move
-// LAM = ln(how far we have zoomed out since the first frame): overlapping smootherstep ramps, so
-// the rate never stops. R14 (the three landings share one shape): the aisle's ramp eases into the
-// lit hall (about local 25-29), the campus's carries us through the roof and out until the full
-// campus is on screen (local 47), and a long gentle one settles it into the die's square.
-// R15: the shot runs a beat longer (90 frames, to 62.2). Everything up to local 47 is R14's exactly;
-// from there the settle stretches to the last frame (a cubic that takes over R14's settle ramp with
-// its value and slope, and comes to rest on 89).
+// LAM = ln(how far we have zoomed out since the first frame).
+// R13-R15 built it from three overlapping ramps (the aisle into the lit hall, then through the roof
+// and out, then a long settle), which peaked near beats 2 and 3 and all but stopped in the lit hall.
+// R23 (Claire: the pull-out's start-stop felt harsh; the beats are soft here): one continuous move,
+// steady in log scale, so each power of ten takes the same time (about 12.7 frames). Its rate eases
+// in from the first frame (0-12), holds, and from local 40 eases into the campus hold (a gaussian
+// fall-off, so there is no kink), resting by about 65. The full campus is on screen from about 49.
+// LAM_END is R13's: the campus comes to rest exactly where the die was on the first frame.
 export const LAST = 89;
-const RA = { a: 4.15, f0: 8, f1: 29 }, RB = { a: 3.5, f0: 27, f1: 50 }, RC = { a: 0.47, f0: 44, f1: 71 };
+export const LAM_END = 4.15 + 3.5 + 0.47;
+const MOVE = { in0: 0, in1: 12, out0: 40, tau: 12 };
+const moveRate = (f) => smooth(MOVE.in0, MOVE.in1, f) * (f <= MOVE.out0 ? 1 : Math.exp(-(((f - MOVE.out0) / MOVE.tau) ** 2)));
+const DT = 0.01;
+const LAM_TAB = (() => {
+  const n = Math.round((LAST + 1) / DT) + 1, t = new Float64Array(n);
+  for (let i = 1; i < n; i++) t[i] = t[i - 1] + moveRate((i - 0.5) * DT) * DT;
+  const k = LAM_END / t[Math.round(LAST / DT)];
+  for (let i = 0; i < n; i++) t[i] *= k;
+  return t;
+})();
+export const MOVE_RATE = LAM_TAB[Math.round(30 / DT)] - LAM_TAB[Math.round(29 / DT)];   // the steady rate, per frame
+export const LAM = (fl) => {
+  const x = clamp(fl, 0, LAST + 1) / DT, i = Math.min(Math.floor(x), LAM_TAB.length - 2);
+  return LAM_TAB[i] + (LAM_TAB[i + 1] - LAM_TAB[i]) * (x - i);
+};
 const smoother = (u) => { u = clamp(u, 0, 1); return u * u * u * (u * (6 * u - 15) + 10); };
 const smootherD = (u) => (u <= 0 || u >= 1 ? 0 : 30 * u * u * (1 - u) * (1 - u));
-const ramp = (R, fl) => R.a * smoother((fl - R.f0) / (R.f1 - R.f0));
-const F_KEEP = 47;
-const RC0 = ramp(RC, F_KEEP), RC0d = RC.a * smootherD((F_KEEP - RC.f0) / (RC.f1 - RC.f0)) / (RC.f1 - RC.f0);
-const settle = (fl) => {
-  if (fl <= F_KEEP) return ramp(RC, fl);
-  const L = LAST - F_KEEP, u = Math.min(1, (fl - F_KEEP) / L), m0 = RC0d * L / (RC.a - RC0);
-  return RC0 + (RC.a - RC0) * (m0 * (u * u * u - 2 * u * u + u) + 3 * u * u - 2 * u * u * u);
-};
-export const LAM = (fl) => ramp(RA, fl) + ramp(RB, fl) + settle(fl);
-export const LAM_END = RA.a + RB.a + RC.a;
+const F_KEEP = 47;                                                 // (the wave's R14/R15 hand-over)
 export const sAisle = (fl) => A_S0 * Math.exp(-LAM(fl));          // the camera's scale on the far end
 export const sCampus = (fl) => Math.exp(LAM_END - LAM(fl));       // ... on the campus's roofs (1 at rest)
-export const PASS = [4.18, 4.72];                                  // LAM over which the roof comes over
+// the roof comes over while LAM crosses PASS (R23: a little wider, as the move no longer slows here)
+export const PASS = [4.05, 4.95];
 export const passMix = (fl) => smooth(PASS[0], PASS[1], LAM(fl));
 const panY = (fl) => 20 * (1 - smooth(0.2, 3.8, LAM(fl)));        // the die at the frame's centre first
 const panK = (fl) => 1 - smooth(PASS[0], LAM_END - 0.4, LAM(fl));
@@ -126,7 +134,7 @@ export default {
     EB = createPaper(glB, campusScene(), { k: ctx.scale, log: ctx.log });
     B = createBurn(ctx);
     SLAB = makeSlab(ctx.W, Math.round(0.16 * ctx.H));
-    ctx.log(`S35: ${LINES.length} die lines; bays in at ${BAY_IN.map((f) => f.toFixed(1)).join(', ')}; pass ${F_PASS.toFixed(1)}; hero ${HERO_C.map((v) => v.toFixed(1))}`);
+    ctx.log(`S35: ${LINES.length} die lines; bays in at ${BAY_IN.map((f) => f.toFixed(1)).join(', ')}; pass ${F_PASS.toFixed(1)}; hero ${HERO_C.map((v) => v.toFixed(1))}; steady ${MOVE_RATE.toFixed(4)}/frame`);
   },
   render(ctx, fr) {
     const fl = fr.fl, mix = passMix(fl), W = ctx.W, H = ctx.H;

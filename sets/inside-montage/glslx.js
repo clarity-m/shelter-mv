@@ -4,6 +4,7 @@
 // GLSL sources for the hill set. Scene state arrives as uniforms (see hill.js).
 import { MAT, HUMAN_PRIMS, CLOUDS, DOME, HILL_EPS } from '../hill/scene.js';
 import { PAL_KEYS } from '../hill/palettes.js';
+import { CLIT_GLSL, VOL_BODY } from '../hill/clawdlight.js';   // (revision 23) Clawd's light in the world, opt-in
 
 const fx = (x) => { const s = (+x).toFixed(5); return s.indexOf('.') < 0 ? s + '.0' : s; };
 const g3 = (a) => `vec3(${fx(a[0])},${fx(a[1])},${fx(a[2])})`;
@@ -367,6 +368,7 @@ precision highp float; precision highp int; precision highp sampler2D;
 ${SCENE_DECL}
 ${LOOK_DECL}
 ${SCENE_CAST}
+${CLIT_GLSL}
 layout(location = 0) out vec4 oCol;
 layout(location = 1) out vec4 oAux;
 vec3 albedo(int mat) {
@@ -800,7 +802,8 @@ vec3 shadeHit(Hit h, vec3 rd) {
 #endif
   c += P_SUNL * mix(alb, vec3(1.0), 0.35) * fres * back * (0.15 + 0.85 * sh) * 0.55;
   vec3 lc = uCGlow.xyz - p; float dl = length(lc);
-  c += alb * P_CLAWDL * uCGlow.w * max(dot(n, lc / dl) * 0.8 + 0.2, 0.0) / (1.0 + dl * dl * 2.5) * (0.4 + 0.6 * ao);
+  vec3 cOld = alb * P_CLAWDL * uCGlow.w * max(dot(n, lc / dl) * 0.8 + 0.2, 0.0) / (1.0 + dl * dl * 2.5) * (0.4 + 0.6 * ao);
+  c += uCLit.x > 0.0 ? mix(cOld, clawdLit(p, n, alb, ao, h.mat), uCLit.x) : cOld;   // (revision 23) his light in the world
   float fm = h.mat == M_FLOOR ? 1.0 : (h.mat == M_HILL ? floorMix(p.xz) : 0.0);
   if (fm > 0.0) {
     vec3 rf = reflect(rd, vec3(0.0, 1.0, 0.0));
@@ -1282,6 +1285,13 @@ void main() {
 // ---------------------------------------------------------------- Clawd composites (crisp)
 // Drawn in glyph units: the 18 x 10 box, y down; one glyph cell is 1 x 2 units.
 // uGeo: box top-left in design px (x, y), px per unit U, depth (m) for occlusion.
+// (revision 23) Clawd's glow in the air around him (sets/hill/clawdlight.js); no occluder here (S30 has no figure)
+export const CLAWDVOL_FS = `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D;
+${SCENE_DECL}
+float volOcc(vec3 p) { return 1e9; }
+${VOL_BODY}`;
+
 export const CLAWD_FS = `#version 300 es
 precision highp float; precision highp int; precision highp sampler2D;
 uniform sampler2D uAux; uniform vec2 uRes; uniform float uK;
@@ -1294,6 +1304,7 @@ uniform vec4 uGeo; uniform float uForm, uSit, uGlow, uRays, uAlpha, uEyeLight;
 //          z, w: left / right arm: 0 level, -1 raised a row, +1 dropped a row (the walk swing),
 //                -2 up (tip on row 0, elbow on row 1: the happy emote's cheer)
 uniform vec4 uLegX, uPose;
+uniform float uHalo;   // (revision 23) the radiant form's flat 2D halo (1; S30's landing eases to the world's glow)
 // (revision 4, from sets/hill: sprite-grid poses from clawd-pose.js, for S19 and S24)
 uniform int uGridOn; uniform int uGB[24];
 out vec4 o;
@@ -1458,7 +1469,7 @@ vec4 radiant(vec2 g) {
     beam = max(beam, cover(dr) * pow(1.0 - hh, 1.6) * w * 0.85);
   }
   float rr = length((g - CEN) * vec2(0.62, 1.0));
-  vec3 halo = vec3(1.0, 0.62, 0.38) * (0.16 * exp(-rr * rr / 18.0) + 0.05 * exp(-rr / 7.0)) * uGlow;
+  vec3 halo = vec3(1.0, 0.62, 0.38) * (0.16 * exp(-rr * rr / 18.0) + 0.05 * exp(-rr / 7.0)) * uGlow * uHalo;
   if (aBody <= 0.0 && beam <= 0.0 && aEye <= 0.0) return vec4(halo, -1.0);
   float di = -body;
   vec3 c = mix(C_PEACH, C_WHITE, smoothstep(0.2, 3.0, di) * 0.9);

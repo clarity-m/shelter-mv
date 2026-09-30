@@ -116,16 +116,19 @@ export function walkPose(phase, extra = {}) {
 // ---------------------------------------------------------------- HUD (inside only)
 const FONT = 'Consolas, "Courier New", monospace';
 export const groupInt = (n) => String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-// rows: [[label, value], ...]; top-left like style frame 02b; light or dark text
-export function drawHUD(g, rows, { dark = false, a = 1, x = 64, y = 61 } = {}) {
+// rows: [[label, value], ...]; top-left like style frame 02b; light or dark text.
+// R23 (Claire: make the HUD sizes consistent with S10's): S10's metrics at 1080p, caps about 20 px tall,
+// rows 32 px apart, the label at x 48 and the value 144 px to its right; bold, so the strokes weigh about
+// what S10's pixels do. Dark ink reads like S10's two tones (grey label, near-black value).
+export function drawHUD(g, rows, { dark = false, a = 1, x = 48, y = 64 } = {}) {
   g.save();
-  g.font = `13px ${FONT}`;
-  try { g.letterSpacing = '1.6px'; } catch (e) { /* older canvas */ }
+  g.font = `bold 31px ${FONT}`;
+  try { g.letterSpacing = '0.5px'; } catch (e) { /* older canvas */ }
   g.textBaseline = 'alphabetic';
   const c = dark ? '30,30,34' : '255,255,255';
   rows.forEach(([lab, val], i) => {
-    g.fillStyle = `rgba(${c},${(dark ? 0.45 : 0.4) * a})`; g.fillText(lab, x, y + 22 * i);
-    g.fillStyle = `rgba(${c},${(dark ? 0.78 : 0.72) * a})`; g.fillText(val, x + 96, y + 22 * i);
+    g.fillStyle = `rgba(${c},${(dark ? 0.45 : 0.4) * a})`; g.fillText(lab, x, y + 32 * i);
+    g.fillStyle = `rgba(${c},${(dark ? 0.78 : 0.72) * a})`; g.fillText(val, x + 144, y + 32 * i);
   });
   g.restore();
 }
