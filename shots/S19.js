@@ -1,5 +1,7 @@
-// S19, verse 2a (bars 52-53, frames 3683-3826), revisions 15-16: Clawd's first original creation, then
-// the humans make more of him. One continuous action with S18: its valleyParams run on from S18's
+// S19 (bars 51-52, frames 3611-3754), revisions 15-17: Clawd's first original creation, then
+// the humans make more of him. Revision 17b: bar 51 grows the tree, its canopy blooming on the sung
+// onsets; in the quiet bar 52 the copy runs by 52.2, and the five share one happy beat, then stillness to
+// the hard cut (Claire: one emote lets the beat feel longer). One continuous action with S18: its valleyParams run on from S18's
 // last frame on the valley clock (T 288 on), here slowed so the growth breathes in the quiet bar 52.
 // - Bar 52: the hill finishes rising under the sapling, which grows into the tree of the final scene
 //   (S31's tree, sets/valley/bigtree.js): drawn in light, then filled, its canopy glittering; in no
@@ -8,7 +10,7 @@
 //   clawd.copy(4) in S10's paper label; it clicks on the sung onset (105, 53.2), and four copies of him
 //   appear beside him, each already holding its own orange cursor, and his own re-forms from his light.
 //   The copies are the humans' act, made because they trust him; he never copies himself. They glance
-//   at each other and all five bob once on 53.4; the five hold by the tree to the hard cut into S20.
+//   at each other and share one happy beat; the five hold, still, by the tree to the hard cut into S20.
 import S18, { valleyParams, acting, stage, eyes } from './S18.js';
 import { hillHeight } from '../sets/valley/raise.js';
 import { projectPx as projectPxB } from '../sets/valley/valley.js';
@@ -20,28 +22,28 @@ import { GRIDS } from '../sets/hill/clawd-pose.js';
 
 const G = {}; for (const k of Object.keys(GRIDS)) G[k] = solidGrid(GRIDS[k]);
 const LOOK = { up: eyes(NEUTRAL, 0, -1), upLeft: eyes(NEUTRAL, -1, -1), upRight: eyes(NEUTRAL, 1, -1) };
-const IN = 60, SEL = 74, ENTER = 105, BOB = 126;            // the cursor comes in; selects him; runs the copy; the bob
+const IN = 62, SEL = 73, ENTER = 90, JOY = 100;              // the cursor comes in; selects him (52.1); runs the copy (52.2); the one shared beat
 const CODE = 'clawd.copy(4)';
 // the four copies: metres from him across the view (+ right) and toward the lens (-); each one's delay
 const RV = [Math.cos(TH_V), -Math.sin(TH_V)], FV = [Math.sin(TH_V), Math.cos(TH_V)];
 const COPIES = [[-1.5, -0.9, 0], [1.5, -1.0, 1], [-2.9, -2.0, 2], [2.9, -2.2, 3]];   // (on the near slope, in view)
 const easeOutBack = (t, c = 1.7) => { t = clamp(t); return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
 
-// the valley clock over S19's frames: slope 1 out of S18, the tree full by 42 and filled by 60, then the
-// last of the settling slowly through bar 53 (monotone cubic through the keys)
-const TK = [[0, 288], [36, 314], [60, 330], [105, 342], [143, 352]];
-const TM = (() => {
-  const d = []; for (let i = 0; i < TK.length - 1; i++) d.push((TK[i + 1][1] - TK[i][1]) / (TK[i + 1][0] - TK[i][0]));
-  const m = [1];
-  for (let i = 1; i < TK.length - 1; i++) { const h0 = TK[i][0] - TK[i - 1][0], h1 = TK[i + 1][0] - TK[i][0]; m.push(3 * (h0 + h1) / ((2 * h1 + h0) / d[i - 1] + (h1 + 2 * h0) / d[i])); }
-  m.push(d[d.length - 1]);
-  return m;
+// the valley clock over S19's frames. Bar 51 (0-71): T 288-330, the tree's canopy blooming and filling,
+// faster just after each sung onset, slope 1 out of S18; bar 52: the last settling, slowly (T 330-346)
+const SUNG = [7, 19, 24, 44, 55, 69];
+const wSung = (x) => 0.6 + SUNG.reduce((a, o) => { const u = (x - o) / 3; return a + (u > 0 ? 1.1 * u * Math.exp(1 - u) : 0); }, 0);
+const CL = (() => {
+  // the lead-in term A exp(-x / 8) is solved so the clock leaves S18 at S18's own rate (1 T per frame)
+  const build = (A) => { const C = [0]; for (let x = 0; x < 72; x += 0.25) { const w = (y) => wSung(y) + A * Math.exp(-y / 8); C.push(C[C.length - 1] + 0.125 * (w(x) + w(x + 0.25))); } return C; };
+  let A = 2, C = build(A);
+  for (let it = 0; it < 30; it++) { const slope0 = 42 * (wSung(0) + A) / C[C.length - 1]; A *= 1 / slope0; C = build(A); }
+  return C;
 })();
 function clockAt(x) {
-  if (x >= TK[TK.length - 1][0]) return TK[TK.length - 1][1] + TM[TM.length - 1] * (x - TK[TK.length - 1][0]);
-  let i = 0; while (x > TK[i + 1][0]) i++;
-  const h = TK[i + 1][0] - TK[i][0], t = (x - TK[i][0]) / h, t2 = t * t, t3 = t2 * t;
-  return (2 * t3 - 3 * t2 + 1) * TK[i][1] + (t3 - 2 * t2 + t) * h * TM[i] + (-2 * t3 + 3 * t2) * TK[i + 1][1] + (t3 - t2) * h * TM[i + 1];
+  if (x >= 72) return 330 + 16 * (1 - Math.pow(1 - clamp((x - 72) / 71), 2));
+  const i = Math.max(0, x) / 0.25, a = Math.min(CL.length - 1, Math.floor(i)), b = Math.min(CL.length - 1, a + 1), f = i - Math.floor(i);
+  return 288 + 42 * (CL[a] * (1 - f) + CL[b] * f) / CL[CL.length - 1];
 }
 // one small bob (a squash and a little hop) starting at frame t0
 const bob = (s, t0, h = 0.08) => { const t = s - t0; if (t < 0 || t >= 10) return null; const u = t / 10; return { pose: ['hopSquash', 'hopStretch', 'hopApex', 'hopFall', 'hopSquash'][Math.min(4, Math.floor(u * 5))], dy: h * Math.sin(Math.PI * clamp((u - 0.14) / 0.72)) }; };
@@ -61,13 +63,9 @@ export default {
     let grid = A.grid;
     if (s >= IN + 4) grid = LOOK.upRight;                // the humans' cursor, coming in at his upper right
     if (s >= SEL && s < SEL + 3) grid = G.surprised;     // clicked: selected
-    if (s >= ENTER && s < ENTER + 4) grid = G.surprised; // copied
-    if (s >= ENTER + 5) grid = G.left;                   // a glance at the ones on his left
-    if (s >= ENTER + 13) grid = G.right;                 // and his right
-    if (s >= ENTER + 19) grid = G.happy;
-    const b0 = bob(s, BOB);
-    if (b0) { grid = G[b0.pose]; A.dy = b0.dy; }
-    if (s >= 138 && s < 141) grid = G.blink;
+    if (s >= ENTER) grid = NEUTRAL;                      // copied: he looks out, still
+    if (s >= JOY && s < JOY + 12) grid = G.happy;        // the one shared beat of joy
+    if (s >= 124 && s < 127) grid = G.blink;
     A.grid = grid;
     const { P, CX, CZ, gy } = valleyParams(ctx, T, fr.t, fr.f, A);
     // --- the four copies, beside him on the hill
@@ -79,12 +77,9 @@ export default {
       const sc = Math.min(1, 0.3 + 0.7 * easeOutBack(t / 6));
       const side = dx < 0 ? 1 : -1;                      // +1: he is to its screen right
       let pose = t < 3 ? 'hopSquash' : 'neutral';
-      if (s >= ENTER + 6) pose = side > 0 ? 'right' : 'left';     // a glance at him
-      if (s >= ENTER + 12) pose = side > 0 ? 'left' : 'right';    // and at the one beside it
-      if (s >= ENTER + 18) pose = 'happy';
-      let y = St.V.heightAt(x, z) + (P.hill ? hillHeight(P.hill, x, z) : 0), squash = t < 3 ? 0.94 : 1;
-      const b = bob(s, BOB + (dl % 2));
-      if (b) { pose = b.pose; y += b.dy; }
+      if (s >= JOY && s < JOY + 12) pose = 'happy';                 // the one shared beat, with him
+      if (dl === 2 && s >= 132 && s < 135) pose = 'blink';
+      const y = St.V.heightAt(x, z) + (P.hill ? hillHeight(P.hill, x, z) : 0), squash = t < 3 ? 0.94 : 1;
       crowd.push({ x, z, y, yaw: YAW + 0.16 * side, grid: pose === 'neutral' ? NEUTRAL : G[pose], depth: 4, scale: sc, squash });
       cards.push({ p: [x + 0.8 * Math.sign(dx) * RV[0], y + 1.3, z + 0.8 * Math.sign(dx) * RV[1] - 0.3], a: ss(1, 5, t) });   // (held on its outer side)
       if (t < 16) rings.push([x, z, 0.5 + t * 0.32, 0.8 * Math.exp(-t / 5)]);
@@ -137,7 +132,7 @@ export default {
       const press = Math.max(Math.exp(-Math.pow((s - SEL) / 2.2, 2)), Math.exp(-Math.pow((s - ENTER) / 2.2, 2)));
       // its label (S10's paper panel): typed after the selection, run on the second click
       const open = easeOut(clamp((s - SEL - 1) / 4)) * (1 - easeInOut(clamp((s - ENTER - 2) / 6)));
-      if (open > 0.001) CUR.panel(g, x + 64, y + 34, CODE, { open, typed: clamp((s - SEL - 3) / 13), caret: s < ENTER, flash: Math.exp(-Math.pow((s - ENTER) / 4, 2)) * (s >= ENTER - 2 ? 1 : 0) });
+      if (open > 0.001) CUR.panel(g, x + 64, y + 34, CODE, { open, typed: clamp((s - SEL - 3) / 10), caret: s < ENTER, flash: Math.exp(-Math.pow((s - ENTER) / 4, 2)) * (s >= ENTER - 2 ? 1 : 0) });
       if (away < 1) CUR.draw(g, x, y, { s: 1.2, press, rot: -0.06, fill: PAPER.slate, bs: 1.2 * k / 1.45 });
     }
     g.restore();

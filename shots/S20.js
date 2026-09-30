@@ -36,6 +36,14 @@
 // own orange cursor. So S20 opens on five Clawds together on the grey hill; nobody pops out of his
 // light. Each of the five cursors that paint the world in belongs to one of them (it leaves its
 // Clawd and stays linked to him by a faint line of light), and the five fold the chain together.
+// After Claire ("the cursors-as-transition for S36 is great, can use that for S20"): the paint-in is
+// S36's, big sweeping strokes across the view that wipe the grey to the made world in about a beat,
+// the sky swept in with them; then the cursors come back to their Clawds before the beads.
+// Revision 18 (Claire: start where the vocal phrase begins): S20 is bars 53-56 (frames 3755-4042, 288
+// frames). The paint-in lands with the phrase on 53.1; the sung onsets drive the three rounds of
+// beads (33, 55, 74), the chain links from 83 and folds down the funnel over bar 54-55 (onsets 104,
+// 124, 149), and the pull-back and lab of bar 56 are exactly as before, one bar later. The first and
+// last frames are unchanged.
 import { loadHillxIcy } from '../sets/door/hillx-fix.js';  // hillx, with S18's glacier caps on the far peaks (revision 11)
 import { nightPal } from '../sets/inside-montage/night.js';
 import { EXT, LOOSE, NEAR, FOLD, blendConf, chainPoints, NRES } from '../sets/inside-montage/protein.js';
@@ -54,19 +62,24 @@ const easeOutBack = (t, c = 1.7) => { t = clamp(t); return 1 + (c + 1) * Math.po
 const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 const lin = (hex) => [1, 3, 5].map((i) => Math.pow(parseInt(hex.slice(i, i + 2), 16) / 255, 2.2));
 
-// ---------------------------------------------------------------- timing (local frames of 216)
-// sung onsets: 2, 11, 32, 52 | 77, 86, 91, 103 | 199; beats every 18; the bass creeps in from 72
-const PAINT = [0, 48];                                // (R13) the cursors paint the world in from grey
-const DROP0 = 42, DROP_STAG = 2, DROP_GAP = 7;        // bead (cursor c, round j) drops at DROP0 + 2c + 7j
-const LINK = [56, 70];                                // the chain threads through the beads, N to C
-const FOLDS = [[72, 14, EXT, LOOSE], [87, 13, LOOSE, NEAR], [101, 13, NEAR, FOLD]];   // done at 114
-const HOLD = [66, 116];                               // the Clawds hold the chain with beams while it folds
+// ---------------------------------------------------------------- timing (local frames of 288, from 53.1)
+// sung onsets: 1, 14, 33, 44, 55 | 74, 83, 104, 124 | 149, 158, 163, 175 | 271; beats every 18
+const PAINT = [0, 24];                                // the cursors paint the world in from grey (S36's sweep)
+const ROUNDS = [33, 55, 74], DROP_STAG = 2;           // bead (cursor c, round j) drops at ROUNDS[j] + 2c (sung onsets)
+const LINK = [83, 104];                               // the chain threads through the beads, N to C
+const FOLDS = [[104, 18, EXT, LOOSE], [124, 20, LOOSE, NEAR], [148, 17, NEAR, FOLD]];   // done at 165
+const HOLD = [92, 168];                               // the Clawds hold the chain with beams while it folds
 const POPS = [];                                      // (R15) nobody pops: the copies are there from the start
-const GLOW = [100, 122];                              // the knot's glow comes up as it packs
-const KEYS = [0, 72, 128];                            // the camera: over the funnel as it is painted, then near the knot
-const PB0 = 132, PB1 = 160;                           // the pull-back out through the glass
-const LEAN = [146, 206], TURN = [160, 210];           // A leans in to the knot, B turns toward the screen
-const SETTLE = [190, 215];                            // the last beat settles toward dark before the kick
+const GLOW = [150, 176];                              // the knot's glow comes up as it packs
+const HAPPY = [175, 189];                             // Clawd's one small hop when it is done
+const KEYS = [0, 104, 192];                           // the camera: over the funnel as it is painted, then near the knot
+// bar 56 is revision 16's bar 55.4-56 exactly, one bar later (+72): the pull-back, the lab, the settle
+const PB0 = 204, PB1 = 232;                           // the pull-back out through the glass
+const LEAN = [218, 278], TURN = [232, 282];           // A leans in to the knot, B turns toward the screen
+const SETTLE = [262, 287];                            // the last beat settles toward dark before the kick
+const NIGHT0 = 172;                                   // the painted world starts toward night (to PB1)
+// the hill engine's clock: as before at frame 0, and exactly as before (one bar later) from the pull-back
+const clockAt = (fl) => (fl < PB0 ? fl * (PB0 - 72) / PB0 : fl - 72);
 
 // ---------------------------------------------------------------- the inside render
 // It covers the lab screen's hole (MON.hole, 304 x 194 = 152:97). At full push the hole spans XW px
@@ -109,14 +122,14 @@ const GRIP = [0.5, 0.12, 0.88, 0.33, 0.7];
 // the chain's frame: centred on K above the crest, facing the lens; it turns slowly once packed
 const K = [1.05, 3.85, 9.95], KS = 0.85;
 // revision 11: the chain starts over the funnel's near rim and spirals down to the basin as it folds
-const K0 = [2.4, 3.5, 6.2], K_BOT = [FUN[0], 0.95, FUN[1]], SLIDE = [70, 118];
+const K0 = [2.4, 3.5, 6.2], K_BOT = [FUN[0], 0.95, FUN[1]], SLIDE = [104, 170];
 function Kat(fl) {
   const u = easeIO((fl - SLIDE[0]) / (SLIDE[1] - SLIDE[0]));
   const a0 = Math.atan2(K0[2] - FUN[1], K0[0] - FUN[0]), r0 = Math.hypot(K0[0] - FUN[0], K0[2] - FUN[1]);
   const a = a0 + 1.4 * u, r = r0 * (1 - u) ** 1.4;
   return [FUN[0] + r * Math.cos(a), lerp(K0[1], K_BOT[1], u * u * (3 - 2 * u)), FUN[1] + r * Math.sin(a)];
 }
-const turnAt = (fl) => 0.9 * easeIO((fl - 104) / 90) + 0.25 * smoothstep(150, 215, fl);
+const turnAt = (fl) => 0.9 * easeIO((fl - 176) / 90) + 0.25 * smoothstep(222, 287, fl);   // (as before, one bar later)
 
 // ---------------------------------------------------------------- the camera (frame px)
 // S19's last frame in the hill engine (sets/valley/NOTES.md); a slow drift in bar 54; then a gentle
@@ -164,7 +177,7 @@ const NB = NAMES.length, NCUR = 5;
 // bead b = cursor c's j-th (c = floor(b / 3), j = b % 3): each cursor lays a short run of the chain
 const BEADS = NAMES.map((name, b) => {
   const c = Math.floor(b / 3), j = b % 3;
-  return { name, b, c, j, r: (b + 0.5) * NRES / NB, t: DROP0 + DROP_STAG * c + DROP_GAP * j, col: BEAD_COL[b] };
+  return { name, b, c, j, r: (b + 0.5) * NRES / NB, t: ROUNDS[j] + DROP_STAG * c, col: BEAD_COL[b] };
 });
 function confAt(fl) {
   let c = EXT;
@@ -241,7 +254,7 @@ function inside(T, f, fl, lineK) {
   const knotPx = project(B, Kat(fl))[0];
   const bumps = hillAt(fl);
   const done = fl >= FOLDS[2][0] + FOLDS[2][1];
-  const happy = fl >= 116 && fl < 130;
+  const happy = fl >= HAPPY[0] && fl < HAPPY[1];
   const crowd = [], homes = [];
   let main = null;
   CREW.forEach((c, i) => {
@@ -255,7 +268,7 @@ function inside(T, f, fl, lineK) {
     const y = hillH(bumps, x, z);
     // (R14: Clawd acts with his eyes) no bobbing along: one small hop when the knot is done, and each
     // helper's single arc as it arrives
-    let hop = isMain && happy ? 0.1 * Math.sin(Math.PI * clamp((fl - 116) / 10)) : 0;
+    let hop = isMain && happy ? 0.1 * Math.sin(Math.PI * clamp((fl - HAPPY[0]) / 10)) : 0;
     hop += arc;
     const mid = [x, y + hop + 0.3, z];
     const inPlace = isMain || u >= 12;
@@ -291,12 +304,12 @@ function inside(T, f, fl, lineK) {
   });
   // the painted world goes toward night under the glowing knot (and further in the last beat),
   // through its palette, so the crisp Clawds keep their exact colour; S19's backlight all through
-  const k = smoothstep(GLOW[0], PB1, fl), n = easeIO((fl - SETTLE[0]) / (SETTLE[1] - SETTLE[0]));
+  const k = smoothstep(NIGHT0, PB1, fl), n = easeIO((fl - SETTLE[0]) / (SETTLE[1] - SETTLE[0]));
   const kN = k * lerp(NIGHT_K[0], NIGHT_K[1], n), palLin = kN > 0 ? palMix(FIELDPAL, LNIGHT, kN) : FIELDPAL;
-  const l19 = 1 - 0.35 * easeIO((fl - 40) / 90);
+  const l19 = 1 - 0.35 * easeIO((fl - 40) / 150);
   return {
     state: {
-      rung: 4, time: 64 + fl / 30, cam: horizonSafe(toX(cam), KB), hill: bumps, sun: { az: 19.8, el: 5.3 },
+      rung: 4, time: 64 + clockAt(fl) / 30, cam: horizonSafe(toX(cam), KB), hill: bumps, sun: { az: 19.8, el: 5.3 },
       tree: null, props: false, salt: -1,                  // (R14) the field, no trees or props
       clawd: main, crowd, lines, ribbons: pr.ribbons, ribbonCore: 0.4, palLin,
       keyAz: lerp(19.8 + 62, 19.8 + 12, l19), keyEl: lerp(30, 16, l19), exposure: lerp(1, 0.8, l19), vignette: lerp(0.16, 0.42, l19),
@@ -320,20 +333,21 @@ function cursorsAt(fl, B, homes) {
     const hw = B.F * 0.9 / Math.max(homes[c][2], 0.5);                // its Clawd's width on screen
     const own = [homes[c][0] + 0.32 * hw, homes[c][1] - 0.62 * hw];     // (R15) held above his shoulder
     let p, press = 0, a = 1, lit = 0.9;
-    if (fl < st.t0 - 6) {
+    const arc = (a0, b0, u, lift) => { const m = [lerp(a0[0], b0[0], 0.5), Math.min(a0[1], b0[1]) - lift]; return [(1 - u) ** 2 * a0[0] + 2 * (1 - u) * u * m[0] + u * u * b0[0], (1 - u) ** 2 * a0[1] + 2 * (1 - u) * u * m[1] + u * u * b0[1]]; };
+    const back = st.t1 + 8, out0 = mine[0].t - 9;
+    if (fl < st.t0 - 5) {
       p = own;                                                         // (R15) held by its Clawd, as S19 left it
     } else if (fl < st.t0) {
-      // (R15) it leaves its Clawd for the start of its stroke
-      const u = easeIO((fl - st.t0 + 6) / 6), q = head(st.t0);
-      const mid = [lerp(own[0], q[0], 0.5), Math.min(own[1], q[1]) - 50];
-      p = [(1 - u) ** 2 * own[0] + 2 * (1 - u) * u * mid[0] + u * u * q[0], (1 - u) ** 2 * own[1] + 2 * (1 - u) * u * mid[1] + u * u * q[1]];
+      p = arc(own, head(st.t0), easeIO((fl - st.t0 + 5) / 5), 50);     // it leaves its Clawd for its stroke
     } else if (fl <= st.t1) {
-      // (R13) laying its stroke across the land, pressed down as it paints
+      // S36's sweep: one big stroke across the view, pressed down as it paints
       p = head(fl); press = 0.35 + 0.2 * Math.sin(fl * 0.9 + c);
+    } else if (fl < back) {
+      p = arc(head(st.t1), own, easeIO((fl - st.t1) / (back - st.t1)), 70);   // back to its Clawd
+    } else if (fl < out0) {
+      p = own;                                                         // held again
     } else if (fl < mine[0].t - 1) {
-      const u = easeIO((fl - st.t1) / (mine[0].t - 1 - st.t1)), q = at(mine[0]), s0 = head(st.t1);
-      const mid = [lerp(s0[0], q[0], 0.5), Math.min(s0[1], q[1]) - 90];
-      p = [(1 - u) ** 2 * s0[0] + 2 * (1 - u) * u * mid[0] + u * u * q[0], (1 - u) ** 2 * s0[1] + 2 * (1 - u) * u * mid[1] + u * u * q[1]];
+      p = arc(own, at(mine[0]), easeIO((fl - out0) / (mine[0].t - 1 - out0)), 60);   // out to its first bead
     } else if (fl <= t1) {
       let j = 0; while (j < 2 && fl >= mine[j + 1].t - 1) j++;
       const bd = mine[j], q = at(bd);
@@ -369,13 +383,13 @@ function labelsAt(fl, B) {
 const CHAIN_CODE = [
   'export const EXT = extended(8.0, 1.0, 1.1);',
   'export const LOOSE = opened(3.3, 2.2, 0.9, 1), NEAR = opened(1.6, 1.4, 0.35, 2);',
-  'const FOLDS = [[72, 14, EXT, LOOSE], [87, 13, LOOSE, NEAR], [101, 13, NEAR, FOLD]];',
+  'const FOLDS = [[104, 18, EXT, LOOSE], [124, 20, LOOSE, NEAR], [148, 17, NEAR, FOLD]];',
   'export function blendConf(A, B, t) { return A.map((a, i) => ({ c: lerp3(a.c, B[i].c, t), q: qSlerp(a.q, B[i].q, t) })); }',
   'export function chainPoints(conf, toWorld, dirWorld) {',
   'const { c, q } = conf[k];',
   'return LOCAL[k].map((pt) => ({ p: add(c, qRot(q, pt.p)), s: qRot(q, pt.s), w: pt.w, r: pt.r }));',
 ].join('   ');
-const CODE_A = [LINK[0], 74, 88];       // it is typed along the band as it links, and lifts off as the fold begins
+const CODE_A = [LINK[0], 110, 126];     // it is typed along the band as it links, and lifts off as the fold begins
 const CODE_V = 1.1;                     // and streams along the chain, N-ward, in characters a frame
 // the chain's course without its helical turns (a running mean along the points), in frame px
 function chainPath(ch, B) {
@@ -445,15 +459,18 @@ const GREY = Object.assign({}, lookPal(0), palLinear({
   P_SUNC: ['#DAD8D4', 0.45], P_DISC: ['#EAE8E4', 0.7], P_MTL: '#AEB1B8', P_MTS: '#979AA3',
   A_TRUNK: '#86868B', A_LEAF: '#9B9DA2', A_FLOOR: '#A9ABB1',
 }));
-const STROKE_W = 3.6;                                  // a stroke's width on the land (world units)
-const STROKES = Array.from({ length: NCUR }, (_, c) => {
-  const z0 = 3.4 + 3.3 * c, dir = c % 2 ? -1 : 1, P = [];
-  for (let i = 0; i <= 80; i++) {
-    const u = i / 80, x = dir > 0 ? lerp(-6, 17, u) : lerp(17, -6, u);
-    const z = z0 + 0.8 * Math.sin(x / 2.4 + c * 1.7);
+// S36's sweep: each stroke runs straight across the opening view (along the camera's right, at a
+// distance d along its gaze, laid on the land), wider the farther it is, the five a frame and a half
+// apart, each about a third of a second
+const G0 = [cam19.pos[0], cam19.pos[2]], GF = [Math.sin(cam19.yaw), Math.cos(cam19.yaw)], GR = [Math.cos(cam19.yaw), -Math.sin(cam19.yaw)];
+const SWEEP = [[4.3, 5.6], [8.0, 5.4], [12.5, 6.8], [18.5, 9.0], [27, 13]];     // [distance, width]
+const STROKES = SWEEP.map(([d, wd], c) => {
+  const L = 0.95 * d + 4, dir = c % 2 ? -1 : 1, P = [];
+  for (let i = 0; i <= 60; i++) {
+    const t = dir * lerp(-L, L, i / 60), x = G0[0] + GF[0] * d + GR[0] * t, z = G0[1] + GF[1] * d + GR[1] * t;
     P.push([x, hillH(HILL_F, x, z) + 0.06, z]);
   }
-  return { P, t0: PAINT[0] + 8 + 3 * c, t1: PAINT[0] + 8 + 3 * c + 22 };
+  return { P, w: wd, t0: PAINT[0] + 5 + 1.5 * c, t1: PAINT[0] + 5 + 1.5 * c + 11 };
 });
 const strokeHead = (st, fl) => { const u = clamp((fl - st.t0) / (st.t1 - st.t0)), f = u * (st.P.length - 1), i = Math.min(st.P.length - 2, Math.floor(f)); return { u, p: lerp3(st.P[i], st.P[i + 1], f - i), i, f }; };
 function paintMask(M, k, fl, cam, B) {
@@ -469,14 +486,14 @@ function paintMask(M, k, fl, cam, B) {
       const wk = b === 0 ? 1 : 0.82 + 0.05 * Math.abs(b), off = b * 0.22;
       g.strokeStyle = b === 0 ? '#fff' : 'rgba(255,255,255,0.55)';
       for (let i = 1; i < pts.length; i++) {
-        const a = pts[i - 1], q = pts[i], w = B.F * STROKE_W * wk / ((a[2] + q[2]) / 2);
+        const a = pts[i - 1], q = pts[i], w = B.F * st.w * wk / ((a[2] + q[2]) / 2);
         const dx = q[0] - a[0], dy = q[1] - a[1], l = Math.hypot(dx, dy) || 1, nx = -dy / l * w * off * 0.5, ny = dx / l * w * off * 0.5;
         g.lineWidth = w; g.beginPath(); g.moveTo(a[0] + nx, a[1] + ny); g.lineTo(q[0] + nx, q[1] + ny); g.stroke();
       }
     }
   }
   // the sky and the far land: a sweep from the left, its edge ragged like a loaded brush
-  const hz = cam.pp[1] + cam.F * Math.tan(cam.pitch) + 150, sx = lerp(-200, 2200, easeIO((fl - 10) / 32));
+  const hz = cam.pp[1] + cam.F * Math.tan(cam.pitch) + 150, sx = lerp(-200, 2200, easeIO((fl - 5) / 15));
   if (sx > -150) {
     g.fillStyle = '#fff'; g.beginPath(); g.moveTo(-10, -10);
     for (let y = -10; y <= hz + 10; y += 20) g.lineTo(sx + 40 * Math.sin(y / 37 + 1.3) + 25 * Math.sin(y / 11), y);
@@ -486,7 +503,7 @@ function paintMask(M, k, fl, cam, B) {
 
 let CURSOR = null;
 function drawOverlay(g, k, fl, B, homes) {
-  if (fl < 0 || fl > 90) return;
+  if (fl < 0 || fl > 112) return;
   g.save(); g.setTransform(k, 0, 0, k, 0, 0);
   const curs = cursorsAt(fl, B, homes);
   // (R15) each cursor's faint line of light back to its own Clawd

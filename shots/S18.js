@@ -21,6 +21,13 @@
 // as the drums drop out on 49.1 (72), and he first looks at his lit cursor on the first sung word (91).
 // Bar 49: the first edits on the sung onsets (97, 105, 118, 127, 136). Bar 50: paint(cursors=10) (144)
 // and the ten cursors. Bar 51: the burn, the light back to him, the sapling growing, the hill.
+// Revision 17 (S16 gives the pivot a bar): five bars again, 47-51. Bar 47: the drag-in riding the chops
+// (3, 24), the release on the chop at 33, the flutter from 39, the catch on the kick at 47.4 (55); it
+// lights as it touches him. Bar 48: the five edits, one per drum hit (73, 91, 109, 127, 136). 49.1 (144):
+// paint(cursors=10) bursts as the drums drop out, and the ten cursors paint through bars 49-50, the
+// valley clock surging a little after each sung onset (paintClock). Bar 51 as before.
+// Revision 17b (Claire: S20 starts at 53.1 with the vocal phrase): four bars, 47-50. Bars 47-48 as above;
+// 49.1 paint(cursors=10) and the ten cursors through bar 49; bar 50 the burn, the sapling, the hill.
 // - Phrase 1: the humans' indigo paper cursor (S10/S11's) comes down from the top of the frame
 //   and hovers above him, bobbing gently, held; he looks up at it. Then it is let go: a tiny
 //   pause, it slumps and tips over, and falls like paper, swaying and tilting into each swing.
@@ -91,44 +98,44 @@ const SEGS = new Float32Array(9 * 2000);
 
 // ---------------------------------------------------------------- revision 13: five bars
 // V(n): local frame n -> the earlier timeline T (monotone cubic through the keys, slope 1 at the end)
-const VKEYS = [[0, 0], [72, 72], [144, 94], [213, 188], [234, 216], [252, 252], [287, 287]];
-const VM = (() => {
-  const K = VKEYS, n = K.length, d = [], m = [];
-  for (let i = 0; i < n - 1; i++) d.push((K[i + 1][1] - K[i][1]) / (K[i + 1][0] - K[i][0]));
-  m.push(d[0]);
-  for (let i = 1; i < n - 1; i++) {
-    const h0 = K[i][0] - K[i - 1][0], h1 = K[i + 1][0] - K[i][0];
-    m.push(d[i - 1] * d[i] <= 0 ? 0 : 3 * (h0 + h1) / ((2 * h1 + h0) / d[i - 1] + (h1 + 2 * h0) / d[i]));
-  }
-  m.push(1);
-  return m;
-})();
+// monotone cubic through keys K with end slopes m0, mN (Fritsch-Carlson inside)
+function mono(K, m0, mN) {
+  const d = []; for (let i = 0; i < K.length - 1; i++) d.push((K[i + 1][1] - K[i][1]) / (K[i + 1][0] - K[i][0]));
+  const m = [m0];
+  for (let i = 1; i < K.length - 1; i++) { const h0 = K[i][0] - K[i - 1][0], h1 = K[i + 1][0] - K[i][0]; m.push(d[i - 1] * d[i] <= 0 ? 0 : 3 * (h0 + h1) / ((2 * h1 + h0) / d[i - 1] + (h1 + 2 * h0) / d[i])); }
+  m.push(mN);
+  return (x) => {
+    let i = 0; while (i < K.length - 2 && x > K[i + 1][0]) i++;
+    const h = K[i + 1][0] - K[i][0], t = (x - K[i][0]) / h, t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * K[i][1] + (t3 - 2 * t2 + t) * h * m[i] + (-2 * t3 + 3 * t2) * K[i + 1][1] + (t3 - t2) * h * m[i + 1];
+  };
+}
+// revision 17b (S20 takes bar 53): bars 47-50. Bar 49 (144-215) runs the ten cursors' painting (T 94-188)
+// and bar 50 the burn, the light, the sapling and the hill (T 188-287), as revision 16's last two bars
+const VALL = mono([[0, 0], [58, 72], [144, 94], [213, 188], [234, 216], [252, 252], [287, 287]], 1.2, 1);
 export function V(x) {
-  const K = VKEYS;
-  if (x <= 0) return x * VM[0];
-  if (x >= K[K.length - 1][0]) return K[K.length - 1][1] + (x - K[K.length - 1][0]);
-  let i = 0; while (x > K[i + 1][0]) i++;
-  const h = K[i + 1][0] - K[i][0], t = (x - K[i][0]) / h, t2 = t * t, t3 = t2 * t;
-  return (2 * t3 - 3 * t2 + 1) * K[i][1] + (t3 - 2 * t2 + t) * h * VM[i] + (-2 * t3 + 3 * t2) * K[i + 1][1] + (t3 - t2) * h * VM[i + 1];
+  if (x <= 0) return x * 1.2;
+  if (x >= 287) return 287 + (x - 287);
+  return VALL(x);
 }
 // the humans' cursor in new frames: comes down (bar 48), hovers, is let go on the sung onset at 97,
 // falls, and he catches it at 118; P1 maps those frames to the earlier acting (let-go on: slope 1)
-const N = { come: 3, arrive: 22, let: 27, fall: 31, touch: 54, lit: 72 };
+const N = { come: 3, arrive: 24, let: 33, fall: 39, touch: 55, lit: 58 };
 const N_ENTER = 144;
 // the earlier phrase-1 acting (look 26, let-go 51, step, hop 63, catch 72) on the new frames: the let-go
 // on 76, a slow fall with a slow step under it, the catch still on 118
-const P1K = [[0, 0], [3, 10], [22, 32], [25, 48], [27, 51], [31, 55], [45, 63], [54, 72]];
+const P1K = [[0, 0], [3, 10], [24, 32], [31, 48], [33, 51], [39, 55], [46, 63], [55, 72]];
 const P1 = (n) => {
-  if (n >= 54) return n + 18;
+  if (n >= 55) return n + 17;
   let i = 0; while (i < P1K.length - 2 && n > P1K[i + 1][0]) i++;
   const [a0, b0] = P1K[i], [a1, b1] = P1K[i + 1];
   return lerp(b0, b1, clamp((n - a0) / (a1 - a0)));
 };
 // his first edits (bar 50), each a typed line with its Enter frame (sung onsets where they fall)
 const EDITS = [
-  { code: 'add(pebble)', at: 97, spot: 'pebble' },
-  { code: 'add(puddle)', at: 105, spot: 'puddle' },
-  { code: 'grow(sapling)', at: 118, spot: 'sapling' },
+  { code: 'add(pebble)', at: 73, spot: 'pebble' },
+  { code: 'add(puddle)', at: 91, spot: 'puddle' },
+  { code: 'grow(sapling)', at: 109, spot: 'sapling' },
   { code: 'undo()', at: 127, spot: 'sapling' },
   { code: 'redo()', at: 136, spot: 'sapling' },
 ];
@@ -152,10 +159,10 @@ export const treeAt = (T) => ({ g: ss(256, 318, T), fill: ss(292, 330, T), lines
 // how far each thing has grown at frame n (0..1); all done by bar 51
 function grownAt(n) {
   const eb = (t0, len, c) => easeOutBack(clamp((n - t0) / len), c);
-  let sap = eb(118, 9, 1.6);
+  let sap = eb(109, 9, 1.6);
   if (n >= 127) sap *= 1 - easeInOut(clamp((n - 127) / 5));
   if (n >= 136) sap = eb(136, 8, 1.8);
-  return { pebble: eb(97, 6, 2.4), puddle: easeOut(clamp((n - 105) / 8)), sapling: sap, sapTop: clamp((n - (n >= 136 ? 136 : 118) - 3) / 6) };
+  return { pebble: eb(73, 6, 2.4), puddle: easeOut(clamp((n - 91) / 8)), sapling: sap, sapTop: clamp((n - (n >= 136 ? 136 : 109) - 3) / 6) };
 }
 const easeOutBack = (t, c = 1.6) => { t = clamp(t); return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
 // the sprouts' state for the valley renderer: pivots in world metres (riding the land and the hill)
@@ -165,10 +172,10 @@ function sproutState(n, hill, T = 0) {
   const ground = (x, z) => St.V.heightAt(x, z) + (hill ? hillHeight(hill, x, z) : 0);
   const put = (i, x, y, z, sc) => parts.set([x, y, z, sc], i * 4);
   const fresh = (at) => (n < at ? 0 : 0.9 * Math.exp(-(n - at) / 7));
-  let [x, z] = SPOT.pebble; put(0, x, ground(x, z), z, g.pebble); glow[0] = fresh(97);
-  [x, z] = SPOT.puddle; put(1, x, ground(x, z) + 0.01, z, g.puddle); glow[1] = 0.5 * fresh(105);
+  let [x, z] = SPOT.pebble; put(0, x, ground(x, z), z, g.pebble); glow[0] = fresh(73);
+  [x, z] = SPOT.puddle; put(1, x, ground(x, z) + 0.01, z, g.puddle); glow[1] = 0.5 * fresh(91);
   [x, z] = SPOT.sapling;
-  const y0 = ground(x, z), gT = Math.max(0, g.sapling) * gone, at = n >= 136 ? 136 : 118;
+  const y0 = ground(x, z), gT = Math.max(0, g.sapling) * gone, at = n >= 136 ? 136 : 109;
   put(2, x, y0, z, gT);
   SAPLING.clumps.forEach((K, i) => { const gc = easeOutBack(clamp((n - at - 3 - 2 * i) / 7), 2.0) * (n >= 127 && n < 136 ? gT : 1) * (gT > 0.02 ? 1 : 0) * gone; put(3 + i, x + K[0] * gT, y0 + K[1] * gT, z + K[2] * gT, gc); });
   for (let i = 2; i < 6; i++) glow[i] = Math.max(fresh(at), lit);
@@ -179,8 +186,8 @@ function editCard(n) {
   const G0 = (k) => { const [x, z] = SPOT[k]; return St.V.heightAt(x, z); };
   const above = (k, h) => { const [x, z] = SPOT[k]; return [x, G0(k) + h, z]; };
   const keys = [
-    [N.lit + 15, HOLD()], [93, above('pebble', 0.45)], [98, above('pebble', 0.45)], [101, above('puddle', 0.45)],
-    [106, above('puddle', 0.45)], [113, above('sapling', 1.45)], [137, above('sapling', 1.45)], [142, HOLD()],
+    [62, HOLD()], [68, above('pebble', 0.45)], [75, above('pebble', 0.45)], [84, above('puddle', 0.45)],
+    [93, above('puddle', 0.45)], [102, above('sapling', 1.45)], [138, above('sapling', 1.45)], [142, HOLD()],
   ];
   if (n < keys[0][0] || n >= N_ENTER) return null;
   let p = keys[keys.length - 1][1];
@@ -204,15 +211,14 @@ function editActing(n) {
   let pose = 'lookUp', yaw = 0, dy = 0, lean = -0.08;
   // (revision 16: it rests on his head, lights on 49.1, rises beside him, and he looks at it on the first
   // sung word; then his eyes follow each edit)
-  const beats = [[65, 'lookUp'], [72, 'surprised'], [77, 'wonder'], [84, 'upRight'], [91, 'right'], [94, 'downRight'],
-    [97, 'surprised'], [100, 'happy'], [102, 'downLeft'], [105, 'surprised'], [108, 'left'], [118, 'surprised'],
-    [121, 'left'], [127, 'down'], [136, 'happy'], [140, 'lookUp']];
+  const beats = [[66, 'upRight'], [69, 'downRight'], [73, 'surprised'], [76, 'happy'], [80, 'downLeft'], [91, 'surprised'],
+    [94, 'happy'], [98, 'left'], [109, 'surprised'], [113, 'left'], [127, 'down'], [136, 'happy'], [140, 'lookUp']];
   for (const [at, p] of beats) if (n >= at) pose = p;
-  const looks = [[90, 0.22], [101, -0.28], [108, -0.45], [139, 0]];
+  const looks = [[67, 0.22], [80, -0.28], [98, -0.45], [139, 0]];
   for (let i = 0; i < looks.length; i++) { const [at, y] = looks[i], prev = i ? looks[i - 1][1] : 0; if (n >= at) yaw = lerp(prev, y, ss(at, at + 5, n)); }
   let grid = null;
   const hop = (t0, len, h) => { const t = n - t0; if (t < 0 || t >= len) return; const u = t / len; pose = ['hopSquash', 'hopStretch', 'hopApex', 'hopFall', 'hopSquash'][Math.min(4, Math.floor(u * 5))]; dy = h * Math.sin(Math.PI * clamp((u - 0.14) / 0.72)); };
-  hop(136, 11, 0.14);
+  hop(136, 8, 0.12);
   if (n >= 127 && n < 136) lean = -0.02;
   grid = pose === 'upRight' ? LOOK.upRight : (G[pose] || NEUTRAL);
   return { grid, dy, lean, yaw, squash: 1, sx: STEP[0], sz: STEP[1] };
@@ -248,7 +254,7 @@ function carried(n, px, gyNow) {
     press: n >= N.let - 3 && n < N.let + 3 ? Math.sin(Math.PI * (n - N.let + 3) / 6) : 0 };
   // his eyes: on the pair while it is carried, then on the falling cursor
   let eye = null;
-  if (n >= 8 && n < 50) eye = [Math.abs(x - H0[0]) < 50 ? 0 : Math.sign(x - H0[0]), y < H0[1] - 120 ? -1 : 0];
+  if (n >= 6 && n < 52) eye = [Math.abs(x - H0[0]) < 50 ? 0 : Math.sign(x - H0[0]), y < H0[1] - 120 ? -1 : 0];
   return { x, y, rot, flip, s, tailOff, R_CATCH, H, eye };
 }
 // his acting at local frame n: the earlier phrase 1 re-timed, the edits, then as before from Enter
@@ -478,7 +484,7 @@ export function valleyParams(ctx, fl, t, f, A, n = fl) {
   const cam = breakdownCam(u, GY);
   // revision 13: the lens leans in a little while he makes his first things (bar 50), and back out
   // as the ten cursors fan out
-  const pk = 2.6 * ss(76, 100, n) * (1 - ss(142, 166, n));
+  const pk = 2.6 * ss(60, 84, n) * (1 - ss(142, 166, n));
   cam.pos = [cam.pos[0] + cam.fwd[0] * pk, cam.pos[1] + cam.fwd[1] * pk, cam.pos[2] + cam.fwd[2] * pk];
   const strokes = SM.render(fl);
   strokes.smooth = 1.0;
@@ -515,7 +521,7 @@ export function valleyParams(ctx, fl, t, f, A, n = fl) {
   P.clawd.y += hC;
   // revision 13: the things he made in his first edits (they ride the land as the hill rises); revision
   // 15: the sapling grows into the tree of the final scene, drawn in light (bar 52) and then filled (S19)
-  const sp = n >= 94 ? sproutState(n, P.hill, fl) : null;
+  const sp = n >= 70 ? sproutState(n, P.hill, fl) : null;
   const TR = treeAt(fl);
   let tst = null, lh = null;
   if (TR.g > 0) {
@@ -564,7 +570,7 @@ export default {
     const A = actingN(n);
     const { P, CX, CZ, gy: gyNow } = valleyParams(ctx, fl, fr.t, f, A, n);
     // revision 15: his eyes follow the new cursor (the same camera the render uses)
-    if (n >= 8 && n < 50) {
+    if (n >= 6 && n < 52) {
       const B0 = camBasis(P.cam, 1920, 1080), c0 = carried(n, (q) => projectPx(B0, q), gyNow);
       if (c0.eye) P.clawd.grid = eyes(P.clawd.grid, c0.eye[0], c0.eye[1]);
     }
@@ -602,7 +608,7 @@ export default {
       const heat = n < N.lit ? 0 : 0.06 + 0.94 * Math.exp(-(n - N.lit) / 7);
       // then his light lifts it off him and it rises beside him, upright: his now
       const hp = toPx(HOLD());
-      const up = easeInOut(clamp((n - N.lit - 3) / 12));
+      const up = easeInOut(clamp((n - N.lit - 1) / 5));
       x = lerp(x, hp[0], up); y = lerp(y, hp[1], up) - 4 * Math.sin((n - N.touch) * 0.22) * up * (1 - ss(N_ENTER - 6, N_ENTER, n));
       rot = lerp(rot, -0.1, up);
       // his first edits: it goes to each spot, hovers while his line types, and taps on Enter

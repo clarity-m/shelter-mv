@@ -289,52 +289,6 @@ void main(){
   oB = vec4(B.rgb*(1.0 - a) + Bc*a, 1.0);
 }`;
 
-// ---------------------------------------------------------------- S02 bar 4: lettering cut into the card
-// Opt-in with st.letters = { segs: Float32Array(4N) (a.xy, b.xy, card px in Clawd's frame), info:
-// Float32Array(4N) (letter, f0, f1, 0), n, cut: [per letter 0..1], fresh: [per letter], halfW, box }.
-// Each letter is cut along its strokes as its cut runs 0 -> 1; the strokes become part of the hole,
-// so the tissue's light shows through them and their cut edges carry the kerf light and rims like
-// every other cut. A fresh cut flashes. Without st.letters every program is the original.
-const LET_N = 160, LET_K = 16;
-const LETTER_GLSL = `
-uniform vec4 uLSeg[${LET_N}];
-uniform vec4 uLInf[${LET_N}];
-uniform float uLCut[${LET_K}];
-uniform float uLFresh[${LET_K}];
-uniform float uLN, uLHW;
-uniform vec4 uLBox;
-float lettersSD(vec2 w, out float fresh){
-  fresh = 0.0;
-  if (w.x < uLBox.x || w.y < uLBox.y || w.x > uLBox.z || w.y > uLBox.w) return 1e5;
-  float d = 1e5;
-  for (int i = 0; i < ${LET_N}; i++){
-    if (float(i) >= uLN) break;
-    vec4 inf = uLInf[i]; int k = int(inf.x + 0.5);
-    float t1 = clamp((uLCut[k] - inf.y)/max(inf.z - inf.y, 1e-4), 0.0, 1.0);
-    if (t1 <= 0.0) continue;
-    vec2 a = uLSeg[i].xy, b = mix(a, uLSeg[i].zw, t1);
-    vec2 pa = w - a, ba = b - a;
-    float h = clamp(dot(pa, ba)/max(dot(ba, ba), 1e-6), 0.0, 1.0);
-    float di = length(pa - ba*h) - uLHW;
-    if (di < d){ d = di; fresh = uLFresh[k]; }
-  }
-  return d;
-}
-`;
-function sceneWithLetters(src) {
-  const put = (s, anchor, repl) => { if (s.split(anchor).length !== 2) throw new Error('card letters patch: ' + anchor.slice(0, 40)); return s.replace(anchor, () => repl); };
-  let s = put(src, 'layout(location = 0) out vec4 oL;', LETTER_GLSL + 'layout(location = 0) out vec4 oL;');
-  s = put(s, 'float dH = min(dC, dR);', `float dH = min(dC, dR);
-  float lFresh; float dL = lettersSD(wc, lFresh); dH = min(dH, dL);`);
-  s = put(s, 'if (dH >= 0.0){ cover = 0.0; kerfPx = 0.0; }', `if (dH >= 0.0){ cover = 0.0; kerfPx = 0.0; }
-  if (dL < 0.0 && dL <= min(dC, dR)){ cover = 0.0; kerfPx = 0.0; }`);
-  s = put(s, 'Wc += uCardOn*uGlint.x*pow(face, uGlint.z)*(6.5*exp(-e/0.9) + 1.3*exp(-e/4.0)*(0.75 + 0.5*surf));',
-    `Wc += uCardOn*uGlint.x*pow(face, uGlint.z)*(6.5*exp(-e/0.9) + 1.3*exp(-e/4.0)*(0.75 + 0.5*surf));
-  Wc += uCardOn*lampE*lFresh*(2.4*exp(-e/1.1) + 0.5*exp(-e/5.0))*step(dL, 14.0);`);
-  s = put(s, 'float Wh = mix(Wt, Wf, cover);', 'float Wh = mix(Wt, Wf, cover)*(1.0 + 1.1*lFresh*step(dL, 0.0));');
-  return s;
-}
-
 export function createCard(canvas, log = () => {}) {
   const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
   if (!gl) throw new Error('no webgl2');
@@ -359,8 +313,8 @@ export function createCard(canvas, log = () => {}) {
     RAYB.set([r1 * G.tip, 0, Math.atan2(Math.sin(a), Math.cos(a)), j], j * 4);
   });
   const glyphBits = GLYPH.map((row) => [...row].reduce((m, ch, c) => (ch === '#' ? m | (1 << c) : m), 0));
-  // the cursor's programs and target, made on first use (revision 5); the letters' variants likewise
-  let pSceneCur = null, pCur = null, tScene3 = null, pSceneLet = null, pSceneCurLet = null;
+  // the cursor's programs and target, made on first use (revision 5)
+  let pSceneCur = null, pCur = null, tScene3 = null;
   const ARROW_F = new Float32Array(ARROW.flat());
   const slate = [0x15, 0x19, 0x2B].map((v) => Math.pow(v / 255, 2.2));
 
@@ -397,19 +351,9 @@ export function createCard(canvas, log = () => {}) {
       pSceneCur = K.program(sceneWithCursor(SCENE), 'card-scene-cursor'); pCur = K.program(CURSOR_FS, 'card-cursor');
       tScene3 = K.target(W, H, 2);
     }
-    // (S02 bar 4) the lettering, if any
-    const lt = st.letters || null;
-    if (lt && !pSceneLet) pSceneLet = K.program(sceneWithLetters(SCENE), 'card-scene-letters');
-    if (lt && cur && !pSceneCurLet) pSceneCurLet = K.program(sceneWithCursor(sceneWithLetters(SCENE)), 'card-scene-cursor-letters');
-    if (lt) {
-      const cut = new Float32Array(LET_K), fr = new Float32Array(LET_K);
-      cut.set(lt.cut.slice(0, LET_K)); fr.set(lt.fresh.slice(0, LET_K));
-      Object.assign(common, { uLSeg: lt.segs, uLInf: lt.info, uLN: lt.n, uLHW: lt.halfW, uLBox: lt.box, uLCut: { f1: cut }, uLFresh: { f1: fr } });
-    }
-    const pMain = lt ? pSceneLet : pScene;
     const setArrow = (p) => { gl.useProgram(p); gl.uniform2fv(p.u.uArrow, ARROW_F); };
     // 1. light through the hole (half res), its glow pyramid and shafts
-    const pHole = cur ? (lt ? pSceneCurLet : pSceneCur) : pMain;
+    const pHole = cur ? pSceneCur : pScene;
     K.setU(pHole, Object.assign({}, common, { uRes: [hw, hh], uSc: sc / 2, uHoleOnly: 1 }, cur ? { uCur: cur } : {}));
     if (cur) setArrow(pHole);
     K.tex(pHole, { uGlow: up[0].tex }); K.draw(pHole, tHole);
@@ -418,8 +362,8 @@ export function createCard(canvas, log = () => {}) {
     K.setU(pRays, { uTS: [hw, hh], uCtr: [ctr[0] / 1920, 1 - ctr[1] / 1080], uLen: st.godLen ?? 0.45, uDecay: 2.2 });
     K.tex(pRays, { uHole: tHole.tex }); K.draw(pRays, tRays);
     // 2. the scene
-    K.setU(pMain, Object.assign({}, common, { uRes: [W, H], uHoleOnly: 0 }));
-    K.tex(pMain, { uGlow: glow.tex }); K.draw(pMain, tScene);
+    K.setU(pScene, Object.assign({}, common, { uRes: [W, H], uHoleOnly: 0 }));
+    K.tex(pScene, { uGlow: glow.tex }); K.draw(pScene, tScene);
     let sc2 = tScene;
     if (Math.abs(st.rotSpan || 0) > 0.002) {       // the card is turning: blur along its arc
       const c = st.cc || [960, 540];

@@ -62,6 +62,17 @@ them. Key everything to bars and timestamps instead.
 - Grid: 100 BPM, bar 2.4 s = 72 frames, bar b starts at 0.38 + 2.4(b-1) s.
 
 ## Status
+- 2026-09-29: CUT 17 (Revisions 17-18, Claire). The film is `out/film.mp4` (= `out/film_cut17.mp4`).
+  - **S16 and S17:** S16 (the GPU hall) is one bar (45), and S17 (the dive) is 46.
+  - **S18 (47-50):** the catch on 47.4, five first edits on bar 48's drum hits, `paint(cursors=10)`
+    on 49.1 (the breakdown opens on Clawd painting), then the light, the sapling and the hill in 50.
+  - **S19 (51-52):** the tree in 51, blooming on the vocal onsets. `clawd.copy(4)` clicks on 52.2,
+    then one shared happy beat and stillness to the cut.
+  - **S20 (53-56):** it opens on the verse phrase at 53.1 with S36's cursor sweeps. The beads drop on
+    the sung onsets, and the lab is unchanged.
+  - **S02:** `train(corpus)` is in S13's code panel.
+  - Verified: 6532 frames, 31/31 shots, A/V +0.0 ms, 0 single-frame spikes, 0 short bursts. S17->S18
+    is 0.4 and S18->S19 is 2.0.
 - 2026-09-29: CUT 16 (Revision 16 and the follow-ups, from Claire's notes on cut 15). The film is `out/film.mp4`
   (= `out/film_cut16.mp4`).
   - **S18 (48-51):** the catch lands on the upbeat 48.4, and the cursor lights orange as the drums

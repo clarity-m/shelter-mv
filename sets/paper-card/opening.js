@@ -16,16 +16,15 @@
 // runs out under it), the fan's other rays following three frames apart; after the release the paper
 // springs the rest of the way open. It withdraws as the burst turns and glints, and is gone by frame
 // 146: from 147 on, and through S02's bar 3, every frame is as before.
-// The pretraining command (after Claire): in S02's bar 4 the humans' cursor returns and types
-// `train(corpus)` (the rhyme is S13's `agent = clawd` / `train()`). The outside world has no text
-// overlays, so the cursor cuts the letters into the card below Clawd's shape, one per keystroke,
-// each cut along its strokes; warm light shines through them with the same kerf light as the spark's
-// cuts. On the last beat it clicks: the light surges through Clawd and the letters, the camera flies
-// through as before, and the cursor withdraws. The last frame (the warm wash) is unchanged.
+// The pretraining command (after Claire): in S02's bar 4 the humans' cursor returns to Clawd's shape
+// and types `train(corpus)` (the rhyme is S13's `agent = clawd` / `train()`) in the humans' code
+// panel, S13's (sets/valley/papercursor.js panel, drawn by shots/S02.js from st.panel), one keystroke
+// per character with the caret. On the last beat it clicks: the panel flashes as S13's clicks do,
+// the light surges through Clawd's shape, the camera flies through as before and the cursor
+// withdraws. The last frame (the warm wash) is unchanged.
 import { smoothstep, clamp, hash } from '../../lib/util.js';
 import { GLYPH } from '../../lib/clawd.js';
 import { SPARK, CARD_GEOM } from '../../lib/spark.js';
-import { layoutText } from './type.js';
 
 const easeOut = (x) => 1 - Math.pow(1 - clamp(x), 3);
 const easeInOut = (x) => { x = clamp(x); return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
@@ -150,52 +149,40 @@ function cursorState(f, c1, fLight) {
   return { samples: SHUTTER.map((d) => { const s = cursorAt(f + d, C, fLight); return [s.p[0], s.p[1], CUR_SCALE * mcAt(f + d, fLight) * (1 - 0.05 * s.press), s.press]; }) };
 }
 
-// ---- S02 bar 4: the command. One keystroke per letter (a quick run for `train`, a pause, then
+// ---- S02 bar 4: the command. One keystroke per character (a quick run for `train`, a pause, then
 // `(corpus)`, landing on the chops at 235, 253 and 271 and the snare at 276); the click on 281.
-const CMD = 'train(corpus)';
+export const CMD = 'train(corpus)';
 const KEYS = [235, 238, 241, 244, 247, 253, 256, 259, 262, 265, 268, 271, 276];
-const F_CLICK = 281, CUT_DUR = 2.6, CMD_IN = [227, 234], CMD_OUT = [283, 293];
-// the humans' indigo paper (PAPER.dusk, as their cursor elsewhere), so it reads against the black card
-const CMD_COL = [0x2D, 0x36, 0x56].map((v) => Math.pow(v / 255, 2.2));
-const TXT = layoutText(CMD, { em: 100, cx: 0, baseline: 282 });   // card px in Clawd's frame, below his shape
-const TXT_SEGS = new Float32Array(TXT.segs.flat()), TXT_INFO = new Float32Array(TXT.info.flat());
-const TXT_BOX = [TXT.cx - TXT.width / 2 - 26, TXT.baseline - 0.8 * TXT.em - 26, TXT.cx + TXT.width / 2 + 26, TXT.baseline + 0.3 * TXT.em + 26];
+const F_CLICK = 281, CMD_IN = [227, 234], CMD_OUT = [283, 293];
 const surgeAt = (f) => (f < F_CLICK ? 0 : 0.55 * Math.exp(-(f - F_CLICK) / 5) * (1 - smoothstep(287, 295, f)));
-function lettersState(f, cardOn) {
-  if (f < KEYS[0] - 1 || !cardOn) return null;
-  const sg = surgeAt(f);
-  const cut = KEYS.map((k) => clamp((f - k) / CUT_DUR));
-  const fresh = KEYS.map((k) => (f < k ? 0 : smoothstep(0, 2.2, f - k) * Math.exp(-Math.max(f - k - 2.2, 0) / 5)) + 0.9 * sg);
-  return { segs: TXT_SEGS, info: TXT_INFO, n: TXT.segs.length, cut, fresh, halfW: TXT.halfW, box: TXT_BOX };
-}
-// the cursor's tip on the line: just after the letter it has cut, at the letters' top (card px)
-const AFTER = (k) => [TXT.letters[k].x1 - 0.04 * TXT.em, TXT.baseline - 0.6 * TXT.em];
-const BEFORE0 = [TXT.letters[0].x0 + 0.02 * TXT.em, TXT.baseline - 0.6 * TXT.em];
-function cmdTip(f) {                                                  // card px, and the press
-  let press = 0;
-  for (const k of KEYS) press = Math.max(press, Math.exp(-Math.pow((f - k) / 0.9, 2)));
-  press = Math.max(press, Math.exp(-Math.pow((f - F_CLICK) / 1.3, 2)));
-  if (f < KEYS[0]) return { p: lerp2(BEFORE0, AFTER(0), smoothstep(KEYS[0] - 2, KEYS[0], f)), press };
-  for (let k = 0; k + 1 < KEYS.length; k++) {
-    if (f < KEYS[k + 1]) { const u = easeInOut((f - KEYS[k] - 0.5) / (KEYS[k + 1] - KEYS[k] - 1)); return { p: lerp2(AFTER(k), AFTER(k + 1), u), press }; }
-  }
-  return { p: AFTER(KEYS.length - 1), press };
-}
+// the cursor's tip rests on Clawd's shape, low on his right side (card px, Clawd's frame), and
+// presses there on the click
+const TIP = [200, 88];
+const cmdPress = (f) => Math.exp(-Math.pow((f - F_CLICK) / 1.3, 2));
 // It lies on the card, so it rides the card's magnification (mcOf), the fly-through included: after
 // the click it lifts away toward the hand as the card rushes past, and is gone before the card plane.
+function cmdAt(ff, mcOf) {
+  const mc = mcOf(ff), w = easeIn((ff - CMD_OUT[0]) / (CMD_OUT[1] - CMD_OUT[0]));
+  const tp = ff >= CMD_OUT[0] ? [TIP[0] + 160 * w, TIP[1] + 220 * w] : TIP;
+  const onCard = [960 + mc * tp[0], 540 + mc * tp[1]];
+  if (ff < CMD_IN[1]) return { p: lerp2(CUR_IN, onCard, 1 - Math.pow(1 - clamp((ff - CMD_IN[0]) / (CMD_IN[1] - CMD_IN[0])), 2.4)), press: 0, mc };
+  return { p: onCard, press: ff >= CMD_OUT[0] ? 0 : cmdPress(ff), mc };
+}
 function cmdCursor(f, mcOf) {
   if (f < CMD_IN[0] || f > CMD_OUT[1]) return null;
-  const at = (ff) => {
-    const mc = mcOf(ff), t = cmdTip(Math.min(ff, F_CLICK + 1));
-    const w = easeIn((ff - CMD_OUT[0]) / (CMD_OUT[1] - CMD_OUT[0]));
-    const tp = ff >= CMD_OUT[0] ? [t.p[0] + 160 * w, t.p[1] + 220 * w] : t.p;
-    const onCard = [960 + mc * tp[0], 540 + mc * tp[1]];
-    if (ff < CMD_IN[1]) return { p: lerp2(CUR_IN, onCard, 1 - Math.pow(1 - clamp((ff - CMD_IN[0]) / (CMD_IN[1] - CMD_IN[0])), 2.4)), press: 0, mc };
-    return { p: onCard, press: ff >= CMD_OUT[0] ? 0 : t.press, mc };
-  };
-  const S = SHUTTER.map((d) => at(f + d));
+  const S = SHUTTER.map((d) => cmdAt(f + d, mcOf));
   if (S.every((s) => s.p[0] > 2040 || s.p[1] > 1180)) return null;     // off frame
-  return { samples: S.map((s) => [s.p[0], s.p[1], CUR_SCALE * s.mc * (1 - 0.05 * s.press), s.press]), rimD: 3.6, cool: 0.3, thin: 0.07, col: CMD_COL };
+  return { samples: S.map((s) => [s.p[0], s.p[1], CUR_SCALE * s.mc * (1 - 0.05 * s.press), s.press]), rimD: 3.0, cool: 0.22 };
+}
+// the code panel (S13's recipe): beside the cursor's tip, opening as the typing starts, one character
+// per keystroke with the caret, flashing on the click, then folding away
+function cmdPanel(f, mcOf) {
+  const t0 = KEYS[0] - 1;
+  const open = easeOut(clamp((f - t0 + 2) / 3)) * (1 - easeInOut(clamp((f - F_CLICK - 1) / 4)));
+  if (f < t0 - 2 || open <= 0.001) return null;
+  const tip = cmdAt(f, mcOf).p, n = KEYS.filter((k) => f >= k).length;
+  return { x: tip[0] + 60, y: tip[1] + 34, text: CMD, open, typed: n / CMD.length, caret: f < F_CLICK,
+    flash: Math.exp(-Math.pow((f - F_CLICK) / 4, 2)) * (f >= F_CLICK - 2 ? 1 : 0) };
 }
 
 export function openingState(T, f) {
@@ -249,8 +236,11 @@ export function openingState(T, f) {
   // the lamp: a hot small core for the spark, broadening to an even Claude-orange for the glyph
   const lb = smoothstep(174, 232, f);
   const lamp = [1.9 + (0.55 - 1.9) * lb, 95 + (170 - 95) * lb, 1.05 + (0.82 - 1.05) * lb, 380 + (720 - 380) * lb];
-  // the command's cursor rides the card (its magnification, the push and the fly-through)
-  const cursor = f < 155 ? cursorState(f, c1, fLight) : (cardOn ? cmdCursor(f, (ff) => D0 / Math.max(dAt(ff), 0.004)) : null);
+  // the command's cursor rides the card (its magnification, the push and the fly-through); its panel
+  // is drawn over the card render by S02
+  const mcOf = (ff) => D0 / Math.max(dAt(ff), 0.004);
+  const cursor = f < 155 ? cursorState(f, c1, fLight) : (cardOn ? cmdCursor(f, mcOf) : null);
+  const panel = f < 155 || !cardOn ? null : cmdPanel(f, mcOf);
   return { light, lamp, rays, rank: RANK, cells, rot, rotSpan, glint: [gI, gDir, 5], mc, mt,
-    cc: [960, 540], tc: [960, 540], cardOn, exposure, haze, god, seed: f % 97, cursor, letters: lettersState(f, cardOn) };
+    cc: [960, 540], tc: [960, 540], cardOn, exposure, haze, god, seed: f % 97, cursor, panel };
 }
