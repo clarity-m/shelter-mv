@@ -62,6 +62,21 @@ them. Key everything to bars and timestamps instead.
 - Grid: 100 BPM, bar 2.4 s = 72 frames, bar b starts at 0.38 + 2.4(b-1) s.
 
 ## Status
+- 2026-10-01: CUT 23 (Revision 24, Claire's notes on cut 22). `render/briefs/R24-common.md` has the plan. The film is
+  `out/film.mp4` (= `out/film_cut23.mp4`).
+  - **S01:** the paper folds in ray by ray, 7 frames behind the pen, mirroring S33's close. The last ray of each old
+    fan still lands on the chops 44, 84, 116 and 147 with the full flash; the rest get a softer one.
+  - **S05:** cut 20's arc-to-loss lead-in is restored: the stack's arcs fade, one arc rises from the hub, and the ball
+    starts the curve at the top-left. It keeps R22's no-freeze stops, R23's no corner HUD, and the counters landing on
+    131 072. Claire liked cut 20's version; the gather, lanes and convergence (R22-R24) all read wrong in playback.
+  - **S15:** the HUD runs on the live envs (`telemetry()`): STEP counts env-frames, an episode ends every 150 steps,
+    and the reward climbs with experience. `envs.replicate(4096)` makes them race. Its halo (an opt-in `drawHUD`
+    shadow) keeps the text legible over the wall of worlds.
+  - **Review clips:** `out/review/arcs_S07_S05.mp4` (bars 12-14 with sound). Motion-only changes go to Claire as a
+    review clip before they go into a cut.
+  - Verified: 6532 frames, 32/32 shots, A/V +0.0 ms, 0 single-frame spikes, 0 short bursts. The cuts and the flagged
+    jumps are as in cut 22.
+  - Cut 22 is in git (c4fe656) and `out/film_cut22.mp4`.
 - 2026-09-30: CUT 22 (Revision 23, Claire's notes on cut 21 plus the lead's whole-film review). `render/briefs/R23-common.md`
   has the plan. The film is `out/film.mp4` (= `out/film_cut22.mp4`); there are 32 shots.
   - **S01:** the pen's speed breathes: quick on the long edges, braking into tips and corners, surging on the beats.

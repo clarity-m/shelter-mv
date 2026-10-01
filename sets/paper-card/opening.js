@@ -5,10 +5,11 @@
 //        bottom right and draws the starburst's outline with its tip in one continuous stroke, clockwise from
 //        the top: a thin line of light cut into the card only where the tip has passed. Its pace breathes like
 //        a hand's (R23): quick along the straight edges, easing into the tips and corners, surging on the
-//        beats. Behind the pen the paper folds in segment by segment, cut 18's fan-by-fan rhythm: each
-//        segment's flaps swing in about their creases and land on a chop (44, 84, 116, 147), the light
-//        arriving as they land, so the hit is the fold. Then the cursor lifts out between the top rays. The
-//        card does not turn; the chops glint.
+//        beats. Behind the pen the paper folds in ray by ray (R24; Claire: fold ray by ray, as the closing
+//        scene closes): each ray's flap swings in about its crease just after the pen finishes its outline,
+//        the light arriving as it lands; the last ray of each of cut 18's fans lands on a chop (44, 84, 116,
+//        147) with the full flash, so the hits are still folds. Then the cursor lifts out between the top
+//        rays. The card does not turn; the chops glint.
 //   S02: the rays fold shut in a sweep from the top (their light draws back into the hub) while Clawd's
 //        cells flip open one by one in a ripple out from the square, a pixel at a time; his legs land on
 //        the bar-4 downbeat. Bar 4 lets the light pour. The humans' cursor comes back, hovers over his shape
@@ -18,7 +19,8 @@
 // Earlier revisions: 1 (the opening felt static: glints and the cell ripple; the spin, now gone), 5 (the
 // humans' cursor from the first frame), the pretraining command (the rhyme is S13's `agent = clawd` /
 // `train()`), R19 (the click is a burst of light; card.js st.burst), R20 (no spin; S01 briefly had the
-// cursor draw the whole outline before a fill wave), R21 (cut 18's pulls again, each outline leading its fill).
+// cursor draw the whole outline before a fill wave), R21 (cut 18's pulls again, each outline leading its fill),
+// R22-R23 (the folds went fan by fan, a fan's flaps landing together on its chop).
 import { smoothstep, clamp, hash } from '../../lib/util.js';
 import { GLYPH } from '../../lib/clawd.js';
 import { SPARK, CARD_GEOM } from '../../lib/spark.js';
@@ -67,13 +69,17 @@ function penPt(j, s) {
   const th = -Math.PI / 2 + Math.PI * (s - o.sa) / (o.sb - o.sa);          // ccw side, the far end, cw side
   return [Q.d[0] * Q.L + Q.r2 * (Math.cos(th) * Q.d[0] + Math.sin(th) * Q.p[0]), Q.d[1] * Q.L + Q.r2 * (Math.cos(th) * Q.d[1] + Math.sin(th) * Q.p[1])];
 }
-// ---- S01 (R22): the pen draws round the star clockwise from the top in one stroke; the segments are cut 18's
-// fans re-cut to the pen: the top ray, then four, three and three rays. Each segment's flaps fold in over FOLD
-// frames, swinging faster as they go, and land on its chop (intro A's chops 3, 4, 7 and 8: 44, 84 on the
-// bar-2 downbeat, 116 and 147); the light arrives with a flash as they land.
+// ---- S01 (R22): the pen draws round the star clockwise from the top in one stroke. Its pace is set per fan, cut
+// 18's fans re-cut to the pen: the top ray, then four, three and three rays, each fan's last corner landing
+// LEADIN frames before its chop (intro A's chops 3, 4, 7 and 8: 44, 84 on the bar-2 downbeat, 116 and 147).
+// (R24) The folds go ray by ray: each ray's flap folds in over FOLD frames, swinging faster as it goes, and lands
+// LEADIN frames after the pen finishes its outline, so each fan's last ray lands on the fan's chop. The light
+// arrives with a flash as it lands: full on the chops, softer between (FLASH_I).
 const SEGS = [{ rays: [0], ci: 3 }, { rays: [1, 2, 3, 4], ci: 4 }, { rays: [5, 6, 7], ci: 7 }, { rays: [8, 9, 10], ci: 8 }];
 const SEG_OF = RG.map((_, j) => SEGS.findIndex((g) => g.rays.includes(j)));
-const DRAW = [20, 140], FOLD = 6, FLASH = 7, LEADIN = 7;   // the stroke; each fan's last corner lands LEADIN before its chop
+const DRAW = [20, 140], FOLD = 6, FLASH = 7, LEADIN = 7;   // the stroke; a ray's fold lands LEADIN after its last corner
+const FLASH_I = { chop: 0.9, between: 0.4 };               // the landing flash's strength
+const ON_CHOP = RG.map((_, j) => { const g = SEGS[SEG_OF[j]]; return j === g.rays[g.rays.length - 1]; });   // 0, 4, 7, 10
 const DRAW_K = new Float32Array(RG.map((_, j) => j));    // the stroke visits the rays in order
 // (R23; Claire: "speed up/slow down the rate of the cursor drawing to match beat and unfolding shape") the pen's
 // pace breathes. Along the stroke, a hand's speed: quick on the long straight edges, braking into the tips and
@@ -122,8 +128,20 @@ function drawAt(f) {
   const s = l < R.Aa ? o.sa * l / R.Aa : l < R.Aa + R.Ac ? o.sa + (o.sb - o.sa) * (l - R.Aa) / R.Ac : o.sb + (1 - o.sb) * (l - R.Aa - R.Ac) / R.Ab;
   return { j, s, draw: j + s };
 }
-const landOf = (c1, j) => c1[SEGS[SEG_OF[j]].ci];
-// a flap's fold: it swings in about its crease at the tip (card.js's opening o), slow and then faster, landing on the chop
+// (R24) each ray's landing: LEADIN frames after the pen closes its outline (the pace table inverted); a fan's last ray
+// lands exactly on the fan's chop. Built once, with the pace.
+let LAND = null;
+function landTable(c1) {
+  const tb = PACE;
+  return RG.map((_, j) => {
+    if (ON_CHOP[j]) return c1[SEGS[SEG_OF[j]].ci];
+    const end = PATH[j].s0 + PATH[j].A;
+    let i = 0;
+    while (i < tb.length - 2 && tb[i + 1] < end) i++;
+    return DRAW[0] + (i + clamp((end - tb[i]) / Math.max(tb[i + 1] - tb[i], 1e-9))) * PACE_DT + LEADIN;
+  });
+}
+// a flap's fold: it swings in about its crease at the tip (card.js's opening o), slow and then faster, landing at land
 const foldAt = (f, land) => Math.pow(clamp((f - (land - FOLD)) / FOLD), 1.8);
 // the light arriving as it lands
 const flashAt = (f, land) => (f < land || f > land + FLASH ? 0 : Math.pow(1 - (f - land) / FLASH, 2));
@@ -181,13 +199,13 @@ function cursorState(f, fLight) {
 }
 // the outline for card.js (st.kerf): drawn where the pen has passed, each ray's line fading as its flap folds;
 // the pen's spark while it draws (a flare on the chops); each ray's landing light. Nothing is left by 154.
-function kerfState(T, c1, f) {
+function kerfState(T, f) {
   if (f < DRAW[0] - 1 || f >= 154) return null;
   const d = f < DRAW[0] ? { j: 0, s: 0, draw: 0 } : drawAt(f);
   const drawing = smoothstep(DRAW[0] - 1, DRAW[0] + 1, f) * (1 - smoothstep(DRAW[1], PEN_UP[1], f));
   return { draw: d.draw, drawK: DRAW_K, geom: KERF_GEOM, line: 1.6, width: 0.9, fill: new Array(11).fill(0), fillI: 0,
     pen: penPt(d.j, d.s), penI: drawing * (0.55 + 0.6 * T.pulse('chops', f, 5)), penR: 8,
-    flash: RG.map((_, j) => 0.9 * flashAt(f, landOf(c1, j))) };
+    flash: RG.map((_, j) => (ON_CHOP[j] ? FLASH_I.chop : FLASH_I.between) * flashAt(f, LAND[j])) };
 }
 
 // ---- S02 bar 4 (R20: a beat longer). The cursor comes back to Clawd's shape, drifting in a small loop
@@ -251,14 +269,14 @@ export function openingState(T, f) {
   const chops = T.events('chops');
   const c1 = chops.filter((x) => x < 155);          // 11, 30, 35, 44, 84, 102, 106, 116, 147
   const fLight = c1[0];                             // 11: the square lights
-  if (!PACE) PACE = paceTable(c1, T.events('beats'));   // (R23) the pen's pace, once
+  if (!PACE) { PACE = paceTable(c1, T.events('beats')); LAND = landTable(c1); }   // (R23) the pen's pace, (R24) the landings, once
   // the lamp behind the tissue warms up on the first note, then breathes a little with the voice
   const on = f < fLight ? 0 : 1 - Math.exp(-(f - fLight) / 5.5);
   const warm = f < fLight ? 0 : 0.34 + 0.66 * smoothstep(0, 130, f - fLight);
   const breath = 0.95 + 0.07 * T.envSmooth('vocals', f, 3);
   let light = on * warm * breath;
-  // ray flaps: fold in (open) in S01, segment by segment behind the pen; close in S02
-  const rays = RG.map((_, j) => foldAt(f, landOf(c1, j)));
+  // ray flaps: fold in (open) in S01, ray by ray behind the pen (R24); close in S02
+  const rays = RG.map((_, j) => foldAt(f, LAND[j]));
   CLOSE_ORDER.forEach((j, k) => { rays[j] = Math.min(rays[j], 1 - swing(f, F_CLOSE + STAGGER_CLOSE * k, DUR_CLOSE)); });
   // Clawd's cells
   const cells = CELL_T.map((t0, i) => (t0 < 0 ? 0 : swing(f, t0, i >= 72 ? DUR_LEG : DUR_CELL)));
@@ -301,5 +319,5 @@ export function openingState(T, f) {
   const burst = burstAt(f);
   return { light, lamp, rays, rank: RANK, cells, rot: 0, rotC: 0, rotSpan: 0, glint: [gI, gDir, 5], mc, mt,
     cc: [960, 540], tc: [960, 540], cardOn, exposure, haze, god, seed: f % 97, cursor, panel, burst,
-    vig: burst ? burst.vig : undefined, kerf: kerfState(T, c1, f) };
+    vig: burst ? burst.vig : undefined, kerf: kerfState(T, f) };
 }

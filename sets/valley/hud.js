@@ -4,13 +4,15 @@ const FONT = 'Consolas, "Cascadia Mono", "Courier New", monospace';
 
 export const fmtInt = (n, w = 6) => { const s = String(Math.max(0, Math.floor(n))).padStart(w, '0'); return s.replace(/\B(?=(\d{3})+(?!\d))/g, ' '); };
 
-export function drawHUD(g, k, { episode, reward, step, a = 1, tick = 0, extra, pop = 0, dark = 0 }) {
+export function drawHUD(g, k, { episode, reward, step, a = 1, tick = 0, extra, pop = 0, dark = 0, halo = 0 }) {
   if (a <= 0.001) return;
   g.save();
   // R23 (Claire: make the HUD sizes consistent with S10's): S10's metrics at 1080p, caps about 20 px tall,
   // rows 32 px apart, the label at x 48 and the value 144 px to its right
   g.font = `600 ${(31 * k).toFixed(2)}px ${FONT}`;
   g.textBaseline = 'top';
+  // halo (opt-in, S15): a soft dark shadow so the light text holds over the busy wall of worlds
+  if (halo > 0) { g.shadowColor = `rgba(18,14,32,${(0.7 * halo * a).toFixed(3)})`; g.shadowBlur = 9 * k; g.shadowOffsetY = 1.5 * k; }
   try { g.letterSpacing = `${(0.5 * k).toFixed(2)}px`; } catch (e) { /* older canvas */ }
   const rows = [['EPISODE', fmtInt(episode)], ['REWARD', (reward >= 0 ? '+' : '') + reward.toFixed(3)], ['STEP', fmtInt(step, 4)]];
   if (extra) rows.push(...extra);

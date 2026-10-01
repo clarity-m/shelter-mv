@@ -17,6 +17,7 @@ import { GRIDS } from '../sets/hill/clawd-pose.js';
 import { PATH, pathAt } from '../sets/valley/terrain.js';
 import { createWall } from '../sets/valley/wall.js';
 import { replicaTiles, REP, tileClawd, PITCH, TILE_C, TILE_HALF, tileUVtoWorld } from '../sets/valley/wallshot.js';
+import { hash } from '../lib/util.js';
 import { projectPx } from '../sets/valley/valley.js';
 import { createPaperCursor, PAPER } from '../sets/valley/papercursor.js';
 
@@ -75,6 +76,19 @@ function dragged(t, fl) {
     glow = q >= 1 ? 0.28 * Math.exp(-(fl - dF - FALL) / 5) : 0;
   }
   return { x, y, z, glow, visible: fl >= dF - CARRY };
+}
+
+// R23 (Claire: the reward sat at a constant 0.103): the HUD is the training's telemetry, run on the live envs.
+// Every live env steps once a frame (STEP), an episode ends every 150 steps (EPISODE), and the mean reward climbs
+// with the experience gathered, ticking a little as episodes report; replicate(4096) makes all three race.
+function telemetry(f) {
+  let E = 0;                                            // env-frames lived so far
+  for (const t of tiles) {
+    const s = t.hero ? f0 : t.drop !== null ? t.drop : t.appearF + 5;   // when each env went live (as `envs` counts it)
+    if (f > s) E += f - s;
+  }
+  const jit = 0.006 * (hash(Math.floor(f / 5), 15) - 0.5);
+  return { step: 118 + E, episode: 217 + Math.floor(E / 150), reward: 0.103 + 0.46 * (1 - Math.exp(-E / 120000)) + jit };
 }
 
 export default {
@@ -171,6 +185,6 @@ export default {
     }
     if (cur && cur[1] > -300 && cur[1] < 1400 && cur[0] > -300 && cur[0] < 2300) CUR.draw(g, cur[0], cur[1], { s: 2.3, press, rot: -0.08, fill: PAPER.slate, bs: 2.3 * kc / 1.45 });
     g.restore();
-    drawHUD(g, St.k, { episode: 217, reward: 0.103, step: 118 + fl, extra: [['ENVS', fmtInt(envs)]] });
+    drawHUD(g, St.k, { ...telemetry(f), extra: [['ENVS', fmtInt(envs)]], halo: 1 });
   },
 };
