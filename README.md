@@ -22,7 +22,7 @@ Centauri B.
 - Everything is keyed to bars of the song, not timestamps. Beats, bass stops, sung onsets and
   per-stem loudness come from `analysis/` (Demucs stems, beat tracking and features), exported to
   `render/data/` for the renderer.
-- `shots.json` is the shot list, and `TREATMENT.md` has the story and every revision's reasoning.
+- `shots.json` is the shot list.
   `render/GUIDE.md` is the handbook the agents worked from, and `render/briefs/` has the per-revision
   briefs. `CLAUDE.md` holds the production state.
 - `style-frames/` is the look development: the rejected styles, the fidelity ladder and the
