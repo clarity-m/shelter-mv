@@ -83,6 +83,14 @@ them. Key everything to bars and timestamps instead.
 
     Each span is snapped to the beat inside Claire's second. Every plain end has a bar of room for her to trim; the
     designed fade-outs stay.
+  - **Thumbnails:** in `out/thumbs/`, rendered fresh from the code; the `_4k.jpg` files are for YouTube and the
+    `_1280.jpg` files for X.
+    - `shelter_medium`: f5975, the shared moment, for the full video;
+    - `copy_tight`: f3708, `clawd.copy(4)`, for X and the teasers;
+    - `pixel_clawd`: f292, for the opening clip;
+    - `climber_trails`: f5240, for the climax clips.
+
+    Claire may A/B the YouTube thumbnail with Studio's Test & Compare.
   - Verified: 6532 frames, 32/32 shots, A/V +0.0 ms, 0 single-frame spikes, 0 short bursts; the cuts and the flagged
     jumps are as in cut 23.
   - Cut 23 is in git (de315db) and `out/film_cut23.mp4`.
