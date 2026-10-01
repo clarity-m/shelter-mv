@@ -2,9 +2,9 @@
 // A world Clawd makes for the reactor's core: the sea at sunset, the sun big and low over the water,
 // Clawd and three Clawds on a low bluff above the shore. Revision 9 (compute has arrived): six more
 // Clawds pop out of Clawd's light as they work (`crew.spawn(6)`), each taking hold of the sun with a
-// beam, and more of the cursors type code. The last frame is unchanged. Revision 10: the code lives in
-// the world, the shot's own lines written along the beams in perspective (the hook, the pull, the
-// press, then the core's lines on the beams that draw it); the first half-beat opens a little dimmer
+// beam, and more of the cursors type code. The last frame is unchanged. Revision 10: the shot's own
+// lines rode the beams (revision 24: removed, as the cursors do the hooking now); the first
+// half-beat opens a little dimmer
 // and warmer, out of S35's hall, and comes up to the sunset. Revision 11 (Claire: S36 gets its own
 // world): a polar sea under the aurora. Ice floes on a cold sea, a snowy bluff, a low polar sun and
 // curtains of aurora (teal, green, violet) in the painted look. Clawd takes the sun as before; as
@@ -65,31 +65,6 @@ const RING_DRAW = [118, 142];             // the ring's loops and cross-sections
 const HELIX_DRAW = [146, 176];            // the aurora's light winds round the ring: the field's helices
 const COIL_DRAW = [168, 196];             // then the Clawds' beams close the coils round it (the magnets)
 const KEYS = [0, 56, 112, 196];           // the camera: the shore, back over the bluff (all in view for the pull), then the crane to the fusion camera
-// the code on the beams: this file's own lines, one per beam, by phase (i: which Clawd)
-const CODE = {
-  hook: ['beam = onRim(sun, c.th);', 'const holding = fl >= HOOK + 2 && fl < PRESS[1];',
-    'const onRim = (s, th, out = 1) => add(s.c, add(mul(s.U, Math.cos(th) * (s.rc + s.hw * out)), mul(s.V, Math.sin(th) * (s.rc + s.hw * out))));',
-    'const SUN0 = [3.0, 22.0, 160.0], R_SUN0 = 9.0;'],
-  pull: ['const c = hermite3(SUN0, [0, -40, -40], C, [0, -2, -24], p);', 'const p = easeIO((fl - PULL[0]) / (PULL[1] - PULL[0]));',
-    'const kN = lerp(0, 0.86, smoothstep(PULL[0] + 6, PRESS[1], fl)) + 0.1 * smoothstep(PRESS[1], 200, fl);', 'const t2 = t * t, t3 = t2 * t;'],
-  press: ['const k = easeIO((fl - PRESS[0]) / (PRESS[1] - PRESS[0]));', 'const phi = k * Math.PI / 2;',
-    'const rc = lerp(R / 2, RING_R, k), hw = lerp(R / 2, TUBE * 1.15, k);', 'const RING_R = SC.R0 * S, TUBE = SC.A * S;'],
-  crew: ['const land = i < 4 ? 1 : easeIO(u / 12);', 'const POPS = [24, 40, 56, 72, 88, 104];', 'CREW.forEach((c, i) => {',
-    'const inPlace = i < 4 || u >= 12;', 'const x = lerp(home.x, c.x, land), z = lerp(home.z, c.z, land);', 'if (u < 0) return;'],
-  core: ["const CORE = reactorEdges(0).filter((e) => e.kind === 'torus' || e.kind === 'merid' || e.kind === 'coil');",
-    'const Bw = lerp3(e.A, e.B, r);', 'const PL = reactorPlacement(C, S);', 'const CAM_LAND = PL.cam(12);',
-    'const t0 = remap(e.t0, src, dst), t1 = remap(e.t0 + e.dt, src, dst);', 'const r = clamp((fl - e.t0) / e.dt);',
-    'const I = e.dim * (0.72 + 0.9 * fresh) * (1 + 0.6 * snare);', 'const fresh = r < 1 ? 1 : Math.exp(-(fl - e.t0 - e.dt) / 6);',
-    'lines.push([...e.A, ...Bw, 1.6, I, c[0], c[1], c[2], 3.2 + 2 * fresh]);', 'if (r < 1) tips.push(Bw);'],
-};
-const PHASES = [['hook', HOOK + 2], ['pull', PULL[0] + 8], ['press', PRESS[0] + 2], ['core', RING_DRAW[0]]];
-function codeFor(i, fl) {
-  let ph = PHASES[0];
-  for (const q of PHASES) if (fl >= q[1]) ph = q;
-  const set = i >= 4 && ph[0] !== 'core' ? 'crew' : ph[0], lines = CODE[set];
-  const t0 = set === 'crew' ? Math.max(ph[1], CREW[i].pop + 14) : ph[1];
-  return { text: lines[(i * 3) % lines.length], t0 };
-}
 const POPS = [24, 40, 56, 72, 88, 104];    // the six who pop out of Clawd's light, on the beats
 
 // ---------------------------------------------------------------- the world
@@ -495,7 +470,7 @@ function sceneAt(T, f, fl) {
   // the Clawds: arms up while they hold the sun and while they draw; each with a beam to its hook, or
   // to a live tip once the core is being drawn
   const holding = fl >= HOOK + 2 && fl < PRESS[1];
-  const crowd = [], beams = [];
+  const crowd = [];
   let main = null;
   const landH = (x, z) => LAND.reduce((h, b) => h + b[0] * Math.exp(-(((x - b[1]) / b[3]) ** 2 + ((z - b[2]) / b[4]) ** 2)), 0);
   const home = CREW[0];
@@ -519,7 +494,6 @@ function sceneAt(T, f, fl) {
     const calling = fl >= HELIX_DRAW[0] && fl < HELIX_DRAW[1] && inPlace;   // arms up to the aurora
     if (beam && bI > 0.01) {
       lines.push([...mid, ...beam, 0.8, (0.55 + 0.45 * sung) * bI, ...HOT, 2.5]);
-      beams.push({ i, A: mid, Z: beam, a: bI });
       const dx = project(B, beam)[0] - sx;
       look = dx > 40 ? 1 : dx < -40 ? -1 : 0;
     }
@@ -553,7 +527,7 @@ function sceneAt(T, f, fl) {
       // ring and coils carry the light into S21's flash; ribbons and lines are drawn over the dim
       dim: lerp(1, 0.4, smoothstep(146, 200, fl)),
     },
-    cam, B, sun, beams,
+    cam, B, sun,
   };
 }
 
@@ -607,42 +581,6 @@ function drawOverlay(g, k, fl, B, sun, clawdPx) {
   }
   g.restore();
 }
-// the code on the beams: each beam carries its Clawd's line, typed out of the Clawd along the beam in
-// perspective (a fixed size in the world, so it shrinks with distance), drifting slowly outward. It
-// reads left to right whichever way the beam leans, and is quieter than the beam it rides.
-const CH = 0.14, CW = 0.085, S0 = 0.55, DRIFT = 0.012;
-function drawBeamCode(g, k, fl, B, beams) {
-  if (!beams.length) return;
-  g.save(); g.setTransform(k, 0, 0, k, 0, 0);
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-  for (const bm of beams) {
-    const { text, t0 } = codeFor(bm.i, fl), age = fl - t0;
-    if (age < 0) continue;
-    const n = Math.min(text.length, Math.floor(age * 3.2) + 1);
-    const d = sub(bm.Z, bm.A), L = Math.hypot(d[0], d[1], d[2]), dir = mul(d, 1 / L);
-    const at = (sArc) => add(bm.A, mul(dir, sArc));
-    const pa = project(B, at(S0)), pb = project(B, at(Math.min(L, S0 + 1)));
-    const fwd = pb[0] >= pa[0];
-    const a = bm.a * 0.62 * smoothstep(0, 2, age);
-    for (let j = 0; j < n; j++) {
-      const sArc = S0 + DRIFT * age + (fwd ? j : n - 1 - j) * CW;
-      const out = 1 - smoothstep(0.5, 0.78, sArc / L);             // it thins out before the target
-      if (out <= 0.02) continue;
-      const p = project(B, at(sArc)), q = project(B, at(sArc + 0.02));
-      if (p[2] < 0.3) continue;
-      const fs = clamp(B.F * CH / p[2], 0, 26);
-      if (fs < 6) continue;
-      let ang = Math.atan2(q[1] - p[1], q[0] - p[0]); if (!fwd) ang += Math.PI;
-      g.save(); g.translate(p[0], p[1]); g.rotate(ang);
-      g.font = `${fs.toFixed(1)}px Consolas, "Courier New", monospace`; g.globalAlpha = a * out;
-      g.shadowColor = 'rgba(40,14,8,0.6)'; g.shadowBlur = 3;
-      g.fillStyle = 'rgb(255,170,112)'; g.fillText(text[j], 0, 0);
-      g.restore();
-    }
-  }
-  g.restore();
-}
-
 // ---------------------------------------------------------------- the shot
 let hill, glc, g2, greyCv, maskCv, maskBlur;
 const mkCv = (w, h) => Object.assign(document.createElement('canvas'), { width: w, height: h });
@@ -682,7 +620,6 @@ export default {
       g2.globalAlpha = 1;
     }
     const m = I.state.clawd, cp = project(I.B, [m.x, m.y + 0.45, m.z]);
-    drawBeamCode(g2, k, fl, I.B, I.beams);
     drawOverlay(g2, k, fl, I.B, I.sun, [cp[0], cp[1]]);
     // out of S35's warm hall: the first half-beat opens a little dimmer and warmer
     if (fl < 10) {

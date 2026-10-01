@@ -143,7 +143,7 @@ const SOLID_JS = `
   // ---------------------------------------------------------------- (sets/door/hillx-fix.js, revision 23)
   const SOLID = (() => {
     const VS = ${JSON.stringify(SOLID_VS)}, FS = ${JSON.stringify(SOLID_FS)};
-    let dT = null, dF = null, prog = null, ms = null, rs = null, cap = [0, 0];
+    let dT = null, dF = null, prog = null, ms = null, rs = null, cap = [0, 0], held = [];
     const meshes = new Map();
     const dTex = () => { if (!dT) { dT = tex(W, H, 'f16'); dF = fbo([dT]); } return dT; };
     const clearD = () => { dTex(); gl.bindFramebuffer(gl.FRAMEBUFFER, dF); gl.viewport(0, 0, W, H); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); };
@@ -178,9 +178,11 @@ const SOLID_JS = `
     // resolves of the same size
     const targets = (w, h) => {
       if (ms && cap[0] >= w && cap[1] >= h) return;
-      const cw = Math.max(cap[0], Math.ceil(w / 128) * 128), ch = Math.max(cap[1], Math.ceil(h / 128) * 128);
+      const cw = Math.min(W, Math.max(cap[0], Math.ceil(w / 512) * 512)), ch = Math.min(H, Math.max(cap[1], Math.ceil(h / 512) * 512));
+      for (const o of held) { if (o instanceof WebGLRenderbuffer) gl.deleteRenderbuffer(o); else if (o instanceof WebGLFramebuffer) gl.deleteFramebuffer(o); else gl.deleteTexture(o); }
+      held = [];
       const sm = gl.getInternalformatParameter(gl.RENDERBUFFER, gl.RGBA16F, gl.SAMPLES), samples = Math.min(4, sm && sm.length ? sm[0] : 4);
-      const rb = (fmt) => { const r = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, r); gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, fmt, cw, ch); return r; };
+      const rb = (fmt) => { const r = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, r); gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, fmt, cw, ch); held.push(r); return r; };
       ms = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, ms);
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb(gl.RGBA16F));
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.RENDERBUFFER, rb(gl.RGBA16F));
@@ -189,6 +191,7 @@ const SOLID_JS = `
       const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
       if (st !== gl.FRAMEBUFFER_COMPLETE) LOG('hill: solid Clawds FBO incomplete ' + st);
       rs = [fbo([tex(cw, ch, 'f16')]), fbo([tex(cw, ch, 'f16')])];
+      held.push(ms, rs[0], rs[0].t, rs[1], rs[1].t);
       cap = [cw, ch];
       LOG('hill: solid Clawds, ' + samples + 'x MSAA, ' + cw + 'x' + ch);
     };

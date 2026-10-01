@@ -3,6 +3,8 @@
 Code-rendered music video for "Shelter" (Porter Robinson & Madeon, 2016, 3:37.7).
 Claire directs; the renders come from code.
 
+New to the project? Read `HANDOFF.md` first: how Claire works, the per-cut routine and the fragile spots.
+
 HARD RULE: never write or quote the song's lyrics anywhere, including chat, files,
 code, comments and filenames. An API content filter kills any output that contains
 them. Key everything to bars and timestamps instead.
@@ -62,6 +64,28 @@ them. Key everything to bars and timestamps instead.
 - Grid: 100 BPM, bar 2.4 s = 72 frames, bar b starts at 0.38 + 2.4(b-1) s.
 
 ## Status
+- 2026-10-01: CUT 24 (Claire's notes during the clip work). The film is `out/film.mp4` (= `out/film_cut24.mp4`).
+  - **S36:** the code text along the beams is gone (Claire: redundant now that the cursors hook the sun). The beams,
+    cursors, coils and the diagram on the ice stay; S20's beams never had code.
+  - **`sets/door/hillx-fix.js`:** the MSAA buffers are freed when they grow (D). S20 was re-rendered and is
+    pixel-identical.
+  - **`HANDOFF.md` (new):** for the next model. It covers how Claire works, the per-cut routine and checks, the fragile
+    spots, and where the history lives.
+  - **Clips (`render/clips.py` → `out/clips/`):**
+
+    | Clip | Span | Notes |
+    |---|---|---|
+    | opening | 0:00-0:38.8 | |
+    | verse1_drop1 | 0:38.2-1:46.0 | audio fade |
+    | breakdown_build | 2:02.7-2:43.6 | |
+    | climax | 2:33.4-3:34.0 | |
+    | climax_ring | 2:41.2-3:34.0 | |
+
+    Each span is snapped to the beat inside Claire's second. Every plain end has a bar of room for her to trim; the
+    designed fade-outs stay.
+  - Verified: 6532 frames, 32/32 shots, A/V +0.0 ms, 0 single-frame spikes, 0 short bursts; the cuts and the flagged
+    jumps are as in cut 23.
+  - Cut 23 is in git (de315db) and `out/film_cut23.mp4`.
 - 2026-10-01: CUT 23 (Revision 24, Claire's notes on cut 22). `render/briefs/R24-common.md` has the plan. The film is
   `out/film.mp4` (= `out/film_cut23.mp4`).
   - **S01:** the paper folds in ray by ray, 7 frames behind the pen, mirroring S33's close. The last ray of each old
