@@ -1,8 +1,7 @@
 # Shelter: a code-rendered music video
 
 A music video for "Shelter" (Porter Robinson & Madeon, 2016), in which every frame is rendered by code.
-Directed by Claire. Written, animated and rendered with Claude (Opus 5.5) in Claude Code, by a lead
-session coordinating a small team of Claude subagents over sixteen revisions.
+Written, animated and rendered with Claude Opus 5.5 in Claude Code.
 
 ![One frame per shot](docs/overview.png)
 
